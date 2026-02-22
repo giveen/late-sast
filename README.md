@@ -18,7 +18,7 @@ The longer a session runs, the dumber the model gets. Models suffer a [39% perfo
 Instead of asking the LLM to *be* a coder, Late uses the LLM strictly for **token generation** within a deterministic state machine written in Go.
 
 - **Efficiency**: The Core System Prompt is **<80 lines**.
-- **Deterministic Block-Matching:** Uses strict <<<< / ==== / >>>> diff syntax instead of relying on the LLM to hallucinate line numbers
+- **Deterministic Edits:** Uses exact-match `search`/`replace` blocks instead of relying on the LLM to hallucinate line numbers
 - **Native MCP**: Implements the [Model Context Protocol](https://github.com/modelcontextprotocol) directly, allowing it to use any standard MCP server.
 - **Subagent Loops**: Spawns isolated, task-specific subagents that run in their own ephemeral context loops.
 
@@ -26,7 +26,7 @@ Instead of asking the LLM to *be* a coder, Late uses the LLM strictly for **toke
 
 Late gets the most out of local models (like Qwen3-Coder-Next) by keeping things simple:
 1. **Tiny Prompts**: The core instructions are short and focused.
-2. **Strict Parsing**: It relies on a simple `<<<</====/>>>>` diff format that models can easily output.
+2. **Strict Parsing**: Edits use exact-match `search`/`replace` JSON parameters. No fragile diff format, no guessed line numbers. The model gives an exact string to find and an exact string to replace it with. If it doesn't match, it fails loudly.
 3. **Subagent Delegation**: Instead of filling up one massive context window, complex tasks are handed off to subagents with fresh, empty contexts.
 
 > *Note: The prompt architecture is heavily inspired by the work of [Bijan Bowen](https://www.youtube.com/@Bijanbowen).*

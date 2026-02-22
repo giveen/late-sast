@@ -86,7 +86,7 @@ func (t *ToolAdapter) Execute(ctx context.Context, args json.RawMessage) (string
 	return output, nil
 }
 
-// RequiresConfirmation returns false for MCP tools (they handle security themselves).
+// RequiresConfirmation always returns true for MCP tools.
 func (t *ToolAdapter) RequiresConfirmation(args json.RawMessage) bool {
 	return true
 }
