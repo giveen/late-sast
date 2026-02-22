@@ -90,7 +90,7 @@ func (t *TargetEditTool) RequiresConfirmation(args json.RawMessage) bool {
 func (t *TargetEditTool) CallString(args json.RawMessage) string {
 	file := getToolParam(args, "file")
 	if file == "" {
-		return "Editing file..."
+		return "Editing file"
 	}
-	return fmt.Sprintf("Editing file %s...", truncate(file, 50))
+	return fmt.Sprintf("Editing file %s", truncate(file, 50))
 }

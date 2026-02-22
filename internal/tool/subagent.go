@@ -60,5 +60,5 @@ func (t SpawnSubagentTool) CallString(args json.RawMessage) string {
 	if goal == "" {
 		goal = "unknown goal"
 	}
-	return fmt.Sprintf("Spawning subagent for: %s...", truncate(goal, 50))
+	return fmt.Sprintf("Spawning subagent for: %s", truncate(goal, 50))
 }
