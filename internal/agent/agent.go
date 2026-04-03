@@ -41,6 +41,7 @@ func NewSubagentOrchestrator(
 			}
 		}
 	} else {
+		// TODO: reviewer, committer
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
 	}
 
@@ -64,6 +65,7 @@ func NewSubagentOrchestrator(
 			sess.Registry.Register(t)
 		}
 	} else {
+		// TODO: remove
 		executor.RegisterStandardTools(sess.Registry, enabledTools)
 	}
 
@@ -86,10 +88,7 @@ func NewSubagentOrchestrator(
 	// 4. Create Orchestrator
 	id := fmt.Sprintf("subagent-%d", len(parent.Children()))
 	mws := parent.Middlewares()
-	// Replace the confirmation middleware with one that uses the subagent's registry
-	// This is a bit hacky but ensures the subagent's tools are checked correctly.
-	// We assume TUIConfirmMiddleware is the only one or we specifically replace it.
-	// For now, just create a new one.
+
 	if p, ok := parent.Context().Value(common.InputProviderKey).(tui.Messenger); ok {
 		mws = []common.ToolMiddleware{
 			tui.TUIConfirmMiddleware(p, sess.Registry),

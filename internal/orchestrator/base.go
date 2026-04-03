@@ -187,7 +187,7 @@ func (o *BaseOrchestrator) run() {
 	_, err := executor.RunLoop(
 		ctx,
 		o.sess,
-		20, // maxTurns
+		2000, // maxTurns
 		extraBody,
 		onStartTurn,
 		onEndTurn,

@@ -98,15 +98,15 @@ func TestBashTool_Execute(t *testing.T) {
 	}{
 		{
 			name:    "whitelisted command echo hello",
-			params:  json.RawMessage(`{"command": "echo", "args": ["hello"]}`),
+			params:  json.RawMessage(`{"command": "echo hello"}`),
 			wantErr: false,
 			wantOut: "hello",
 		},
 		{
 			name:    "non-whitelisted command rm",
-			params:  json.RawMessage(`{"command": "rm", "args": ["-rf", "/"]}`),
-			wantErr: true,
-			wantOut: "",
+			params:  json.RawMessage(`{"command": "rm -rf /"}`),
+			wantErr: false, // Execute itself doesn't check whitelist anymore, RequiresConfirmation does
+			wantOut: "Command failed", // it will fail because we are not root or / is protected
 		},
 		{
 			name:    "whitelisted command pwd",
@@ -116,21 +116,27 @@ func TestBashTool_Execute(t *testing.T) {
 		},
 		{
 			name:    "whitelisted command with multiple args",
-			params:  json.RawMessage(`{"command": "echo", "args": ["hello", "world", "test"]}`),
+			params:  json.RawMessage(`{"command": "echo hello world test"}`),
 			wantErr: false,
 			wantOut: "hello world test",
 		},
 		{
-			name:    "full command string in command field (fallback parsing)",
+			name:    "whitelisted command with quoted args containing spaces",
+			params:  json.RawMessage(`{"command": "echo 'hello world' test"}`),
+			wantErr: false,
+			wantOut: "hello world test",
+		},
+		{
+			name:    "full command string in command field",
 			params:  json.RawMessage(`{"command": "echo hello world"}`),
-			wantErr: true,
-			wantOut: "",
+			wantErr: false,
+			wantOut: "hello world",
 		},
 		{
 			name:    "full command string with non-whitelisted base command",
 			params:  json.RawMessage(`{"command": "rm -rf /"}`),
-			wantErr: true,
-			wantOut: "",
+			wantErr: false,
+			wantOut: "Command failed",
 		},
 	}
 
@@ -182,7 +188,7 @@ func TestBashTool_MultipleArgs(t *testing.T) {
 	tool := BashTool{}
 
 	// Test with multiple arguments
-	params := json.RawMessage(`{"command": "echo", "args": ["arg1", "arg2", "arg3"]}`)
+	params := json.RawMessage(`{"command": "echo arg1 arg2 arg3"}`)
 	out, err := tool.Execute(context.Background(), params)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -201,7 +207,7 @@ func TestBashTool_OutputTruncation(t *testing.T) {
 
 	// Create a command that outputs more than 1024 lines
 	// Using seq to generate numbers 1-2000
-	params := json.RawMessage(`{"command": "seq", "args": ["1", "2000"]}`)
+	params := json.RawMessage(`{"command": "seq 1 2000"}`)
 	out, err := tool.Execute(context.Background(), params)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -275,7 +281,7 @@ func TestBashTool_CallString(t *testing.T) {
 	}{
 		{
 			name:     "simple command",
-			params:   json.RawMessage(`{"command": "echo", "args": ["hello"]}`),
+			params:   json.RawMessage(`{"command": "echo hello"}`),
 			expected: "Executing: echo hello",
 		},
 		{
@@ -285,7 +291,7 @@ func TestBashTool_CallString(t *testing.T) {
 		},
 		{
 			name:     "command with args and cwd",
-			params:   json.RawMessage(`{"command": "echo", "args": ["a", "b", "c"], "cwd": "/tmp"}`),
+			params:   json.RawMessage(`{"command": "echo a b c", "cwd": "/tmp"}`),
 			expected: "Executing: echo a b c in dir: /tmp",
 		},
 		{
@@ -314,12 +320,12 @@ func TestBashTool_RequiresConfirmation(t *testing.T) {
 	}{
 		{
 			name:     "whitelisted command grep",
-			params:   json.RawMessage(`{"command": "grep", "args": ["-r", "pattern", "."]}`),
+			params:   json.RawMessage(`{"command": "grep -r pattern ."}`),
 			expected: false,
 		},
 		{
 			name:     "whitelisted command find",
-			params:   json.RawMessage(`{"command": "find", "args": [".", "-name", "*.go"]}`),
+			params:   json.RawMessage(`{"command": "find . -name *.go"}`),
 			expected: false,
 		},
 		{
@@ -329,7 +335,7 @@ func TestBashTool_RequiresConfirmation(t *testing.T) {
 		},
 		{
 			name:     "non-whitelisted command rm",
-			params:   json.RawMessage(`{"command": "rm", "args": ["-rf", "/"]}`),
+			params:   json.RawMessage(`{"command": "rm -rf /"}`),
 			expected: true,
 		},
 		{

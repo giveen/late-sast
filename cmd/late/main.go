@@ -211,9 +211,6 @@ func main() {
 				return "", err
 			}
 
-			// Inherit TUI connection from parent
-			// (This needs better wiring, maybe the Orchestrator hierarchy handles this automatically?)
-			// For now, let's just execute the goal and wait.
 			res, err := child.Execute("")
 			if err != nil {
 				return "", err
@@ -227,7 +224,7 @@ func main() {
 	}
 
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("Alas, there's been an error: %v", err)
+		fmt.Printf("Unspecified error: %v", err)
 		os.Exit(1)
 	}
 }
@@ -288,6 +285,7 @@ func handleSessionList() {
 	fmt.Println("Available sessions:")
 	fmt.Println("")
 	for _, meta := range metas {
+		// TODO: Less clutter, easier printing
 		fmt.Println(session.FormatSessionDisplay(meta))
 		fmt.Println("")
 	}
@@ -315,6 +313,7 @@ func handleSessionLoad(id string) string {
 
 // handleSessionDelete removes a session
 func handleSessionDelete(id string) {
+	// TODO: remove
 	meta, err := session.LoadSessionMeta(id)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)

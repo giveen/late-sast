@@ -1,6 +1,3 @@
-// Package executor provides shared logic for running LLM interaction loops.
-// It unifies the stream accumulation, tool execution, and tool registration
-// logic previously duplicated between internal/tui and internal/agent.
 package executor
 
 import (
@@ -155,7 +152,6 @@ func ConsumeStream(
 // RunLoop handles the core, blocking event loop for autonomous agents.
 // It forces the sequence: inference stream -> verifiable accumulation -> history commit -> safe tool execution.
 // If the deterministic tool extraction yields zero calls, the loop securely collapses and returns execution control.
-//
 
 func RunLoop(
 	ctx context.Context,

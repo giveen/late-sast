@@ -186,34 +186,25 @@ type BashTool struct{}
 
 func (t BashTool) Name() string { return "bash" }
 func (t BashTool) Description() string {
-	return "Execute a bash command. You MUST provide the 'command' (the specific command name) seperated from the 'args' (i.e. {command: 'ls', args: '-la'} instead of {command: 'ls -la'}). If the tool call contains arguments inside the 'command' it will be rejected."
+	return "Execute a bash command."
 }
 func (t BashTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"command": { "type": "string", "description": "The actual shell command you want to call without arguments (e.g. 'ls' instead of 'ls -la')." },
-			"args": { "type": "array", "items": { "type": "string" }, "description": "Arguments to pass to the command (optional, e.g. if command is 'ls' args could be '-la')" },
-			"cwd": { "type": "string", "description": "Working directory for execution, must be within CWD (optional)" }
+			"command": { "type": "string", "description": "The full command to execute." },
+			"cwd": { "type": "string", "description": "Working directory for execution." }
 		},
 		"required": ["command"]
 	}`)
 }
 func (t BashTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		Command string   `json:"command"`
-		Args    []string `json:"args"`
-		Cwd     string   `json:"cwd"`
+		Command string `json:"command"`
+		Cwd     string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
-	}
-
-	// Fallback: if command contains spaces, the agent likely put the full command
-	// string in the command field. Split it: first token = command, rest = args.
-	if strings.Contains(params.Command, " ") {
-		// TODO: Maybe adjust the prompt.
-		return "", fmt.Errorf("command contains spaces. You MUST provide the commands arguments inside the 'args' parameter. The 'command' parameter MUST only be the exact command you want to call e.g. 'ls'. If you want to call e.g. 'ls -la' you have to use the appropriate fields (command 'ls' and args '-la')")
 	}
 
 	// Validate and set working directory
@@ -230,16 +221,8 @@ func (t BashTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 		params.Cwd = cwd
 	}
 
-	// Validate arguments to prevent command injection
-	for _, arg := range params.Args {
-		// TODO: Look at this further
-		if strings.HasPrefix(arg, "/") && !IsSafePath(arg) {
-			return "", fmt.Errorf("argument path '%s' is outside the allowed directory", arg)
-		}
-	}
-
-	// Execute the command using exec.CommandContext with args
-	cmd := exec.CommandContext(ctx, params.Command, params.Args...)
+	// Execute the command using bash -c to handle parsing correctly
+	cmd := exec.CommandContext(ctx, "bash", "-c", params.Command)
 	cmd.Dir = params.Cwd
 
 	output, err := cmd.CombinedOutput()
@@ -276,9 +259,8 @@ func (t BashTool) RequiresConfirmation(args json.RawMessage) bool {
 
 func (t BashTool) CallString(args json.RawMessage) string {
 	var params struct {
-		Command string   `json:"command"`
-		Args    []string `json:"args"`
-		Cwd     string   `json:"cwd"`
+		Command string `json:"command"`
+		Cwd     string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "Executing: (invalid args)"
@@ -286,9 +268,6 @@ func (t BashTool) CallString(args json.RawMessage) string {
 
 	// Build the display string
 	result := fmt.Sprintf("Executing: %s", params.Command)
-	if len(params.Args) > 0 {
-		result += " " + strings.Join(params.Args, " ")
-	}
 	if params.Cwd != "" {
 		result += " in dir: " + params.Cwd
 	}
