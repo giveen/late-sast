@@ -125,7 +125,7 @@ func (m *Model) updateViewport() {
 			for _, tc := range msg.ToolCalls {
 				// Try to use CallString() for meaningful display
 				callStr := tc.Function.Name
-				if registry := m.Root.Registry(); registry != nil {
+				if registry := m.Focused.Registry(); registry != nil {
 					if tool := registry.Get(tc.Function.Name); tool != nil {
 						if args := json.RawMessage(tc.Function.Arguments); len(args) > 0 {
 							callStr = tool.CallString(args)
@@ -155,7 +155,7 @@ func (m *Model) updateViewport() {
 		for _, tc := range s.StreamingState.ToolCalls {
 			// Try to use CallString() for meaningful display (no trailing ... since CallString adds it)
 			callStr := tc.Function.Name
-			if registry := m.Root.Registry(); registry != nil {
+			if registry := m.Focused.Registry(); registry != nil {
 				if tool := registry.Get(tc.Function.Name); tool != nil {
 					if args := json.RawMessage(tc.Function.Arguments); len(args) > 0 {
 						callStr = tool.CallString(args)

@@ -79,24 +79,20 @@ func (t *TargetEditTool) Execute(ctx context.Context, args json.RawMessage) (str
 }
 
 func (t *TargetEditTool) RequiresConfirmation(args json.RawMessage) bool {
-	var params struct {
-		File string `json:"file"`
+	file := getToolParam(args, "file")
+	if file == "" {
+		return true // Default to requiring confirmation if we can't parse yet (streaming)
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return true // Default to safe if we can't parse
-	}
-	return !IsSafePath(params.File)
+	return !IsSafePath(file)
 }
 
 func (t *TargetEditTool) CallString(args json.RawMessage) string {
-	var params struct {
-		File string `json:"file"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "Editing file (unknown file)"
+	file := getToolParam(args, "file")
+	if file == "" {
+		return "Editing file..."
 	}
 
 	// Use just the filename for display, with truncated path if needed
-	filename := filepath.Base(params.File)
+	filename := filepath.Base(file)
 	return fmt.Sprintf("Editing file %s", truncate(filename, 50))
 }

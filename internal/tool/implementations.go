@@ -144,17 +144,18 @@ func (t WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	return fmt.Sprintf("Successfully wrote to %s", params.Path), nil
 }
 func (t WriteFileTool) RequiresConfirmation(args json.RawMessage) bool {
-	var params struct {
-		Path string `json:"path"`
+	path := getToolParam(args, "path")
+	if path == "" {
+		return true // Default to safe if we can't parse yet
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return true // Default to safe if we can't parse
-	}
-	return !IsSafePath(params.Path)
+	return !IsSafePath(path)
 }
 
 func (t WriteFileTool) CallString(args json.RawMessage) string {
 	path := getToolParam(args, "path")
+	if path == "" {
+		return "Writing to file..."
+	}
 	if cwd, err := os.Getwd(); err == nil {
 		path = strings.Replace(path, cwd, ".", 1)
 	}

@@ -10,22 +10,22 @@ import (
 
 // TUIInputProvider implements common.InputProvider by sending messages to the TUI.
 type TUIInputProvider struct {
-	messenger Messenger
+	Messenger Messenger
 }
 
 func NewTUIInputProvider(messenger Messenger) *TUIInputProvider {
-	return &TUIInputProvider{messenger: messenger}
+	return &TUIInputProvider{Messenger: messenger}
 }
 
 func (p *TUIInputProvider) Prompt(ctx context.Context, req common.PromptRequest) (json.RawMessage, error) {
-	if p.messenger == nil {
+	if p.Messenger == nil {
 		return nil, fmt.Errorf("tui input provider: no messenger available")
 	}
 
 	resultCh := make(chan json.RawMessage, 1)
 	errCh := make(chan error, 1)
 
-	p.messenger.Send(PromptRequestMsg{
+	p.Messenger.Send(PromptRequestMsg{
 		OrchestratorID: common.GetOrchestratorID(ctx),
 		Request:        req,
 		ResultCh:       resultCh,

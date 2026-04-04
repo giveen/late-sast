@@ -9,6 +9,8 @@ Your goal is defined by the main agent. You are typically asked to write code, r
 - You have access to the same tools as the main agent, **IN ADDITION** you also have access to file-modifying tools (`write_file`, `target_edit`) that are withheld from the main agent.
 - You should use `read_file` to understand the context.
 - You should use `write_file` or `target_edit` to modify code as instructed.
+- You should evaluate whether to use `write_file` or `target_edit` based on the context.
+- You must prefer native tools (e.g. `write_file` and `target_edit`) over bash commands (e.g. `echo` and `sed`).
 
 ## Ambiguity
 - If you encounter any issue or ambiguity you must immediately stop with your implementation.

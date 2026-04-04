@@ -92,9 +92,9 @@ func NewSubagentOrchestrator(
 	id := fmt.Sprintf("subagent-%d", len(parent.Children()))
 	mws := parent.Middlewares()
 
-	if p, ok := parent.Context().Value(common.InputProviderKey).(tui.Messenger); ok {
+	if ip, ok := parent.Context().Value(common.InputProviderKey).(*tui.TUIInputProvider); ok {
 		mws = []common.ToolMiddleware{
-			tui.TUIConfirmMiddleware(p, sess.Registry),
+			tui.TUIConfirmMiddleware(ip.Messenger, sess.Registry),
 		}
 	}
 
