@@ -11,7 +11,6 @@ var LateTheme = []byte(`
   },
   "paragraph": {
     "margin": 0,
-    "color": "#ECF0F1",
     "background_color": "#191919"
   },
   "block_quote": {
@@ -22,46 +21,57 @@ var LateTheme = []byte(`
   },
   "list": {
     "level_indent": 2,
-    "color": "#ECF0F1",
     "background_color": "#191919"
+  },
+  "bullet": {
+    "color": "#9B59B6"
+  },
+  "enumeration": {
+    "color": "#9B59B6",
+    "block_suffix": ". "
+  },
+  "task": {
+    "ticked": "[x] ",
+    "unticked": "[ ] ",
+    "color": "#9B59B6"
   },
   "heading": {
     "block_suffix": "\n",
     "color": "#9B59B6",
-    "background_color": "#191919",
     "bold": true
   },
   "h1": {
-    "prefix": "# ",
-    "background_color": "#191919"
+    "prefix": "# "
   },
   "h2": {
-    "prefix": "## ",
-    "background_color": "#191919"
+    "prefix": "## "
   },
   "h3": {
-    "prefix": "### ",
-    "background_color": "#191919"
+    "prefix": "### "
   },
   "strong": {
     "bold": true,
-    "color": "#E67E22",
-    "background_color": "#191919"
+    "color": "#E67E22"
   },
   "emph": {
     "italic": true,
-    "color": "#F1C40F",
-    "background_color": "#191919"
+    "color": "#F1C40F"
   },
   "code": {
+    "prefix": " ",
+    "suffix": " ",
     "color": "#2ECC71",
     "background_color": "#191919"
   },
   "code_block": {
     "margin": 0,
     "chroma": {
+      "background": {
+        "background_color": "#191919"
+      },
       "text": {
-        "color": "#ECF0F1"
+        "color": "#ECF0F1",
+        "background_color": "#191919"
       },
       "error": {
         "color": "#F1F1F1",
@@ -90,18 +100,26 @@ var LateTheme = []byte(`
   },
   "table": {
     "center": true,
+    "margin": 0,
+    "color": "#ECF0F1",
+    "background_color": "#191919"
+  },
+  "table_header": {
+    "color": "#9B59B6",
+    "background_color": "#191919",
+    "bold": true
+  },
+  "table_cell": {
     "color": "#ECF0F1",
     "background_color": "#191919"
   },
   "link": {
     "color": "#3498DB",
-    "underline": true,
-    "background_color": "#191919"
+    "underline": true
   },
   "image": {
     "color": "#3498DB",
-    "underline": true,
-    "background_color": "#191919"
+    "underline": true
   }
 }
 `)

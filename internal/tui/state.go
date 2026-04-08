@@ -49,6 +49,7 @@ type AppState struct {
 	PendingStop             bool     // Whether a stop has been requested
 	TokenCount              int      // Estimated token count for current streaming content
 	CumulativeTokenCount    int      // Total tokens accumulated across entire session (all messages)
+	LastRenderTime          int64    // Unix milliseconds of the last render during streaming
 }
 
 type Model struct {

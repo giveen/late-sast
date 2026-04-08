@@ -3,8 +3,8 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
-
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -107,6 +107,7 @@ func (m *Model) updateViewport() {
 	}
 
 	s := m.GetAgentState(m.Focused.ID())
+	s.LastRenderTime = time.Now().UnixMilli()
 
 	// If history was reset or messages were removed, clear the cache
 	if len(history) < len(s.RenderedHistory) {
@@ -128,7 +129,34 @@ func (m *Model) updateViewport() {
 			}
 			if msg.Content != "" {
 				md, _ := m.Renderer.Render(msg.Content)
-				assistantParts = append(assistantParts, aiMsgStyle.Width(msgWidth).Render(strings.TrimRight(md, "\n")))
+
+				// Brute-force fix for transparency: replace ANSI reset (\x1b[0m) with 
+				// a reset that sets our background color (\x1b[0;48;2;25;25;25m).
+				// We also replace the default foreground to match.
+				bgReset := "\x1b[0;38;2;236;240;241;48;2;25;25;25m"
+				md = strings.ReplaceAll(md, "\x1b[0m", bgReset)
+
+				lines := strings.Split(md, "\n")
+				// Style for the inner content (background only, no borders)
+				lineStyle := lipgloss.NewStyle().
+					Background(aiMsgBg).
+					Foreground(textColor)
+
+				// Calculate inner width for padding: Border(1) + PaddingLeft(4) + PaddingRight(2) = 7
+				innerWidth := msgWidth - 7
+				if innerWidth < 1 {
+					innerWidth = 1
+				}
+
+				for i, line := range lines {
+					if strings.TrimSpace(line) == "" && i == len(lines)-1 {
+						continue
+					}
+					// Ensure the background is applied to the full width
+					lines[i] = lineStyle.Width(innerWidth).Render(line)
+				}
+				fullMD := lipgloss.JoinVertical(lipgloss.Left, lines...)
+				assistantParts = append(assistantParts, aiMsgStyle.Render(fullMD))
 			}
 			for _, tc := range msg.ToolCalls {
 				// Try to use CallString() for meaningful display
@@ -166,7 +194,31 @@ func (m *Model) updateViewport() {
 		}
 		if s.StreamingState.Content != "" {
 			md, _ := m.Renderer.Render(s.StreamingState.Content)
-			activeParts = append(activeParts, aiMsgStyle.Width(msgWidth).Render(strings.TrimRight(md, "\n")))
+
+			// Brute-force fix for transparency: replace ANSI reset (\x1b[0m) with 
+			// a reset that sets our background color.
+			bgReset := "\x1b[0;38;2;236;240;241;48;2;25;25;25m"
+			md = strings.ReplaceAll(md, "\x1b[0m", bgReset)
+
+			lines := strings.Split(md, "\n")
+			lineStyle := lipgloss.NewStyle().
+				Background(aiMsgBg).
+				Foreground(textColor)
+
+			innerWidth := msgWidth - 7
+			if innerWidth < 1 {
+				innerWidth = 1
+			}
+
+			for i, line := range lines {
+				if strings.TrimSpace(line) == "" && i == len(lines)-1 {
+					continue
+				}
+				// Ensure the background is applied to the full width
+				lines[i] = lineStyle.Width(innerWidth).Render(line)
+			}
+			fullMD := lipgloss.JoinVertical(lipgloss.Left, lines...)
+			activeParts = append(activeParts, aiMsgStyle.Render(fullMD))
 		}
 		for _, tc := range s.StreamingState.ToolCalls {
 			// Try to use CallString() for meaningful display (no trailing ... since CallString adds it)

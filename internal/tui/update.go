@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"late/internal/common"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -188,6 +189,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 	case OrchestratorEventMsg:
 		s := m.GetAgentState(msg.Event.OrchestratorID())
+		now := time.Now().UnixMilli()
+
 		switch event := msg.Event.(type) {
 		case common.ContentEvent:
 			s.StreamingState = event
@@ -206,8 +209,12 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			// Update cumulative count
 			s.CumulativeTokenCount = historyTokens + newContentTokens
 			s.TokenCount = newContentTokens // Keep current count for display purposes
+
+			// Throttle viewport updates to ~33 FPS during streaming
 			if event.ID == m.Focused.ID() {
-				m.updateViewport()
+				if now-s.LastRenderTime > 30 {
+					m.updateViewport()
+				}
 			}
 		case common.StatusEvent:
 			switch event.Status {
