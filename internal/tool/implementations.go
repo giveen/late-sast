@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
+
+	"late/internal/common"
 )
 
 // ReadFileTool reads content from a file.
@@ -182,6 +185,63 @@ var whitelistedCommands = map[string]bool{
 // Maximum number of output lines to prevent memory exhaustion
 const maxBashOutputLines = 1024
 
+// isMaliciousCatCommand detects when cat is used with output redirection to write files.
+// Returns true if the command attempts to write using cat shenanigans, false if safe.
+func isMaliciousCatCommand(command string) (bool, error) {
+	// Pattern to detect cat with output redirection (>)
+	// Matches: cat > file, cat >> file, cat 2> file, echo | cat > file, etc.
+	// Does NOT match: cat file.txt (reading), cat < file.txt (input redirection), cat file | grep (piping)
+	
+	// First, strip comments and quotes to avoid false positives
+	cleanCmd := command
+	// Remove single-line comments
+	if idx := strings.Index(cleanCmd, "#"); idx != -1 {
+		cleanCmd = cleanCmd[:idx]
+	}
+	
+	// Pattern explanation:
+	// - Match "cat" command (possibly with whitespace before it)
+	// - Followed by output redirection (>, >>, 2>)
+	// - The redirection must be a standalone redirection, not part of a pipe
+	
+	// This regex matches:
+	// - cat followed by whitespace and > (output redirection)
+	// - cat followed by whitespace and >> (append redirection)
+	// - cat followed by 2> (stderr redirection)
+	// - | cat followed by whitespace and > (pipe to cat with output redirection)
+	maliciousPatterns := []string{
+		`(?i)\bcat\s+>>\s+`,            // cat >> file
+		`(?i)\bcat\s+>\s+`,             // cat > file
+		`(?i)\bcat\s+2>\s+`,            // cat 2> file
+		`(?i)\|\s*cat\s+>\s+`,          // | cat > file
+		`(?i)\|\s*cat\s+>>\s+`,         // | cat >> file
+		`(?i)\|\s*cat\s+2>\s+`,         // | cat 2> file
+		`(?i)cat\s+\d+\s*>`,            // cat 0> file, cat 1> file, cat 1 > file, etc.
+		`(?i)\|\s*cat\s+\d+\s*>`,       // | cat 1> file
+	}
+	
+	for _, pattern := range maliciousPatterns {
+		re := regexp.MustCompile(pattern)
+		if re.MatchString(cleanCmd) {
+			return true, fmt.Errorf("cat cannot be used with output redirection (>) to write files")
+		}
+	}
+	
+	return false, nil
+}
+
+// ValidateBashCommand validates bash commands before execution.
+// Returns an error if the command uses malicious patterns like cat shenanigans.
+func (t *BashTool) ValidateBashCommand(command string) error {
+	// Check for malicious cat commands
+	isMalicious, err := isMaliciousCatCommand(command)
+	if isMalicious {
+		return err
+	}
+	
+	return nil
+}
+
 // BashTool executes a bash command with security restrictions.
 type BashTool struct{}
 
@@ -206,6 +266,21 @@ func (t BashTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
+	}
+
+	// Validate command before any execution
+	if err := t.ValidateBashCommand(params.Command); err != nil {
+		// Generate appropriate error message based on agent type
+		orchestratorID := common.GetOrchestratorID(ctx)
+		
+		var errorMsg string
+		if strings.Contains(strings.ToLower(orchestratorID), "coder") {
+			errorMsg = fmt.Sprintf("Do not use bash commands like `cat > file` or `echo > file` to write files. Use the native `write_file` or `target_edit` tools instead. %s", err.Error())
+		} else {
+			errorMsg = fmt.Sprintf("You are an architect/planner agent. You cannot write files. To modify files, you must spawn a coder subagent using `spawn_subagent` tool. %s", err.Error())
+		}
+		
+		return "", fmt.Errorf("%s", errorMsg)
 	}
 
 	// Validate and set working directory

@@ -312,6 +312,150 @@ func TestBashTool_CallString(t *testing.T) {
 	}
 }
 
+func TestBashTool_MaliciousCatCommands(t *testing.T) {
+	tests := []struct {
+		name          string
+		command       string
+		shouldBlock   bool
+		expectedError string
+	}{
+		// Blocked patterns (should return error)
+		{
+			name:          "blocked: cat > file",
+			command:       "cat > test.txt",
+			shouldBlock:   true,
+			expectedError: "cat cannot be used with output redirection",
+		},
+		{
+			name:          "blocked: cat >> file",
+			command:       "cat >> test.txt",
+			shouldBlock:   true,
+			expectedError: "cat cannot be used with output redirection",
+		},
+		{
+			name:          "blocked: echo | cat > file",
+			command:       "echo 'content' | cat > test.txt",
+			shouldBlock:   true,
+			expectedError: "cat cannot be used with output redirection",
+		},
+		{
+			name:          "blocked: cat 2> file",
+			command:       "cat 2> test.txt",
+			shouldBlock:   true,
+			expectedError: "cat cannot be used with output redirection",
+		},
+		{
+			name:          "blocked: cat 1> file",
+			command:       "cat 1> test.txt",
+			shouldBlock:   true,
+			expectedError: "cat cannot be used with output redirection",
+		},
+		{
+			name:          "blocked: | cat > file",
+			command:       "echo test | cat > test.txt",
+			shouldBlock:   true,
+			expectedError: "cat cannot be used with output redirection",
+		},
+		{
+			name:          "blocked: | cat >> file",
+			command:       "echo test | cat >> test.txt",
+			shouldBlock:   true,
+			expectedError: "cat cannot be used with output redirection",
+		},
+		// Allowed patterns (should NOT be blocked)
+		{
+			name:          "allowed: cat file.txt (reading)",
+			command:       "cat test.txt",
+			shouldBlock:   false,
+			expectedError: "",
+		},
+		{
+			name:          "allowed: cat file1 file2 (reading multiple)",
+			command:       "cat test1.txt test2.txt",
+			shouldBlock:   false,
+			expectedError: "",
+		},
+		{
+			name:          "allowed: cat < file (input redirection)",
+			command:       "cat < test.txt",
+			shouldBlock:   false,
+			expectedError: "",
+		},
+		{
+			name:          "allowed: cat file | grep (piping output)",
+			command:       "cat test.txt | grep pattern",
+			shouldBlock:   false,
+			expectedError: "",
+		},
+		{
+			name:          "allowed: cat file1 | grep pattern",
+			command:       "cat test1.txt | grep pattern",
+			shouldBlock:   false,
+			expectedError: "",
+		},
+		{
+			name:          "allowed: cat file1 file2 | grep pattern",
+			command:       "cat test1.txt test2.txt | grep pattern",
+			shouldBlock:   false,
+			expectedError: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := BashTool{}
+			err := tool.ValidateBashCommand(tt.command)
+			
+			if tt.shouldBlock {
+				if err == nil {
+					t.Errorf("Expected error for command %q, got nil", tt.command)
+				} else if !strings.Contains(err.Error(), tt.expectedError) {
+					t.Errorf("Expected error to contain %q, got %q", tt.expectedError, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for command %q: %v", tt.command, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBashTool_ValidationMessages(t *testing.T) {
+	// Test that error messages are helpful and guide agents
+	tool := BashTool{}
+	
+	// Test blocked command
+	err := tool.ValidateBashCommand("cat > test.txt")
+	if err == nil {
+		t.Fatal("Expected error for cat > test.txt, got nil")
+	}
+	
+	errorMsg := err.Error()
+	
+	// Check that error message contains helpful guidance
+	if !strings.Contains(errorMsg, "cat cannot be used with output redirection") {
+		t.Errorf("Error message should contain 'cat cannot be used with output redirection', got: %q", errorMsg)
+	}
+	
+	// Test that safe commands don't produce errors
+	safeCommands := []string{
+		"cat test.txt",
+		"cat test1.txt test2.txt",
+		"cat < test.txt",
+		"cat test.txt | grep pattern",
+		"echo hello",
+		"grep pattern file.txt",
+	}
+	
+	for _, cmd := range safeCommands {
+		err := tool.ValidateBashCommand(cmd)
+		if err != nil {
+			t.Errorf("Command %q should not be blocked, got error: %v", cmd, err)
+		}
+	}
+}
+
 func TestBashTool_RequiresConfirmation(t *testing.T) {
 	tests := []struct {
 		name     string
