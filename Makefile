@@ -2,7 +2,7 @@
 
 # Project variables
 BINARY_NAME=late
-VERSION?=0.1.0
+VERSION?=1.0.0
 
 # Go compiler flags
 LDFLAGS=-ldflags "-X main.Version=${VERSION}"
@@ -24,7 +24,8 @@ clean: ## Remove build artifacts
 
 install: build ## Build and install the binary to your Go bin path
 	@echo "Installing to $${GOPATH:-$(HOME)/go}/bin..."
-	@go install ${LDFLAGS} ./cmd/late
+	@go build ${LDFLAGS} -o bin/${BINARY_NAME} ./cmd/late
+	@mv bin/${BINARY_NAME} ~/.local/bin/late
 
 run: build ## Build and run the project
 	@./bin/${BINARY_NAME}
