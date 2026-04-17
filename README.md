@@ -75,7 +75,7 @@ make install
 ## 🛠️ Advanced Features
 
 * **Native MCP Integration:** Dynamically map external MCP servers (databases, APIs) directly into Late's tool interface via standard I/O, bypassing massive token bloat.
-* **Stateful Resilience:** The Orchestrator maintains continuous, newest-first session history on disk (`~/.local/share/Late`), ensuring perfect context retention across runs.
+* **Stateful Resilience:** The Orchestrator maintains continuous, newest-first session history on disk (`~/.local/share/late`), ensuring perfect context retention across runs.
 * **Git Worktree Support:** Run independent, parallel Late instances across multiple Git worktrees for isolated feature development without context switching.
 
 ## 📜 License: BSL 1.1
@@ -84,5 +84,6 @@ We built this to generate real engineering leverage, not to supply free backend 
 
 * **Free for Builders:** You may use Late freely to write code for any project, including your own commercial startups. We do not restrict your output.
 * **Commercial Restrictions:** You may not monetize Late itself (e.g., wrapping our orchestration engine into a paid AI service), nor deploy Late as internal infrastructure within enterprise environments without a commercial agreement.
+* **Headless & CI/CD Integration:** The core orchestration engine is available as a headless REST API (SSE streaming) for automated pipelines. To bypass BSL commercial restrictions for internal enterprise deployment or to secure priority technical support, contact [contact@mlgpt.io](mailto:contact@mlgpt.io).
 
 *Late safely converts to an open-source GPLv2 license on February 21, 2030.*
