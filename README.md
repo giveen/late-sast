@@ -53,6 +53,8 @@ Point Late to any OpenAI-compatible API endpoint (local or cloud).
 export OPENAI_BASE_URL="http://localhost:8080"
 # Optional: Set your API key if using a cloud provider
 # export OPENAI_API_KEY="your-key"
+# Optional: Set your preferred model (needs backend support)
+# export OPENAI_MODEL="qwen3.5-35b-a3b"
 ```
 
 **3. Execute**

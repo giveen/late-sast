@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	BaseURL string
+	Model   string
 	Timeout time.Duration
 }
 
@@ -35,6 +36,10 @@ func NewClient(cfg Config) *Client {
 
 // ChatCompletion sends a chat prompt to the OpenAI-compatible endpoint.
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
+	if req.Model == "" && c.cfg.Model != "" {
+		req.Model = c.cfg.Model
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -73,6 +78,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 	go func() {
 		defer close(out)
 		defer close(errCh)
+
+		if req.Model == "" && c.cfg.Model != "" {
+			req.Model = c.cfg.Model
+		}
 
 		body, err := json.Marshal(req)
 		if err != nil {
