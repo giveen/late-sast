@@ -11,30 +11,31 @@ Standard AI coding assistants dump massive contexts into a single window, leadin
 
 ## 🔥 Why Late?
 
-### 1. Delegation Over Context Bloat
+### 1. The Industry Standard is Broken (And How Late is Different)
+Tools like Claude Code, OpenCode, OpenClaw and virtually all other harnesses right now are naive, brute-force wrappers. They expect you to throw a big beefy cloud model at them. If your problem cannot be solved with your current setup, they just expect you to put in more money and use a smarter model. These tools feed your entire session into a single, growing context window.
+
+Late takes the opposite approach: a lean orchestrator delegates to ephemeral subagents with fresh, minimal context. Subagent history is destroyed on completion and never pollutes the planner's context. By maintaining a consistent KV cache, Late guarantees blazing-fast processing speeds. It refuses to inject unnecessary context that only serves to confuse the model, slow down your workflow, and burn through your API budget. This mirrors how real engineering teams operate. And it runs on 5GB VRAM with local models or any cloud endpoint.
+
+### 2. Delegation Over Context Bloat
 **Zero Prompt Bloat:** Standard terminal agents eat 10,000+ tokens just for their system prompt, exhausting your VRAM or burning your money through API usage before you even start working. Late's core system prompt is ruthlessly optimized to ~1,000 tokens, leaving your context window open for what actually matters: your code. Throwing larger models at a problem doesn't solve context degradation. As context pollutes, models suffer massive performance drops.
 * **The Orchestrator:** Holds the master plan, reads the codebase, and delegates.
 * **Atomic Subagents:** Receive fresh, empty context windows containing *only* the exact instructions for a single task.
 
-### 2. Zero Silently Broken Code (Exact-Match Diffs)
+### 3. Zero Silently Broken Code (Exact-Match Diffs)
 Standard agents use fragile diff formats that frequently hallucinate and corrupt files. Late forces subagents to use strict exact-match `search`/`replace` string blocks. If the model fails the match, the edit fails loudly, and the Agent initiates an **autonomous self-healing loop** until it gets it right.
 
-### 3. Zero-Surprise Execution (Human-in-the-Loop)
+### 4. Zero-Surprise Execution (Human-in-the-Loop)
 You shouldn't have to blindly trust a generative model with your terminal. Late surfaces every proposed command for your review — **you approve or reject each action before it runs.**
 * **Speed Heuristic:** Simple read-only commands (`ls`, `cat`, `grep`) are auto-approved to maintain agent velocity. Compound, mutating, or unrecognized commands require your explicit `[y/N]` confirmation before execution. This is a convenience heuristic, not a security sandbox — you are always the final authority.
 * **Project-Scoped:** The agent operates within your project directory by default (`cd` is blocked), keeping it focused on the codebase.
 * **Turn Limits:** Hard configurable caps cleanly cut off infinite hallucinations and prevent runaway token burning.
 
-### 4. Pure Go & No Dependencies
+### 5. Pure Go & No Dependencies
 A statically compiled engine. No `node_modules`, no virtual environments. Drop the binary in your path and go.
 
-### 5. Local-First & Model Agnostic
+### 6. Local-First & Model Agnostic
 Requires any OpenAI-compatible endpoint. Late's ephemeral subagent architecture is designed for consumer hardware: subagent contexts are destroyed on completion and never pollute the planner's window, keeping VRAM and context usage flat regardless of task complexity. Late orchestrates its own codebase development on **5GB VRAM** using a local `Qwen3.5-35B-A3B` (~25-30 tokens/sec through `llama.cpp`, 65k context, remaining layers offloaded to system RAM). Two simultaneous agent instances run comfortably at ~15-20 t/s.
-Natively supports both thinking and non-thinking models (including `Gemma 4`), or can be pointed at heavy-compute cloud endpoints for complex architectural tasks.
-
-### How Is This Different?
-
-Tools like Cursor, Claude Code or OpenCode feed your entire session into a single, growing context window. Late takes the opposite approach: a lean orchestrator delegates to ephemeral subagents with fresh, minimal context. Subagent history is destroyed on completion and never pollutes the planner's context. This mirrors how real engineering teams operate — and it runs on 5GB VRAM with local models.
+Natively supports both thinking and non-thinking models (including extra support for `Gemma 4`), or can be pointed at heavy-compute cloud endpoints for complex architectural tasks.
 
 ## 🚀 Quick Start (Zero Dependencies)
 
