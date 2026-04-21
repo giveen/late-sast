@@ -80,7 +80,7 @@ The agent wants to execute bash.
 > Press [ y ] to Approve  |  [ n ] to Deny
 ```
 
-- **Read-only commands** (`ls`, `cat`, `grep`, `find`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
+- **Read-only commands** (`ls`, `cat`, `grep`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
 - **Everything else** requires your explicit `y` / `n`.
 
 ## Common Flags
