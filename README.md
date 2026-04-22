@@ -67,7 +67,7 @@ export OPENAI_BASE_URL="http://localhost:8080"
 # Optional: Set your preferred model (needs backend support)
 # export OPENAI_MODEL="qwen3.5-35b-a3b"
 # Optional: Set a different model for subagents
-# export OPENAI_SUBAGENT_MODEL="gemma-4-e2b"
+# export LATE_SUBAGENT_MODEL="gemma-4-e2b"
 ```
 
 **3. Execute**
