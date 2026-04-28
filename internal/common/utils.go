@@ -49,7 +49,11 @@ func EstimateMessageTokens(msg client.ChatMessage) int {
 
 // EstimateEventTokens estimates tokens for a content event.
 func EstimateEventTokens(event ContentEvent) int {
-	return EstimateTokenCount(event.Content) + EstimateTokenCount(event.ReasoningContent)
+	tokens := EstimateTokenCount(event.Content) + EstimateTokenCount(event.ReasoningContent)
+	for _, tc := range event.ToolCalls {
+		tokens += EstimateTokenCount(tc.Function.Name) + EstimateTokenCount(tc.Function.Arguments)
+	}
+	return tokens
 }
 
 // CalculateHistoryTokens calculates the total token count from history, system prompt, and tools.
