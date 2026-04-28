@@ -60,7 +60,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	forwardToInput := true
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
-		case "y", "Y", "n", "N":
+		case "y", "Y", "n", "N", "s", "S", "p", "P", "g", "G":
 			if stateBefore == StateConfirmTool {
 				forwardToInput = false
 			}
@@ -180,7 +180,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 		case "y", "Y":
 			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
-				focusedState.PendingConfirm.ResultCh <- true
+				focusedState.PendingConfirm.ResultCh <- "y"
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
 				m.updateViewport()
@@ -189,7 +189,16 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 		case "n", "N":
 			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
-				focusedState.PendingConfirm.ResultCh <- false
+				focusedState.PendingConfirm.ResultCh <- "n"
+				focusedState.PendingConfirm = nil
+				focusedState.State = StateThinking
+				m.updateViewport()
+				return m, nil
+			}
+
+		case "s", "S", "p", "P", "g", "G":
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
+				focusedState.PendingConfirm.ResultCh <- msg.String()
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
 				m.updateViewport()
@@ -198,7 +207,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 		case "ctrl+g":
 			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
-				focusedState.PendingConfirm.ResultCh <- false
+				focusedState.PendingConfirm.ResultCh <- "n"
 				focusedState.PendingConfirm = nil
 				focusedState.PendingStop = true
 				focusedState.State = StateStopping
@@ -233,6 +242,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			// Update token count: use real usage if available, otherwise estimate
 			if event.Usage.TotalTokens > 0 {
 				s.CumulativeTokenCount = event.Usage.TotalTokens
+				s.LastRealTokenCount = event.Usage.TotalTokens
+				s.CachedHistoryLen = len(m.Focused.History())
 			} else {
 				orch := m.FindOrchestrator(event.ID)
 				if orch == nil {

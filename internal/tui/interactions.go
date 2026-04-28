@@ -72,20 +72,26 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			// Check if the tool requires confirmation
 			if reg != nil {
 				if t := reg.Get(tc.Function.Name); t != nil {
-					// Skip confirmation if the tool doesn't require it
+					// Check project-allowed tools (local or global)
+					if allowed, _ := tool.LoadAllAllowedTools(); allowed[tc.Function.Name] {
+						approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
+						return next(approvedCtx, tc)
+					}
+
+					// Skip confirmation if the tool doesn't require it based on its own logic
 					if !t.RequiresConfirmation(json.RawMessage(tc.Function.Arguments)) {
 						return next(ctx, tc)
 					}
 
 					// For ShellTool, check if the command is blocked (e.g., cd commands)
-					// Blocked commands should be rejected immediately without asking for confirmation
 					if bashTool, ok := t.(*tool.ShellTool); ok {
 						var params struct {
 							Command string `json:"command"`
+							Cwd     string `json:"cwd"`
 						}
 						if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
-							if blocked, err := bashTool.IsCommandBlocked(params.Command); blocked {
-								return "", bashTool.WrapError(ctx, err) // Reject immediately with descriptive guidance
+							if blocked, err := bashTool.IsCommandBlocked(params.Command, params.Cwd); blocked {
+								return "", bashTool.WrapError(ctx, err)
 							}
 						}
 					}
@@ -93,7 +99,7 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			}
 
 			// Ask for confirmation for tools that require it
-			resultCh := make(chan bool, 1)
+			resultCh := make(chan string, 1)
 			errCh := make(chan error, 1)
 
 			messenger.Send(ConfirmRequestMsg{
@@ -104,12 +110,42 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			})
 
 			select {
-			case confirmed := <-resultCh:
-				if !confirmed {
+			case choice := <-resultCh:
+				switch choice {
+				case "y", "s", "S", "p", "P", "g", "G":
+					if t := reg.Get(tc.Function.Name); t != nil {
+						if _, ok := t.(*tool.ShellTool); ok {
+							var params struct {
+								Command string `json:"command"`
+							}
+							if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
+								switch choice {
+								case "s", "S":
+									tool.SaveSessionAllowedCommand(params.Command)
+								case "p", "P":
+									_ = tool.SaveAllowedCommand(params.Command, false)
+								case "g", "G":
+									_ = tool.SaveAllowedCommand(params.Command, true)
+								}
+							}
+						} else {
+							switch choice {
+							case "s", "S":
+								tool.SaveSessionAllowedTool(tc.Function.Name)
+							case "p", "P":
+								_ = tool.SaveAllowedTool(tc.Function.Name, false)
+							case "g", "G":
+								_ = tool.SaveAllowedTool(tc.Function.Name, true)
+							}
+						}
+					}
+					approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
+					return next(approvedCtx, tc)
+				case "n":
+					return "Tool execution cancelled by user", nil
+				default:
 					return "Tool execution cancelled by user", nil
 				}
-				approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
-				return next(approvedCtx, tc)
 			case err := <-errCh:
 				return "", err
 			case <-ctx.Done():
@@ -123,6 +159,6 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 type ConfirmRequestMsg struct {
 	OrchestratorID string
 	ToolCall       client.ToolCall
-	ResultCh       chan bool
+	ResultCh       chan string
 	ErrCh          chan error
 }
