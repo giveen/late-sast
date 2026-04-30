@@ -50,26 +50,14 @@ ls ${{WORKDIR}}/repo/docker-compose.yml ${{WORKDIR}}/repo/docker-compose.yaml ${
 ### Path A — Docker Compose
 
 1. Read the compose file to understand the services and identify the primary app service and its port.
-2. Append a shared network declaration to the compose file so all services can reach each other and be reachable from the host. Use `read_file` to get the current content, then `write_file` to save the patched version. Append the following at the end of the file (adjust indentation to match the file's style):
-```yaml
-networks:
-  sast-net:
-    external: true
-    name: ${{NETWORK_NAME}}
+2. Patch the compose file to join the shared scan network. Use the built-in tool — do **not** manually edit the file:
 ```
-Then add `networks: [sast-net]` under every service that needs to be reachable. Example patch for a service block:
-```yaml
-services:
-  app:
-    image: myapp
-    networks:
-      - sast-net   # <-- add this line under each service
-  db:
-    image: postgres
-    networks:
-      - sast-net   # <-- add this line under each service
+patch_compose_network(
+  file_path="<absolute path to compose file>",
+  network_name="${{NETWORK_NAME}}"
+)
 ```
-If the compose file already has a `networks:` top-level key, add `sast-net` alongside the existing networks rather than replacing them.
+The tool adds the external network declaration at the top level and adds it to every service. It is idempotent and preserves comments and formatting. It returns a summary of which services were patched.
 3. Launch with a namespaced project so cleanup is targeted:
 ```bash
 docker compose -p ${{COMPOSE_PROJECT}} -f ${{WORKDIR}}/repo/docker-compose.yml up -d

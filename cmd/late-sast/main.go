@@ -294,6 +294,9 @@ func main() {
 	sess.Registry.Register(tool.VulVendorProductsTool{})
 	sess.Registry.Register(tool.VulLastCVEsTool{})
 
+	// Compose network patching (YAML-AST-based, deterministic)
+	sess.Registry.Register(tool.PatchComposeNetworkTool{})
+
 	// Register MCP tools
 	for _, t := range mcpClient.GetTools() {
 		if enabled, exists := enabledTools[t.Name()]; exists && !enabled {
