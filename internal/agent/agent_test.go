@@ -148,3 +148,82 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// ── Auditor agent type ────────────────────────────────────────────────────────
+
+func newTestParent(t *testing.T) (*client.Client, *orchestrator.BaseOrchestrator) {
+	t.Helper()
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:8080"})
+	sess := session.New(c, "/tmp/mock.json", []client.ChatMessage{}, "parent prompt", true)
+	return c, orchestrator.NewBaseOrchestrator("parent", sess, nil, 100)
+}
+
+func TestNewSubagentOrchestrator_AuditorLoadsPrompt(t *testing.T) {
+	c, parent := newTestParent(t)
+	enabledTools := map[string]bool{"bash": true}
+
+	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, false, 40, parent, nil)
+	if err != nil {
+		t.Fatalf("auditor agent type returned error: %v", err)
+	}
+
+	base, ok := child.(*orchestrator.BaseOrchestrator)
+	if !ok {
+		t.Fatalf("expected BaseOrchestrator, got %T", child)
+	}
+
+	prompt := base.Session().SystemPrompt()
+	if prompt == "" {
+		t.Fatal("auditor system prompt is empty")
+	}
+	for _, want := range []string{"HOTSPOT_LIST", "AUDIT_COMPLETE", "Reasoning Protocol"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("auditor prompt missing expected section %q", want)
+		}
+	}
+}
+
+func TestNewSubagentOrchestrator_AuditorNoGemmaThinking(t *testing.T) {
+	c, parent := newTestParent(t)
+	enabledTools := map[string]bool{"bash": true}
+
+	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, false, 40, parent, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	base := child.(*orchestrator.BaseOrchestrator)
+	prompt := base.Session().SystemPrompt()
+	if strings.HasPrefix(prompt, "<|think|>") {
+		t.Error("auditor prompt should not be prefixed with <|think|> when gemmaThinking=false")
+	}
+}
+
+func TestNewSubagentOrchestrator_AuditorWithGemmaThinking(t *testing.T) {
+	c, parent := newTestParent(t)
+	enabledTools := map[string]bool{"bash": true}
+
+	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, true, 40, parent, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	base := child.(*orchestrator.BaseOrchestrator)
+	prompt := base.Session().SystemPrompt()
+	if !strings.HasPrefix(prompt, "<|think|>") {
+		t.Error("auditor prompt should be prefixed with <|think|> when gemmaThinking=true")
+	}
+}
+
+func TestNewSubagentOrchestrator_UnknownAgentTypeErrors(t *testing.T) {
+	c, parent := newTestParent(t)
+	enabledTools := map[string]bool{}
+
+	_, err := NewSubagentOrchestrator(c, "goal", []string{}, "nonexistent-role", enabledTools, false, false, 10, parent, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown agent type")
+	}
+	if !strings.Contains(err.Error(), "unknown agent type") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}

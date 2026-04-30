@@ -29,8 +29,8 @@ func (t SpawnSubagentTool) Parameters() json.RawMessage {
 			},
 			"agent_type": { 
 				"type": "string", 
-				"enum": ["coder", "scanner", "setup"],
-				"description": "The type of subagent to spawn. 'coder' for writing/modifying code. 'setup' for cloning/building/launching a target app. 'scanner' for SAST vulnerability analysis."
+				"enum": ["coder", "scanner", "binary-scanner", "auditor", "setup"],
+				"description": "The type of subagent to spawn. 'coder' for writing/modifying code. 'setup' for cloning/building/launching a target app. 'scanner' for SAST vulnerability analysis. 'binary-scanner' for compiled binary analysis. 'auditor' for deep security taint-chain analysis of hotspots (uses VulnLLM-R-7B)."
 			}
 		},
 		"required": ["goal", "agent_type"]

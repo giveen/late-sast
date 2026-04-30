@@ -25,6 +25,12 @@ type SubagentSettings struct {
 	Model   string
 }
 
+type AuditorSettings struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
 const (
 	configDirPerm  os.FileMode = 0o700
 	configFilePerm os.FileMode = 0o600
@@ -39,6 +45,7 @@ type Config struct {
 	SubagentBaseURL string          `json:"subagent_base_url,omitempty"`
 	SubagentAPIKey  string          `json:"subagent_api_key,omitempty"`
 	SubagentModel   string          `json:"subagent_model,omitempty"`
+	AuditorModel    string          `json:"auditor_model,omitempty"`
 	SkillsDir       string          `json:"skills_dir,omitempty"`
 }
 
@@ -135,6 +142,39 @@ func ResolveOpenAISettingsWithEnv(cfg *Config, lookup EnvLookup) OpenAISettings 
 		resolved.APIKey = value
 	}
 	if value, ok := nonEmptyEnv(lookup, "OPENAI_MODEL"); ok {
+		resolved.Model = value
+	}
+
+	return resolved
+}
+
+func ResolveAuditorSettings(cfg *Config, openAI OpenAISettings) AuditorSettings {
+	return ResolveAuditorSettingsWithEnv(cfg, openAI, os.LookupEnv)
+}
+
+func ResolveAuditorSettingsWithEnv(cfg *Config, openAI OpenAISettings, lookup EnvLookup) AuditorSettings {
+	resolved := AuditorSettings{
+		BaseURL: openAI.BaseURL,
+		APIKey:  openAI.APIKey,
+	}
+
+	if cfg != nil {
+		if cfg.SubagentBaseURL != "" {
+			resolved.BaseURL = cfg.SubagentBaseURL
+		}
+		if cfg.SubagentAPIKey != "" {
+			resolved.APIKey = cfg.SubagentAPIKey
+		}
+		resolved.Model = cfg.AuditorModel
+	}
+
+	if value, ok := nonEmptyEnv(lookup, "LATE_AUDITOR_BASE_URL"); ok {
+		resolved.BaseURL = value
+	}
+	if value, ok := nonEmptyEnv(lookup, "LATE_AUDITOR_API_KEY"); ok {
+		resolved.APIKey = value
+	}
+	if value, ok := nonEmptyEnv(lookup, "LATE_AUDITOR_MODEL"); ok {
 		resolved.Model = value
 	}
 

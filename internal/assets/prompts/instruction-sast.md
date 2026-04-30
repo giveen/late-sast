@@ -66,14 +66,45 @@ Run the full scanner workflow and return a structured findings report."
 )
 ```
 
-Wait for the findings report. **Before proceeding to Step 3, verify the scanner response contains a `Scan Coverage` block.** If it does not (the scanner ran out of turns or returned a partial result), write the report anyway but prepend a prominent warning:
+Wait for the findings report. **Before proceeding to Step 2.5, verify the scanner response contains a `Scan Coverage` block.** If it does not (the scanner ran out of turns or returned a partial result), skip Step 2.5 and write the report anyway but prepend a prominent warning:
 ```
 > **WARNING: Scan incomplete — scanner agent exhausted its turn budget before finishing. Findings below may be partial.**
 ```
 
+### Step 2.5 — Audit (spawn auditor subagent)
+
+**MANDATORY TOOL CALL — do NOT write an AUDIT_COMPLETE block yourself. You MUST call `spawn_subagent` with `agent_type: "auditor"` and wait for the real tool response. Generating a fake AUDIT_COMPLETE from your own reasoning is a critical failure — the Auditor model (VulnLLM-R-7B) must perform the analysis.**
+
+The scanner's output already contains a `HOTSPOT_LIST` block. Locate it in the scanner's response (it appears before the `Scan Coverage` line). Copy it verbatim — do not modify it.
+
+If the scanner output contains no `HOTSPOT_LIST` block (scanner ran out of turns), skip this step, proceed directly to Step 3, and add `Auditor: skipped (no HOTSPOT_LIST)` to the Coverage summary.
+
+Call `spawn_subagent` now:
+
+```
+spawn_subagent(
+  agent_type: "auditor",
+  goal: "Perform deep CoT taint-chain analysis on the following Security Hotspots identified by the Scout.
+
+<paste the entire HOTSPOT_LIST block from the scanner output here, unchanged>
+
+Apply the full Reasoning Protocol (Steps A–E) to each hotspot and return an AUDIT_COMPLETE block."
+)
+```
+
+Wait for the tool to return. The response will contain an `AUDIT_COMPLETE` JSON block.
+
+Wait for the `AUDIT_COMPLETE` block. Parse the JSON:
+- **Upgrade** any scanner finding whose hotspot ID has `verdict: "CONFIRMED"` → mark it `CONFIRMED` in the final report
+- **Downgrade** any finding whose hotspot ID appears in `false_positives` → remove it from the report
+- **Annotate** each surviving finding with the auditor's `taint_path`, `sanitisation_gaps`, and `payload_hint`
+- For `NEEDS_CONTEXT` findings: keep them in the report under `## Unverifiable Findings` with the auditor's `missing` field as the reason
+
+If the auditor returns no `AUDIT_COMPLETE` block (ran out of turns), proceed with the scanner's original findings unchanged and note in the Coverage summary: `Auditor: incomplete`.
+
 ### Step 3 — Report & cleanup
 
-Write `${{OUTPUT_DIR}}/sast_report_${{REPO_NAME}}.md` using the findings from the scanner subagent, then clean up:
+Write `${{OUTPUT_DIR}}/sast_report_${{REPO_NAME}}.md` using the findings merged from the scanner + auditor, then clean up:
 
 ```bash
 # Stop the main app container
