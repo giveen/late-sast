@@ -59,6 +59,12 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return LoadConfigFromDir(lateConfigDir)
+}
+
+// LoadConfigFromDir loads config.json from the given directory.
+// Used by late-sast to support its own config dir with fallback.
+func LoadConfigFromDir(lateConfigDir string) (*Config, error) {
 	configPath := filepath.Join(lateConfigDir, "config.json")
 
 	content, err := os.ReadFile(configPath)

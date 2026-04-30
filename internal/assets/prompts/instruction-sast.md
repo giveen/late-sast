@@ -115,11 +115,12 @@ docker exec ${{CONTAINER_NAME}} bash -c "curl -s 'http://localhost:<port>/<endpo
 Mark each finding as **EXPLOITED** (got meaningful response), **BLOCKED** (sanitisation caught it), or **UNREACHABLE** (couldn't trigger path).
 
 ### Step 8 — Generate report
-Write the full report to `sast_report.md` in the working directory using the finding format defined in SKILL.md.
+Write the full report to `sast_report_${{REPO_NAME}}.md` in the working directory using the finding format defined in SKILL.md.
 
 Cleanup:
 ```bash
 docker stop ${{CONTAINER_NAME}} && docker rm ${{CONTAINER_NAME}}
+rm -rf /tmp/sast-skill ${{WORKDIR}}
 ```
 
 ---
@@ -128,7 +129,7 @@ docker stop ${{CONTAINER_NAME}} && docker rm ${{CONTAINER_NAME}}
 
 1. **Always use codebase-memory MCP tools first**: `get_architecture`, `search_graph`, `trace_call_path`, `get_code_snippet`, `query_graph`
 2. **Use `read_file` only for code the graph cannot reach** (config files, templates, inline scripts)
-3. **Use `bash` for Docker operations, git, curl, and verification**
+3. **Use `bash` for Docker operations, git, curl, and verification** — always pass `--max-time 10` to `curl` to prevent hangs
 4. **Use `write_file` to write the final report**
 
 ---
@@ -146,7 +147,7 @@ docker stop ${{CONTAINER_NAME}} && docker rm ${{CONTAINER_NAME}}
 
 ## Output Format
 
-Write findings to `sast_report.md`:
+Write findings to `sast_report_${{REPO_NAME}}.md`:
 
 ```markdown
 # SAST Security Report — <repo-name>
