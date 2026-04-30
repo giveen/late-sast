@@ -33,15 +33,19 @@ Complete all setup steps and return the SETUP_COMPLETE summary."
 )
 ```
 
-Wait for the `SETUP_COMPLETE` block. Parse the JSON object that follows the `SETUP_COMPLETE` marker to extract: `container`, `port`, `app_started`, `network`, `compose_project`, `sidecars`, `language`, `entry_points`, and `key_routes`. The `key_routes` field is a JSON array — join it as a comma-separated string when passing to the scanner.
+Wait for the `SETUP_COMPLETE` block. Parse the JSON object that follows the `SETUP_COMPLETE` marker to extract: `container`, `port`, `app_started`, `network`, `compose_project`, `sidecars`, `language`, `entry_points`, `key_routes`, and `project_type`. The `key_routes` field is a JSON array — join it as a comma-separated string when passing to the scanner.
 
 ### Step 2 — Scan (spawn scanner subagent)
 
-Spawn a scanner subagent with the setup results:
+Select the scanner type based on `project_type` from the setup output:
+- If `project_type` is `"binary"` → use `agent_type: "binary-scanner"`
+- Otherwise → use `agent_type: "scanner"`
+
+Spawn the appropriate scanner subagent with the setup results:
 
 ```
 spawn_subagent(
-  agent_type: "scanner",
+  agent_type: "scanner" | "binary-scanner",   // chosen above
   goal: "Perform a full SAST scan and live exploit verification.
 Container: <container from setup>
 Network: ${{NETWORK_NAME}}
@@ -54,6 +58,7 @@ Sidecars: <sidecars from setup>
 Language: <language from setup>
 Entry points: <entry_points from setup>
 Key routes: <key_routes from setup>
+Project type: <project_type from setup>
 GitHub URL: <url from user>
 codebase-memory project: ${{WORKDIR}}/repo
 

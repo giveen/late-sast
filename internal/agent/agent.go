@@ -50,6 +50,12 @@ func NewSubagentOrchestrator(
 			return nil, fmt.Errorf("failed to load embedded scanner prompt: %w", err)
 		}
 		systemPrompt = string(content)
+	case "binary-scanner":
+		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-scanner-binary.md")
+		if err != nil {
+			return nil, fmt.Errorf("failed to load embedded binary scanner prompt: %w", err)
+		}
+		systemPrompt = string(content)
 	case "setup":
 		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-setup.md")
 		if err != nil {

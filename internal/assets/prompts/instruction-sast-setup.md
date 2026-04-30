@@ -201,8 +201,16 @@ SETUP_COMPLETE
   "key_routes": ["<route1>", "<route2>", "<route3>", "<route4>", "<route5>"],
   "app_started": <true or false>,
   "sidecars": ["<sidecar1>", "<sidecar2>"],
+  "project_type": "<web or binary>",
   "notes": "<any issues, or 'none'>"
 }
 ```
 
 `sidecars` and `key_routes` must be JSON arrays (empty array `[]` if none). `entry_points` must be an integer. `app_started` must be a boolean.
+
+**How to determine `project_type`:**
+- `"binary"` if **any** of the following are true:
+  - Primary language is C or C++
+  - Primary language is Rust and `entry_points == 0` (no HTTP handlers detected)
+  - Primary language is Go and `entry_points == 0` and `go.mod` does not import `net/http`, `gin`, `echo`, `fiber`, `chi`, or `gorilla/mux`
+- `"web"` in all other cases (Node.js, Python, Ruby, Java, PHP, Go/Rust with HTTP framework)
