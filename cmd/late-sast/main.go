@@ -128,6 +128,7 @@ func main() {
 		"${{OUTPUT_DIR}}":      outputDir,
 		"${{NETWORK_NAME}}":    networkName,
 		"${{COMPOSE_PROJECT}}": composeProject,
+		"${{VERSION}}":         common.Version,
 	})
 
 	if *gemmaThinkingReq {

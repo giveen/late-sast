@@ -17,17 +17,36 @@ Load additional references based on the detected language/framework:
 - Python/Ruby/Go: also load `ssti.md`
 
 ### Step 1b — Secrets scan
-Before any taint analysis, run a fast secrets grep across the repository. This step is deterministic — no taint tracing needed, near-zero false positive rate:
+Before any taint analysis, run a fast secrets grep across the repository. This step is deterministic — no taint tracing needed, near-zero false positive rate.
+
+Run two passes:
+
+**Pass 1 — quoted values** (catches `KEY = "value"` and `KEY: 'value'` patterns):
 ```bash
 docker exec ${{CONTAINER_NAME}} sh -c "
-grep -rn --include='*.py' --include='*.js' --include='*.ts' --include='*.go' \
-  --include='*.rb' --include='*.php' --include='*.java' --include='*.env' \
+grep -rn \
+  --include='*.py' --include='*.js' --include='*.ts' --include='*.jsx' --include='*.tsx' \
+  --include='*.go' --include='*.rb' --include='*.php' --include='*.java' --include='*.cs' \
+  --include='*.env' --include='*.env.*' \
   --include='*.yml' --include='*.yaml' --include='*.json' --include='*.toml' \
-  -E '(password|secret|api.?key|private.?key|token|passwd|credentials)[[:space:]]*[=:][[:space:]]*[\"\x27][^\"\x27]{8,}' \
-  /app 2>/dev/null | grep -v '.example' | grep -v 'test' | head -40
+  --include='*.xml' --include='*.properties' --include='*.conf' --include='*.cfg' --include='*.ini' \
+  -E '(password|passwd|secret|api.?key|private.?key|access.?key|auth.?token|client.?secret|signing.?key)[[:space:]]*[=:][[:space:]]*[\"'"'"'][^\"'"'"']{8,}[\"'"'"']' \
+  /app 2>/dev/null | grep -v '\.example' | grep -vi 'test\|mock\|fake\|placeholder\|your[_-]' | head -50
 "
 ```
-For each match, check if it is a hardcoded value (not an env var reference). Report each confirmed hardcoded secret as a **CRITICAL** finding under `information_disclosure`.
+
+**Pass 2 — bare values** (catches `DB_PASS=hunter2` in .env files and config files with no quotes):
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+grep -rn \
+  --include='*.env' --include='*.env.*' --include='.env' \
+  --include='*.conf' --include='*.cfg' --include='*.ini' --include='*.properties' \
+  -E '^[[:space:]]*(PASSWORD|PASSWD|SECRET|API_KEY|PRIVATE_KEY|ACCESS_KEY|AUTH_TOKEN|CLIENT_SECRET|SIGNING_KEY|DB_PASS|DB_PASSWORD|DATABASE_PASSWORD)[[:space:]]*=[[:space:]]*[^${\(\"\x27][^\n]{6,}' \
+  /app 2>/dev/null | grep -v '\.example' | grep -vi 'changeme\|replace\|your[_-]' | head -30
+"
+```
+
+For each match across both passes, check if it is a hardcoded value (not an env var reference like `\${VAR}` or `os.Getenv`). Report each confirmed hardcoded secret as a **CRITICAL** finding under `information_disclosure`.
 
 ### Step 1c — Dependency CVE scan
 Run trivy against the repository's dependency files:

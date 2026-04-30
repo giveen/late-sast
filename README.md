@@ -116,6 +116,8 @@ Every finding goes through a Judge step before it reaches the report:
 - **NEEDS CONTEXT** — requires runtime configuration or credentials to verify
 - **FALSE POSITIVE** — the live exploit was blocked or the path is unreachable
 
+> **Scope note:** `late-sast` scans unauthenticated attack surface only — it does not log in to the application. Vulnerabilities that exist exclusively behind authenticated routes will be flagged as **NEEDS CONTEXT** rather than **CONFIRMED** or **LIKELY**. Post-auth vulnerabilities (IDOR, privilege escalation, auth bypass) require a session token to verify live; the static taint analysis still runs for them.
+
 ### Vulnerability Coverage
 
 `late-sast` covers all 34 vulnerability classes from the [llm-sast-scanner](https://github.com/SunWeb3Sec/llm-sast-scanner) reference library (MIT License, © SunWeb3Sec), including:

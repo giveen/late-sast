@@ -33,7 +33,7 @@ Complete all setup steps and return the SETUP_COMPLETE summary."
 )
 ```
 
-Wait for the `SETUP_COMPLETE` summary. Extract `container`, `port`, `app_started`, `network`, `compose_project`, `sidecars`, `language`, `entry_points`, and `key_routes` from it.
+Wait for the `SETUP_COMPLETE` block. Parse the JSON object that follows the `SETUP_COMPLETE` marker to extract: `container`, `port`, `app_started`, `network`, `compose_project`, `sidecars`, `language`, `entry_points`, and `key_routes`. The `key_routes` field is a JSON array — join it as a comma-separated string when passing to the scanner.
 
 ### Step 2 — Scan (spawn scanner subagent)
 
@@ -91,7 +91,7 @@ docker run --rm -v /tmp:/tmp alpine rm -rf ${{WORKDIR}} /tmp/sast-skill
 # SAST Security Report — <repo-name>
 Date: <date>
 Target: <github-url>
-Analyzer: late-sast v1 (llm-sast-scanner + live verification)
+Analyzer: late-sast ${{VERSION}} (llm-sast-scanner + live verification)
 
 ## Executive Summary
 <2-3 sentences: findings by severity, most critical issue, exploit success rate>

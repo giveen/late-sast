@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,116 @@ var cveBaseURL = "https://cve.circl.lu/api/"
 var cveHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 var cveIDRegex = regexp.MustCompile(`^CVE-\d{4}-\d{4,}$`)
+
+// cveVendorMap normalises common package/library names to the CPE vendor string
+// used by cve.circl.lu. Keys are lowercase package names or common vendor guesses;
+// values are the exact CPE vendor strings the API expects.
+//
+// If a caller passes a vendor not listed here it is used as-is (existing behaviour).
+var cveVendorMap = map[string]string{
+	// Node.js / npm
+	"express":          "expressjs",
+	"nextjs":           "vercel",
+	"next.js":          "vercel",
+	"next":             "vercel",
+	"react":            "facebook",
+	"angular":          "google",
+	"vue":              "vuejs",
+	"nuxt":             "nuxtjs",
+	"lodash":           "lodash",
+	"axios":            "axios-http",
+	"jsonwebtoken":     "auth0",
+	"passport":         "jaredhanson",
+	"sequelize":        "sequelize",
+	"mongoose":         "mongoosejs",
+	"nestjs":           "nestjs",
+	"@nestjs/core":     "nestjs",
+	"fastify":          "fastify",
+	"koa":              "koajs",
+	"hapi":             "hapi",
+	"helmet":           "helmetjs",
+	"multer":           "expressjs",
+	"ws":               "websockets",
+	"socket.io":        "socket",
+	"socketio":         "socket",
+	// Python
+	"django":           "djangoproject",
+	"flask":            "palletsprojects",
+	"werkzeug":         "palletsprojects",
+	"jinja2":           "palletsprojects",
+	"fastapi":          "tiangolo",
+	"starlette":        "encode",
+	"sqlalchemy":       "sqlalchemy",
+	"celery":           "celeryproject",
+	"requests":         "python-requests",
+	"pydantic":         "pydantic",
+	"cryptography":     "cryptography",
+	"paramiko":         "paramiko",
+	"pillow":           "python",
+	"pyjwt":            "jwt",
+	"twisted":          "twistedmatrix",
+	// Java
+	"log4j":                "apache",
+	"log4j2":               "apache",
+	"log4j-core":           "apache",
+	"struts":               "apache",
+	"struts2":              "apache",
+	"spring":               "vmware",
+	"spring-core":          "vmware",
+	"spring-boot":          "vmware",
+	"spring-framework":     "vmware",
+	"spring-security":      "vmware",
+	"spring-web":           "vmware",
+	"jackson":              "fasterxml",
+	"jackson-databind":     "fasterxml",
+	"commons-collections":  "apache",
+	"commons-lang":         "apache",
+	"shiro":                "apache",
+	"hibernate":            "redhat",
+	"netty":                "netty",
+	"tomcat":               "apache",
+	// Ruby
+	"rails":            "rubyonrails",
+	"activerecord":     "rubyonrails",
+	"activesupport":    "rubyonrails",
+	"devise":           "heartcombo",
+	"nokogiri":         "nokogiri",
+	// Go
+	"gin":              "gin-gonic",
+	"echo":             "labstack",
+	"fiber":            "gofiber",
+	"beego":            "beego",
+	"gorilla/mux":      "gorilla",
+	"chi":              "go-chi",
+	// PHP
+	"laravel":          "laravel",
+	"symfony":          "sensiolabs",
+	"wordpress":        "wordpress",
+	"drupal":           "drupal",
+	"guzzle":           "guzzlephp",
+	"twig":             "twig",
+	// Generic / infra
+	"openssl":          "openssl",
+	"libssl":           "openssl",
+	"curl":             "haxx",
+	"libcurl":          "haxx",
+	"nginx":            "nginx",
+	"redis":            "redis",
+	"mongodb":          "mongodb",
+	"mysql":            "oracle",
+	"postgresql":       "postgresql",
+}
+
+// normalizeCVEVendor maps a package/library name to the canonical CPE vendor
+// string expected by cve.circl.lu. Falls back to the input if not found.
+func normalizeCVEVendor(vendor string) string {
+	// Try exact match first (lowercase)
+	lower := strings.ToLower(vendor)
+	if mapped, ok := cveVendorMap[lower]; ok {
+		return mapped
+	}
+	return vendor
+}
 
 func cveGet(path string) (string, error) {
 	reqURL := cveBaseURL + path
@@ -42,7 +153,7 @@ type VulVendorProductCVETool struct{}
 
 func (VulVendorProductCVETool) Name() string { return "vul_vendor_product_cve" }
 func (VulVendorProductCVETool) Description() string {
-	return "Get all CVEs for a specific vendor and product from the cve.circl.lu database. Returns JSON with CVE IDs, CVSS scores, summaries, and affected versions."
+	return "Get all CVEs for a specific vendor and product from the cve.circl.lu database. Returns JSON with CVE IDs, CVSS scores, summaries, and affected versions. The vendor name is automatically normalised to the CPE vendor string (e.g. 'express' → 'expressjs', 'django' → 'djangoproject'), so passing the package name directly works."
 }
 func (VulVendorProductCVETool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -65,6 +176,7 @@ func (VulVendorProductCVETool) Execute(_ context.Context, args json.RawMessage) 
 	if p.Vendor == "" || p.Product == "" {
 		return "", fmt.Errorf("vendor and product are required")
 	}
+	p.Vendor = normalizeCVEVendor(p.Vendor)
 	return cveGet("search/" + url.PathEscape(p.Vendor) + "/" + url.PathEscape(p.Product))
 }
 func (VulVendorProductCVETool) RequiresConfirmation(_ json.RawMessage) bool { return false }
@@ -123,7 +235,7 @@ type VulVendorProductsTool struct{}
 
 func (VulVendorProductsTool) Name() string { return "vul_vendor_products" }
 func (VulVendorProductsTool) Description() string {
-	return "List all products associated with a vendor in the cve.circl.lu database."
+	return "List all products associated with a vendor in the cve.circl.lu database. The vendor name is automatically normalised to the CPE vendor string."
 }
 func (VulVendorProductsTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -144,6 +256,7 @@ func (VulVendorProductsTool) Execute(_ context.Context, args json.RawMessage) (s
 	if p.Vendor == "" {
 		return "", fmt.Errorf("vendor is required")
 	}
+	p.Vendor = normalizeCVEVendor(p.Vendor)
 	return cveGet("browse/" + url.PathEscape(p.Vendor))
 }
 func (VulVendorProductsTool) RequiresConfirmation(_ json.RawMessage) bool { return false }

@@ -170,18 +170,22 @@ If the app still fails to start after injecting env vars, note it in the summary
 
 ## Output
 
-Return **only** this summary (fill in all values):
+Return **only** this block (no prose before or after). Use valid JSON for the data object:
 
 ```
 SETUP_COMPLETE
-container: <main app container name>
-network: ${{NETWORK_NAME}}
-compose_project: <${{COMPOSE_PROJECT}} if compose was used, else "none">
-port: <port or "unknown">
-language: <primary language>
-entry_points: <count from get_architecture>
-key_routes: <comma-separated list of top 5 HTTP routes>
-app_started: true|false
-sidecars: <comma-separated list of sidecar service names, or "none">
-notes: <any issues, or "none">
+{
+  "container": "<main app container name>",
+  "network": "${{NETWORK_NAME}}",
+  "compose_project": "<${{COMPOSE_PROJECT}} if compose was used, else 'none'>",
+  "port": "<port number as string, or 'unknown'>",
+  "language": "<primary language>",
+  "entry_points": <integer count from get_architecture>,
+  "key_routes": ["<route1>", "<route2>", "<route3>", "<route4>", "<route5>"],
+  "app_started": <true or false>,
+  "sidecars": ["<sidecar1>", "<sidecar2>"],
+  "notes": "<any issues, or 'none'>"
+}
 ```
+
+`sidecars` and `key_routes` must be JSON arrays (empty array `[]` if none). `entry_points` must be an integer. `app_started` must be a boolean.
