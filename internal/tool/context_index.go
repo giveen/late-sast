@@ -26,6 +26,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -553,4 +555,60 @@ func (t CtxFetchAndIndexTool) Execute(ctx context.Context, args json.RawMessage)
 		return "", fmt.Errorf("url is required")
 	}
 	return t.Index.FetchAndIndex(p.URL, p.Force)
+}
+
+// CtxIndexFileTool reads a local file from disk and indexes it into the BM25
+// knowledge base without the file content ever entering the conversation context.
+type CtxIndexFileTool struct{ Index *ContextIndex }
+
+func (t CtxIndexFileTool) Name() string { return "ctx_index_file" }
+func (t CtxIndexFileTool) Description() string {
+	return "Read a local file from disk and index it into the BM25 knowledge base. The file's raw content never enters the conversation context — only search results (via ctx_search) do. Use instead of read_file for large files (source code, logs, configs, lockfiles) you need to analyse without spending context budget."
+}
+func (t CtxIndexFileTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"path": { "type": "string", "description": "Absolute path to the local file to index" },
+			"source": { "type": "string", "description": "Short label for this content in search results (e.g. 'main.go', 'sql_injection'). Defaults to the filename." }
+		},
+		"required": ["path"]
+	}`)
+}
+func (t CtxIndexFileTool) RequiresConfirmation(_ json.RawMessage) bool { return false }
+func (t CtxIndexFileTool) CallString(args json.RawMessage) string {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(args, &p) == nil && p.Path != "" {
+		return fmt.Sprintf("ctx_index_file(%q)", p.Path)
+	}
+	return "ctx_index_file(...)"
+}
+func (t CtxIndexFileTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Path   string `json:"path"`
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if p.Path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	// Validate path is absolute and does not escape via traversal
+	clean := filepath.Clean(p.Path)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("path must be absolute")
+	}
+	content, err := os.ReadFile(clean)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", clean, err)
+	}
+	source := p.Source
+	if source == "" {
+		source = filepath.Base(clean)
+	}
+	n := t.Index.IndexText(source, string(content))
+	return fmt.Sprintf("Indexed %q into knowledge base: %d chunks", source, n), nil
 }

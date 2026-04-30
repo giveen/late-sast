@@ -311,10 +311,17 @@ func main() {
 	// Context-window knowledge base — index large docs/advisories once, retrieve
 	// only relevant snippets via BM25 search (raw content never enters context).
 	// Inspired by context-mode; implemented natively with no external deps.
+	//
+	// Pre-index all SAST vulnerability reference files so the scanner subagent
+	// can ctx_search them without ever reading their content into the conversation.
+	// This prevents ~128 KB of reference material from being dumped into context
+	// before a single line of code is scanned.
 	ctxIdx := tool.NewContextIndex()
+	indexSASTReferences(ctxIdx, "/tmp/sast-skill")
 	sess.Registry.Register(tool.CtxIndexTool{Index: ctxIdx})
 	sess.Registry.Register(tool.CtxSearchTool{Index: ctxIdx})
 	sess.Registry.Register(tool.CtxFetchAndIndexTool{Index: ctxIdx})
+	sess.Registry.Register(tool.CtxIndexFileTool{Index: ctxIdx})
 
 	// Register MCP tools
 	for _, t := range mcpClient.GetTools() {
@@ -514,6 +521,32 @@ func extractSASTSkill(destDir string) error {
 		}
 		return os.WriteFile(dest, data, 0644)
 	})
+}
+
+// indexSASTReferences pre-loads the SAST vulnerability reference library into
+// the shared BM25 index so the scanner subagent never needs to read these files
+// into its conversation context (~128 KB for a typical scan).
+func indexSASTReferences(idx *tool.ContextIndex, dir string) {
+	// Index SKILL.md (Judge protocol + vulnerability class list)
+	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err == nil {
+		idx.IndexText("SKILL", string(b))
+	}
+	// Index every reference markdown file
+	entries, err := os.ReadDir(filepath.Join(dir, "references"))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "references", e.Name()))
+		if err != nil {
+			continue
+		}
+		source := strings.TrimSuffix(e.Name(), ".md")
+		idx.IndexText(source, string(b))
+	}
 }
 
 // ForwardOrchestratorEvents streams orchestrator events into the TUI.

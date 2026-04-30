@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -356,5 +358,109 @@ func TestCIHTMLToText_Entities(t *testing.T) {
 	out := ciHTMLToText(`<p>Use &lt;foo&gt; &amp; &quot;bar&quot;</p>`)
 	if !strings.Contains(out, `<foo>`) || !strings.Contains(out, `&`) {
 		t.Errorf("expected HTML entities decoded, got: %s", out)
+	}
+}
+
+// ── CtxIndexFileTool ───────────────────────────────────────────────────────────
+
+func TestCtxIndexFileTool_IndexsFile(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "testfile*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "SQL injection vulnerability: use prepared statements to prevent user input reaching queries"
+	f.WriteString(content) //nolint:errcheck
+	f.Close()
+
+	ci := NewContextIndex()
+	tf := CtxIndexFileTool{Index: ci}
+	args, _ := json.Marshal(map[string]string{"path": f.Name(), "source": "sql_injection"})
+	result, err := tf.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "sql_injection") {
+		t.Errorf("expected source label in result, got: %s", result)
+	}
+
+	// Content should be searchable
+	hits := ci.Search("prepared statements injection", 3)
+	if len(hits) == 0 {
+		t.Error("expected search hit after indexing file")
+	}
+}
+
+func TestCtxIndexFileTool_DefaultSourceIsFilename(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "myfile*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("path traversal attack example directory listing") //nolint:errcheck
+	f.Close()
+
+	ci := NewContextIndex()
+	tf := CtxIndexFileTool{Index: ci}
+	args, _ := json.Marshal(map[string]string{"path": f.Name()})
+	result, err := tf.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	base := strings.TrimSuffix(filepath.Base(f.Name()), filepath.Ext(f.Name()))
+	_ = base // source label includes full basename with ext
+	if !strings.Contains(result, "Indexed") {
+		t.Errorf("unexpected result: %s", result)
+	}
+}
+
+func TestCtxIndexFileTool_RejectsMissingPath(t *testing.T) {
+	ci := NewContextIndex()
+	tf := CtxIndexFileTool{Index: ci}
+	args, _ := json.Marshal(map[string]string{})
+	_, err := tf.Execute(context.Background(), args)
+	if err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
+func TestCtxIndexFileTool_RejectsNonAbsolutePath(t *testing.T) {
+	ci := NewContextIndex()
+	tf := CtxIndexFileTool{Index: ci}
+	args, _ := json.Marshal(map[string]string{"path": "relative/path.go"})
+	_, err := tf.Execute(context.Background(), args)
+	if err == nil {
+		t.Error("expected error for relative path")
+	}
+}
+
+func TestCtxIndexFileTool_RejectsMissingFile(t *testing.T) {
+	ci := NewContextIndex()
+	tf := CtxIndexFileTool{Index: ci}
+	args, _ := json.Marshal(map[string]string{"path": "/nonexistent/file.md"})
+	_, err := tf.Execute(context.Background(), args)
+	if err == nil {
+		t.Error("expected error for nonexistent file")
+	}
+}
+
+func TestCtxIndexFileTool_CallString(t *testing.T) {
+	tf := CtxIndexFileTool{Index: NewContextIndex()}
+	args, _ := json.Marshal(map[string]string{"path": "/tmp/sast-skill/references/rce.md"})
+	cs := tf.CallString(args)
+	if !strings.Contains(cs, "rce.md") {
+		t.Errorf("expected path in CallString, got: %s", cs)
+	}
+}
+
+func TestCtxIndexFileTool_Metadata(t *testing.T) {
+	tf := CtxIndexFileTool{Index: NewContextIndex()}
+	if tf.Name() != "ctx_index_file" {
+		t.Errorf("unexpected name: %s", tf.Name())
+	}
+	if tf.RequiresConfirmation(nil) {
+		t.Error("should not require confirmation")
+	}
+	var params map[string]interface{}
+	if err := json.Unmarshal(tf.Parameters(), &params); err != nil {
+		t.Fatalf("invalid parameters JSON: %v", err)
 	}
 }

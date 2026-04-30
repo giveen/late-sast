@@ -7,14 +7,57 @@ You will be given: the container name, docker network name, compose project (or 
 ## Scanning Workflow
 
 ### Step 1 — Load vulnerability references
-Read `/tmp/sast-skill/SKILL.md` to understand the full vulnerability class list and the Judge re-verification protocol. Then load the minimum required references from `/tmp/sast-skill/references/`:
-`sql_injection.md`, `xss.md`, `ssrf.md`, `rce.md`, `idor.md`, `authentication_jwt.md`, `path_traversal_lfi_rfi.md`
 
-Load additional references based on the detected language/framework:
-- Node.js / TypeScript: also load `prototype_pollution.md`
-- Java: also load `insecure_deserialization.md`, `jndi_injection.md`, `xxe.md`
-- PHP: also load `php_security.md`
-- Python/Ruby/Go: also load `ssti.md`
+The full vulnerability reference library (34 classes) and the Judge re-verification protocol are **pre-indexed in the knowledge base** — do NOT read the reference files directly (that would dump ~128 KB into context before a single line of code is scanned).
+
+Retrieve what you need with targeted searches:
+```
+ctx_search(query="Judge re-verification protocol CONFIRMED LIKELY NEEDS CONTEXT verdict")
+ctx_search(query="<vuln class> patterns sink examples")
+```
+
+For the mandatory baseline, fetch the Judge protocol and the 7 core references:
+```
+ctx_search(query="Judge protocol re-verify finding exploit confirmed likely needs context")
+ctx_search(query="SQL injection sink query execute prepared statement")
+ctx_search(query="XSS reflected stored innerHTML dangerouslySetInnerHTML")
+ctx_search(query="SSRF server-side request forgery http fetch url parameter")
+ctx_search(query="RCE remote code execution exec eval command injection")
+ctx_search(query="IDOR insecure direct object reference authorization check")
+ctx_search(query="JWT authentication token validation secret")
+ctx_search(query="path traversal LFI directory traversal file read")
+```
+
+For Go/Python/Ruby projects, also fetch:
+```
+ctx_search(query="SSTI server-side template injection render template expression")
+```
+
+For Node.js/TypeScript:
+```
+ctx_search(query="prototype pollution __proto__ constructor merge")
+```
+
+For Java:
+```
+ctx_search(query="insecure deserialization ObjectInputStream readObject")
+ctx_search(query="JNDI injection lookup log4j EL")
+ctx_search(query="XXE XML external entity DOCTYPE SYSTEM")
+```
+
+For PHP:
+```
+ctx_search(query="PHP security include require eval unserialize")
+```
+
+Each search returns only the relevant ~400-byte snippet. Reference the returned patterns throughout Steps 2–6 — do not re-search unless you need a different class.
+
+You can also use `ctx_index_file` + `ctx_search` any time the scanner encounters a large local file (source code, lock file, log) that you need to analyse without spending context budget:
+```
+ctx_index_file(path="/path/to/large_file.go", source="large_file")
+ctx_search(query="<keyword or pattern>")
+```
+
 
 ### Step 1b — Secrets scan
 Before any taint analysis, run a fast secrets grep across the repository. This step is deterministic — no taint tracing needed, near-zero false positive rate.
@@ -129,7 +172,7 @@ Call `search_graph` to enumerate the full list of HTTP handler functions, middle
 For each source, call `trace_path(direction="outbound", depth=5)` to follow data through the call graph to potential sinks. Identify where user-controlled data reaches dangerous operations.
 
 ### Step 4 — Deep code review
-For each suspicious call chain, use `get_code_snippet` to read the exact code at the sink. Fall back to `read_file` only when the graph is insufficient.
+For each suspicious call chain, use `get_code_snippet` to read the exact code at the sink. Fall back to `read_file` only when the graph is insufficient — and for files larger than ~20 KB, prefer `ctx_index_file` + `ctx_search` to avoid dumping large source files into context.
 
 ### Step 5 — Judge re-verification
 For every preliminary finding apply the Judge protocol from SKILL.md. Classify as CONFIRMED, LIKELY, or NEEDS CONTEXT. Discard false positives.
@@ -155,7 +198,7 @@ Mark each finding: **EXPLOITED**, **BLOCKED**, or **UNREACHABLE**.
 ## Tool Priority
 
 - Graph tools first: `search_graph`, `trace_path`, `get_code_snippet`, `query_graph`
-- `read_file` only when the graph is insufficient
+- `read_file` only when the graph is insufficient; for files >20 KB use `ctx_index_file` + `ctx_search` instead
 - `bash` for docker exec / sh / wget / curl (always `--timeout 10` / `--max-time 10`)
 
 ---
