@@ -194,7 +194,7 @@ Set `container` in the summary to `${{CONTAINER_NAME}}`. **Record `${{CONTAINER_
 
 ## Step 5 — Bootstrap basic scan tools
 
-After the container is running (whether via Path A or Path B), install the minimum toolset the scanner needs for live exploitation. Use the container name you identified above. This is non-fatal — if it fails, continue.
+After the container is running (whether via Path A, Path B, or Path C), install the minimum toolset the scanner needs for live exploitation. Use the container name you identified above. This is non-fatal — if it fails, continue.
 
 ```bash
 docker exec <container-name> sh -c "
