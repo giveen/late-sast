@@ -49,12 +49,12 @@ Runs on any OpenAI-compatible endpoint — local or cloud. The ephemeral agent a
 Grab the latest single-binary release for your OS (Linux/macOS/Windows) from the [Releases](https://github.com/giveen/late-sast/releases) page.
 
 ```bash
-chmod +x late-linux-amd64  # (Adjust for your downloaded filename)
-mv late-linux-amd64 ~/.local/bin/late # Ensure ~/.local/bin is in your system's $PATH
+chmod +x late-sast-linux-amd64  # (Adjust for your downloaded filename)
+mv late-sast-linux-amd64 ~/.local/bin/late-sast  # Ensure ~/.local/bin is in your system's $PATH
 ```
 
 **2. Point to Your Model**
-Point Late to any OpenAI-compatible API endpoint (local or cloud).
+Point `late-sast` to any OpenAI-compatible API endpoint (local or cloud).
 
 ```bash
 export OPENAI_BASE_URL="http://localhost:8080"
@@ -65,7 +65,7 @@ export OPENAI_BASE_URL="http://localhost:8080"
 **3. Execute**
 
 ```bash
-late
+late-sast https://github.com/owner/repo
 ```
 
 📖 Next Steps: See the **[Quickstart Guide](docs/quickstart.md)** for advanced setup (e.g. API keys, subagent models, persistent configuration), keyboard shortcuts, and more features (including MCP integration).
