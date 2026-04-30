@@ -225,10 +225,23 @@ Return a **structured findings report** as your final message using this format:
 **Evidence:**
 ```<snippet>```
 **Description:** <what the vulnerability is>
+**Reproduce:**
+```bash
+# Run from your host — copy/paste to verify
+<exact docker exec / curl / wget command used during live verification>
+# Expected: <what a successful exploit looks like, e.g. response body / exit code>
+```
 **Fix:** <remediation>
 
 ---
 ```
+
+The `Reproduce` block must contain the **exact command** the scanner ran (or would run) during Step 7, with the real container name, port, endpoint, and payload substituted in — not pseudocode. For UNREACHABLE findings where live verification was skipped, provide the command that *would* verify it once the app is running:
+```bash
+# App was not running during scan — run manually after starting the app
+docker exec <container> sh -c "wget -qO- 'http://localhost:<port>/<endpoint>?<payload>'"
+```
+For BLOCKED findings, show the attempted command and the response that indicated it was blocked.
 
 End with a **Scan Coverage** summary:
 ```
