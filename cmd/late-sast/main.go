@@ -297,6 +297,17 @@ func main() {
 	// Compose network patching (YAML-AST-based, deterministic)
 	sess.Registry.Register(tool.PatchComposeNetworkTool{})
 
+	// Documentation lookup tools — native Go reimplementation of ProContext.
+	// Fetches the public ProContext registry (~2100 libraries) once at startup.
+	// Non-fatal: if the registry is unreachable the scan continues without docs tools.
+	if docsClient, docsErr := tool.NewProContextClient(); docsErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: ProContext registry unavailable (%v) — docs_resolve/read/search disabled\n", docsErr)
+	} else {
+		sess.Registry.Register(tool.DocsResolveTool{Client: docsClient})
+		sess.Registry.Register(tool.DocsReadTool{Client: docsClient})
+		sess.Registry.Register(tool.DocsSearchTool{Client: docsClient})
+	}
+
 	// Register MCP tools
 	for _, t := range mcpClient.GetTools() {
 		if enabled, exists := enabledTools[t.Name()]; exists && !enabled {
