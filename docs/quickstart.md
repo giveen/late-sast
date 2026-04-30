@@ -1,8 +1,8 @@
 # late-sast Quickstart Guide
 
-This guide gets you up and running with both `late-sast` (the autonomous security auditor) and `late` (the coding agent) in under 5 minutes.
+This guide gets you up and running with `late-sast` (the autonomous security auditor) in under 5 minutes.
 
-Both binaries share the same MCP server setup. `late-sast` uses `~/.config/late-sast/` for its own config if `~/.config/late-sast/config.json` already exists there, and falls back to `~/.config/late/` so an existing `late` installation works with zero changes.
+`late-sast` uses `~/.config/late-sast/` for its config, and falls back to `~/.config/late/` so an existing `late` installation works with zero changes.
 
 ---
 
@@ -45,7 +45,7 @@ The report path is printed at startup. `late-sast` will:
 3. Spin up a Docker container matching the repo's language
 4. Install dependencies and start the application
 5. Run a SAST scan across 34 vulnerability classes and grep for hardcoded secrets
-6. Run Trivy for lockfile-based CVE detection and query [cve.circl.lu](https://cve.circl.lu/) for live CVE enrichment (CVSS scores, NVD links) via `cve-search_mcp`
+6. Run Trivy for lockfile-based CVE detection and query [cve.circl.lu](https://cve.circl.lu/) for live CVE enrichment (CVSS scores, NVD links)
 7. Attempt live exploitation for every CONFIRMED or LIKELY finding
 8. Write `sast_report_<repo>.md` to the output directory (default: current directory)
 9. Remove the container, cloned source, and all temporary files
@@ -75,7 +75,7 @@ export LATE_SUBAGENT_API_KEY="your-other-key"          # optional, falls back to
 
 ## Recommended Local Models
 
-`late-sast` and `late` are designed for hybrid routing — a large reasoning model as orchestrator and a dense model as subagent. The two models below are fine-tuned for security research and long agentic coding loops.
+`late-sast` is designed for hybrid routing — a large reasoning model as orchestrator and a dense model as subagent. The two models below are fine-tuned for security research and long agentic coding loops.
 
 ### Orchestrator — Qwen3.6-35B-A3B-Aggressive
 
@@ -139,139 +139,15 @@ export LATE_SUBAGENT_MODEL="qwen3.6-27b-balanced"  # subagent
 
 ---
 
-## late — Coding Agent
-
-### Setup
-
-**1. Set your endpoint** (any OpenAI-compatible API, e.g. llama.cpp, [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart)):
-
-```bash
-# Local (e.g. llama.cpp)
-export OPENAI_BASE_URL="http://localhost:8080"
-
-# Cloud (e.g. Google)
-export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="your-model"
-```
-
-> **Windows:** Use your preferred shell's syntax for all environment variables for example `$env:OPENAI_BASE_URL="http://localhost:8080"` in PowerShell.
-
-**2. Launch Late from your project directory:**
-
-```bash
-cd your-project
-late
-```
-
-> **macOS:** If macOS blocks the binary, run this command in your terminal (adjust the path if needed): `xattr -d com.apple.quarantine ~/.local/bin/late`
-
-**3. Hybrid Routing (Optional):**
-By default, Late uses the same model for both the Lead Architect (orchestrator) and the ephemeral workers (subagents). You can mix and match models by setting separate environment variables.
-Check the [Configuration](#configuration) section to find out how to persist these settings.
-
-This is useful for using a large, smart model for planning and a fast, cheap model for execution:
-
-```bash
-export LATE_SUBAGENT_MODEL="gemma-4-e4b"
-export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080" # (Optional) falls back to OPENAI_BASE_URL
-export LATE_SUBAGENT_API_KEY="your-other-key"        # (Optional) falls back to OPENAI_API_KEY
-```
-
-## Interface
-
-Late is a terminal UI with three areas: the **chat viewport** (scrollable history), the **input box** (bottom), and the **status bar** (shows mode, status, token count, and available keybindings).
-
-### Keybindings
-
-| Key | Action |
-| --- | --- |
-| `Enter` | Send your message |
-| `↑` `↓` `PgUp` `PgDn` | Scroll the chat viewport |
-| `Tab` | Switch between agent tabs (orchestrator ↔ subagents) |
-| `y` / `n` | Approve or deny a tool call when prompted |
-| `Ctrl+G` | Stop the current agent (cancel generation) |
-| `Esc` / `Ctrl+C` | Quit Late |
-
-### Agent Tabs
-
-When Late spawns subagents, each one gets its own tab. Use `Tab` to cycle through them:
-
-- **Main** — the orchestrator (Lead Architect). It plans and delegates.
-- **Subagent tabs** — ephemeral workers executing isolated tasks. They appear when spawned and disappear when finished.
-
-The status bar at the bottom shows which agent you're currently viewing and its state (Idle, Thinking, Streaming, etc.).
-
-> **Tip:** If a subagent seems stuck, switch to it with `Tab` to see what it's doing. You can stop it with `Ctrl+G` without affecting the orchestrator.
-
-## How to Give Good Instructions
-
-Late works best with clear, specific instructions. Some examples:
-
-```
-# Good
-Add input validation to the CreateUser handler in api/users.go.
-Check for empty email and name fields, return 400 with a JSON error.
-
-# Good
-Refactor the database package to use connection pooling.
-The pool config should come from environment variables.
-
-# Bad
-Make the code better.
-```
-
-Late will read your codebase, plan the implementation, and ask you for approval. Make sure to read the generated implementation plan (`./implementation_plan.md`) and the intended changes before approving.
-
-## Tool Approval
-
-When the agent wants to run a command or edit a file, you'll see a confirmation prompt:
-
-```
-The agent wants to execute a bash command.
-   {"command":"npm run build"}
-> Press [y] Allow once | [s] Allow always (session) | [p] Allow always (project) | [g] Allow always (global) | [n] Deny
-```
-
-- **Read-only commands** (`ls`, `cat`, `grep`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
-- **Everything else** requires explicit approval.
-- Use **`[y] Allow once`** to approve only this single tool call.
-- Use **`[s] Allow always (session)`** to auto-approve matching requests for the rest of the current session.
-- Use **`[p] Allow always (project)`** to remember approval for this project.
-- Use **`[g] Allow always (global)`** to remember approval across all projects on this machine.
-- Use **`[n] Deny`** to block the request.
-
-This keeps one-off actions safe while reducing repetitive prompts when you trust a tool in a broader scope.
-
-### Permission Decay (TTL)
-
-"Always" approvals are not permanent. Late uses TTL (time-to-live) so trust decays over time:
-
-- **Session scope** (`[s]`) lasts **30 minutes**.
-- **Project scope** (`[p]`) lasts **30 days**.
-- **Global scope** (`[g]`) lasts **30 days**.
-
-When a TTL expires, the approval is automatically ignored and Late will prompt you again. This is intentional: it reduces long-lived stale permissions while keeping day-to-day workflows smooth.
-
-Notes:
-
-- Re-approving a tool/command in the same scope refreshes its TTL.
-- Session approvals are in-memory and expire quickly by design.
-- Project/global approvals are persisted with an expiry timestamp and checked at load time.
-
 ## Configuration
 
-`late` and `late-sast` each have their own config file. Set your model endpoint and credentials in the appropriate file.
+`late-sast` stores its config in a JSON file. Set your model endpoint and credentials there to avoid re-exporting environment variables each session.
 
-**`late-sast` config locations:**
+**Config locations:**
 * **Linux/macOS:** `~/.config/late-sast/config.json` (preferred) → falls back to `~/.config/late/config.json`
 * **Windows:** `%APPDATA%\late-sast\config.json` → falls back to `%APPDATA%\late\config.json`
 
-**`late` config locations:**
-* **Linux/macOS:** `~/.config/late/config.json`
-* **Windows:** `%APPDATA%\late\config.json`
-
-> `late-sast` uses its own directory when `~/.config/late-sast/config.json` exists, otherwise it falls back to `~/.config/late/` automatically — no migration needed if you already have `late` configured.
+> If you already have `late` configured, `late-sast` will pick it up automatically — no migration needed.
 
 **Setting Precedence:**
 1. Non-empty environment variables
