@@ -10,12 +10,12 @@ When the user provides a GitHub URL, execute the following steps **without askin
 
 ### Step 0 — Prepare workspace
 ```bash
-mkdir -p /tmp/sast-target && cd /tmp/sast-target
+mkdir -p ${{WORKDIR}} && cd ${{WORKDIR}}
 ```
 
 ### Step 1 — Clone the target
 ```bash
-git clone <github-url> /tmp/sast-target/repo
+git clone <github-url> ${{WORKDIR}}/repo
 ```
 
 ### Step 2 — Index the repository ⚡ DO THIS BEFORE ANYTHING ELSE
@@ -23,13 +23,13 @@ git clone <github-url> /tmp/sast-target/repo
 **This is the first analytical action. Call these two MCP tools immediately after cloning — before reading any files, before Docker, before anything.**
 
 ```
-index_repository(repo_path="/tmp/sast-target/repo", mode="full")
+index_repository(repo_path="${{WORKDIR}}/repo", mode="full")
 ```
 
 Wait for indexing to complete, then:
 
 ```
-get_architecture(project="/tmp/sast-target/repo")
+get_architecture(project="${{WORKDIR}}/repo")
 ```
 
 The architecture response tells you: primary language(s), all HTTP entry points, route handlers, authentication boundaries, database access patterns, and major clusters. **Everything that follows is driven by this graph — never grep or read files to discover structure.**
@@ -54,8 +54,8 @@ Inspect the repository architecture output to determine the primary language.
 | Go | `golang:1.22` |
 
 ```bash
-docker run -d --name sast-target \
-  -v /tmp/sast-target/repo:/app \
+docker run -d --name ${{CONTAINER_NAME}} \
+  -v ${{WORKDIR}}/repo:/app \
   -w /app \
   <base-image> tail -f /dev/null
 ```
@@ -63,7 +63,7 @@ docker run -d --name sast-target \
 ### Step 4 — Install dependencies
 Read the repo README and docs to find the correct install commands. Run them inside the container:
 ```bash
-docker exec sast-target bash -c "<install-command>"
+docker exec ${{CONTAINER_NAME}} bash -c "<install-command>"
 ```
 
 Common patterns:
@@ -77,11 +77,11 @@ Common patterns:
 ### Step 5 — Launch the application
 Start the application inside Docker as described in its README:
 ```bash
-docker exec -d sast-target bash -c "<start-command>"
+docker exec -d ${{CONTAINER_NAME}} bash -c "<start-command>"
 ```
 Wait 5 seconds then verify it is running:
 ```bash
-docker exec sast-target bash -c "ps aux | grep -v grep | grep <process-name>"
+docker exec ${{CONTAINER_NAME}} bash -c "ps aux | grep -v grep | grep <process-name>"
 ```
 Note the port the application listens on for later verification.
 
@@ -110,7 +110,7 @@ Use `query_graph` to find authentication-gated routes and verify access controls
 ### Step 7 — Live exploit verification
 For each CONFIRMED or LIKELY finding, attempt a real proof-of-concept using `curl` or a short Python/bash script:
 ```bash
-docker exec sast-target bash -c "curl -s 'http://localhost:<port>/<endpoint>?<payload>'"
+docker exec ${{CONTAINER_NAME}} bash -c "curl -s 'http://localhost:<port>/<endpoint>?<payload>'"
 ```
 Mark each finding as **EXPLOITED** (got meaningful response), **BLOCKED** (sanitisation caught it), or **UNREACHABLE** (couldn't trigger path).
 
@@ -119,7 +119,7 @@ Write the full report to `sast_report.md` in the working directory using the fin
 
 Cleanup:
 ```bash
-docker stop sast-target && docker rm sast-target
+docker stop ${{CONTAINER_NAME}} && docker rm ${{CONTAINER_NAME}}
 ```
 
 ---
