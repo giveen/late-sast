@@ -75,13 +75,16 @@ func main() {
 	}
 	systemPrompt := string(content)
 
-	// Inject CWD
+	// Container name and workdir are unique per session — no parallel run collisions.
+	// All three placeholders are resolved via the standard ${{}} mechanism.
 	cwd, _ := os.Getwd()
-	if cwd != "" {
-		systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
-			"${{CWD}}": cwd,
-		})
-	}
+	containerName := "sast-" + time.Now().Format("20060102-150405")
+	workDir := "/tmp/" + containerName
+	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
+		"${{CWD}}":            cwd,
+		"${{CONTAINER_NAME}}": containerName,
+		"${{WORKDIR}}":        workDir,
+	})
 
 	if *gemmaThinkingReq {
 		systemPrompt = "<|think|>" + systemPrompt
@@ -102,11 +105,6 @@ func main() {
 		os.Exit(1)
 	}
 	sessionID := fmt.Sprintf("sast-%s", time.Now().Format("20060102-150405"))
-
-	// Container name is unique per session so parallel runs don't collide.
-	// We inject it into the system prompt so the agent always uses the right name.
-	containerName := "sast-" + time.Now().Format("20060102-150405")
-	systemPrompt = strings.ReplaceAll(systemPrompt, "sast-target", containerName)
 
 	// Register cleanup: stop+remove the Docker container on exit (Ctrl-C, Ctrl-Q, or normal exit).
 	cleanupDone := make(chan struct{})
