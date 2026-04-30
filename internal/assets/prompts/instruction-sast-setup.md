@@ -248,11 +248,13 @@ docker exec <container-name> sh -c "
 " 2>/dev/null || true
 ```
 
-# cargo audit — Rust dependency vulnerability scanner (only when cargo is present)
+```bash
+# cargo-audit — Rust dependency vulnerability scanner (only when cargo is present)
 docker exec <container-name> sh -c "
   command -v cargo >/dev/null 2>&1 && \
     cargo install cargo-audit --quiet 2>/dev/null || true
 " || true
+```
 
 ---
 
