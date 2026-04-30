@@ -172,6 +172,10 @@ func (t WriteFileTool) CallString(args json.RawMessage) string {
 }
 
 func (t *ShellTool) getAnalyzer(cwd string) CommandAnalyzer {
+	if t.Analyzer != nil {
+		return t.Analyzer
+	}
+
 	platform := ast.CurrentPlatform()
 
 	// Phase 5: AST enforcement — AST pipeline is authoritative.
@@ -266,7 +270,12 @@ const maxReadFileChars = 32768
 const maxBashOutputChars = 32768
 
 // ShellTool executes host-native shell commands with security restrictions.
-type ShellTool struct{}
+// Analyzer overrides the default platform analyzer when non-nil (e.g. SASTBashAnalyzer).
+// SkipSafePath disables the IsSafePath guard on the cwd argument when true.
+type ShellTool struct {
+	Analyzer    CommandAnalyzer
+	SkipSafePath bool
+}
 
 func shellDisplayName() string {
 	if runtime.GOOS == "windows" {
@@ -314,7 +323,7 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	// Validate and set working directory
 	if params.Cwd != "" {
-		if !IsSafePath(params.Cwd) {
+		if !t.SkipSafePath && !IsSafePath(params.Cwd) {
 			return "", fmt.Errorf("cwd '%s' is outside the allowed directory", params.Cwd)
 		}
 	} else {

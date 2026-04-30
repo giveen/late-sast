@@ -136,6 +136,12 @@ type OrchestratorEventMsg struct {
 	Event common.Event
 }
 
+// AutoSubmitMsg triggers an automatic first submission when the TUI is ready.
+// Used by late-sast to pre-submit the security audit task without user interaction.
+type AutoSubmitMsg struct {
+	Text string
+}
+
 // FindOrchestrator recursively searches for an orchestrator by ID.
 func (m *Model) FindOrchestrator(id string) common.Orchestrator {
 	var search func(curr common.Orchestrator) common.Orchestrator
