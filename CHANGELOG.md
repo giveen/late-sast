@@ -6,6 +6,28 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.6.0] — 2026-04-30
+
+### Added
+- **Path C — Dockerfile-based container launch** — setup now detects a `Dockerfile` at the repo root when no compose file is present and builds it directly (`docker build -t <container>-image`). The source tree is still mounted at `/app` for full static analysis access. Port is auto-detected from `docker inspect` / `EXPOSE` lines. Falls through to Path B on build failure. Built image tag is recorded in `notes` and removed during orchestrator cleanup (`docker rmi`).
+- **`cargo audit --json`** — installed in setup Step 5 when `cargo` is present; run in binary scanner Step 1e for Rust targets. Advisories with CVSS ≥ 7.0 reported under Dependency Vulnerabilities.
+- **Step 1e in binary scanner** — CVE remediation enrichment via `docs_resolve` + `ctx_fetch_and_index` (matches the web scanner's Step 1e). Go and Rust library upgrade guides are pulled into the BM25 index; only relevant snippets reach the context window.
+- **Language-specific semgrep rule packs** — binary scanner Step 2a now selects `p/golang` (net/http taint, os/exec patterns) for Go targets and `p/rust` (unsafe block patterns) for Rust targets instead of the generic `p/c` pack.
+
+### Changed
+- Orchestrator cleanup (Step 3) removes the custom-built image (`docker rmi <container>-image`) when Path C was used.
+
+---
+
+## [v1.5.1] — 2026-04-30
+
+### Added
+- **JSON-output static analysis tools installed in scan containers** — setup Step 5 now installs `semgrep`, `checksec`, and `gosec` (all non-fatal, degrade gracefully).
+- **Binary scanner Step 2a — Structured tool scan** — `checksec --output=json` per compiled binary (canary/PIE/NX/RELRO flags directly inform severity escalation); `semgrep --json` structured SAST findings; `gosec -fmt json` Go-specific rules (G101 hardcoded creds, G201/202 SQLi, G304 path traversal, G401–501 weak crypto).
+- **Web scanner Step 1f** — `semgrep --config=p/default --json` structured pre-pass; `ERROR`-severity findings fed into Step 2 graph map as LIKELY candidates.
+
+---
+
 ## [v1.5.0] — 2026-04-30
 
 ### Added

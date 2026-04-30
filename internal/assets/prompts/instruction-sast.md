@@ -84,6 +84,9 @@ docker compose -p ${{COMPOSE_PROJECT}} down -v --remove-orphans 2>/dev/null
 docker ps -aq --filter name=${{CONTAINER_NAME}}- | xargs -r docker rm -f
 # Remove the shared network
 docker network rm ${{NETWORK_NAME}} 2>/dev/null
+# If a custom image was built from a Dockerfile (Path C), remove it
+# The image tag is recorded as "<container-name>-image" in the setup notes field
+docker rmi ${{CONTAINER_NAME}}-image 2>/dev/null || true
 # Remove temp files (use alpine for root-owned repo dirs)
 docker run --rm -v /tmp:/tmp alpine rm -rf ${{WORKDIR}} /tmp/sast-skill
 ```
