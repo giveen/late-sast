@@ -422,6 +422,64 @@ Report any findings from this step as privilege management or sensitive memory e
 
 **If `App started: true`** — the target is a network daemon; use both socket-based and direct binary invocation.
 
+#### Pre-check A — Platform build constraints
+
+Before attempting live exploitation of any finding, check whether the vulnerable file carries a platform build constraint:
+
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  # Check Go build constraints (file suffix and //go:build lines)
+  for f in $(grep -rl 'exec\.Command\|fmt\.Sprintf\|unsafe\.' /app --include='*.go' 2>/dev/null | head -20); do
+    constraint=\$(head -5 \"\$f\" | grep -E '//go:build|// \\+build')
+    [ -n \"\$constraint\" ] && echo \"\$f: \$constraint\"
+  done
+"
+```
+
+Files named `*_windows.go`, `*_darwin.go`, `*_linux.go` or containing `//go:build windows` etc. are only compiled on their target OS. In a Linux container:
+- `_windows.go` → **cannot be tested** — mark exploit as `PLATFORM_SPECIFIC`
+- `_linux.go` → **testable** — proceed normally
+- `_darwin.go` → **cannot be tested** — mark exploit as `PLATFORM_SPECIFIC`
+
+For `PLATFORM_SPECIFIC` findings: the verdict (CONFIRMED/LIKELY) is based purely on code analysis. Do not mark as UNREACHABLE — the code is provably vulnerable, just not triggerable from this container's OS.
+
+#### Pre-check B — Code-only verifiable findings
+
+Some vulnerability classes do not require live execution — the code review in Steps 3–4 is the proof:
+- **Integer type truncations** (e.g., `uint64 → byte`, `int → int32`) where the conversion is unguarded and the input is unbounded: mark exploit as `CODE_CONFIRMED` if Steps 3–4 confirmed the lack of bounds check.
+- **Race conditions / missing mutex unlock**: mark exploit as `CODE_CONFIRMED` if the concurrent code path is structurally evident.
+- **Signed integer overflow in arithmetic** (e.g., `Color = (1<<24) + r<<16 + ...` with signed type): mark exploit as `CODE_CONFIRMED`.
+
+#### Pre-check C — CLI flag-based attack surface discovery
+
+For CLI tools, find what flags invoke external commands or call into the vulnerable code paths:
+
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  BINARY=\$(find /app -maxdepth 3 -type f -executable ! -name '*.sh' ! -name '*.py' 2>/dev/null | head -1)
+  \$BINARY --help 2>&1 | head -40
+"
+```
+
+Cross-reference the help output with the grep hits from Step 2. Flags that accept a command string (e.g., `--preview <cmd>`, `--bind <key>:<action>`, `--execute <cmd>`, `--become <cmd>`) or a file path are the direct attack surface for command injection and path-injection findings. For each such flag that corresponds to a vulnerable function found in Step 2:
+
+```bash
+# Command injection via --preview / --execute / --bind style flags:
+docker exec ${{CONTAINER_NAME}} sh -c "
+  printf 'test_item\n' | BINARY --preview 'id > /tmp/rce_proof' --no-bold 2>/dev/null || true
+  cat /tmp/rce_proof 2>/dev/null && echo 'INJECTED'
+"
+
+# Path injection via flag that takes a file/pipe path:
+docker exec ${{CONTAINER_NAME}} sh -c "
+  MALICIOUS_PATH=\"/tmp/test\\\$(id>/tmp/rce_proof)\"
+  BINARY --some-path-flag \"\$MALICIOUS_PATH\" 2>/dev/null || true
+  cat /tmp/rce_proof 2>/dev/null && echo 'INJECTED'
+"
+```
+
+Replace `BINARY` and flag names with the actual binary and flags found above. If `/tmp/rce_proof` exists after running, the finding is **CONFIRMED**. If the binary exits cleanly with no injection, mark **BLOCKED**.
+
 #### For CLI tools and crashed daemons — direct binary invocation:
 
 First, find the compiled binary:
@@ -503,7 +561,12 @@ docker exec ${{CONTAINER_NAME}} sh -c "
 - Clean exit `0` with format string addresses printed → format string **CONFIRMED**
 - `/tmp/rce_proof` exists → command injection **CONFIRMED**
 
-Mark each finding: **EXPLOITED**, **BLOCKED**, or **UNREACHABLE**.
+Mark each finding with one of:
+- **EXPLOITED** — live PoC confirmed the vulnerability
+- **BLOCKED** — attempted exploitation but mitigation prevented it
+- **CODE_CONFIRMED** — vulnerability confirmed by code analysis alone (type truncations, race conditions, sign overflow); live exploitation not required
+- **PLATFORM_SPECIFIC** — vulnerable code is build-constrained to a different OS (e.g., `_windows.go` in a Linux container); verdict based on code analysis only
+- **UNREACHABLE** — dead code, or source cannot reach this sink under any realistic input
 
 ---
 
@@ -534,7 +597,7 @@ Return a **structured findings report** as your final message using this format:
 
 ### [SEVERITY] <Vulnerability Class> — <file>:<line>
 **Status:** CONFIRMED | LIKELY | NEEDS CONTEXT
-**Exploit:** EXPLOITED | BLOCKED | UNREACHABLE
+**Exploit:** EXPLOITED | BLOCKED | CODE_CONFIRMED | PLATFORM_SPECIFIC | UNREACHABLE
 **Vulnerable code** (`<file>`, line <N>–<M>):
 ```<language>
 <exact lines from get_code_snippet / read_file that contain the sink or vulnerable pattern>
