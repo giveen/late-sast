@@ -308,6 +308,14 @@ func main() {
 		sess.Registry.Register(tool.DocsSearchTool{Client: docsClient})
 	}
 
+	// Context-window knowledge base — index large docs/advisories once, retrieve
+	// only relevant snippets via BM25 search (raw content never enters context).
+	// Inspired by context-mode; implemented natively with no external deps.
+	ctxIdx := tool.NewContextIndex()
+	sess.Registry.Register(tool.CtxIndexTool{Index: ctxIdx})
+	sess.Registry.Register(tool.CtxSearchTool{Index: ctxIdx})
+	sess.Registry.Register(tool.CtxFetchAndIndexTool{Index: ctxIdx})
+
 	// Register MCP tools
 	for _, t := range mcpClient.GetTools() {
 		if enabled, exists := enabledTools[t.Name()]; exists && !enabled {
