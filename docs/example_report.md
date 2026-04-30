@@ -13,11 +13,19 @@ WebGoat is a **deliberately insecure** Spring Boot web application designed for 
 **CVSS:** ~9.8 (where exploitable)
 **Status:** CONFIRMED
 **Exploit:** EXPLOITED
-The `injectableQuery()` method concatenates user input directly into SQL strings:
+**Vulnerable code** (`src/main/java/org/owasp/webgoat/lessons/sqlinjection/SqlInjectionLesson6a.java`, line 38–45):
 ```java
-query = "SELECT * FROM user_data WHERE last_name = '" + accountName + "'";
+    @PostMapping("/SqlInjection/attack6a")
+    @ResponseBody
+    public AttackResult completed(@RequestParam String account) {
+        return injectableQuery(account);
+    }
+
+    protected AttackResult injectableQuery(String accountName) {
+        String query = "SELECT * FROM user_data WHERE last_name = '" + accountName + "'";
 ```
-This enables classic UNION-based and blind SQL injection attacks. Affected lessons: `/SqlInjection/attack5`, `/SqlInjection/attack6a`, `/SqlInjection/attack9`, `/SqlInjectionAdvanced/attack6a`, `/SqlInjectionAdvanced/attack6b`, `/SqlInjectionMitigations/attack12a`, and others.
+**Why it's vulnerable:** `accountName` is taken directly from the POST body and concatenated into the SQL string at line 45 with no sanitisation — an attacker controls the entire `WHERE` clause.
+**Description:** Classic string-concatenation SQL injection. Enables UNION-based data extraction, blind boolean inference, and full table dump. Affects `/SqlInjection/attack5`, `attack6a`, `attack9`, `/SqlInjectionAdvanced/attack6a`, `attack6b`, `/SqlInjectionMitigations/attack12a`.
 **Reproduce:**
 ```bash
 # Dump all rows via UNION injection — run from your host
@@ -48,15 +56,18 @@ try (PreparedStatement ps = connection.prepareStatement(
 **CVSS:** ~9.8
 **Status:** CONFIRMED
 **Exploit:** EXPLOITED
+**Vulnerable code** (`src/main/resources/org/dummy/insecure/framework/VulnerableTaskHolder.java`, line 34–41):
 ```java
-private void readObject(ObjectInputStream stream) throws Exception {
-    stream.defaultReadObject();
-    if (taskAction.startsWith("sleep") || taskAction.startsWith("ping")) {
-        Runtime.getRuntime().exec(taskAction);
+    private void readObject(ObjectInputStream stream) throws Exception {
+        stream.defaultReadObject();
+        // Dangerous: executes the taskAction field as a shell command
+        if (taskAction.startsWith("sleep") || taskAction.startsWith("ping")) {
+            Runtime.getRuntime().exec(taskAction);
+        }
     }
-}
 ```
-A `Serializable` class with a custom `readObject` method that executes shell commands (`sleep`, `ping`) during deserialization. Attackers can craft serialized payloads to achieve Remote Code Execution (RCE).
+**Why it's vulnerable:** `taskAction` is a serialized field — an attacker who controls the serialized bytes controls its value. `Runtime.getRuntime().exec(taskAction)` at line 40 is called unconditionally during deserialization, before any validation.
+**Description:** Insecure deserialization with direct OS command execution. Craft a serialized `VulnerableTaskHolder` with `taskAction = "sleep 5"` (or any command) to achieve RCE. CVSS 9.8.
 **Reproduce:**
 ```bash
 # Generate a ysoserial payload that runs `sleep 5` and send it to the deserialization endpoint.
@@ -78,11 +89,15 @@ docker exec sast-20260430-120000 sh -c "
 **CVSS:** ~9.0
 **Status:** CONFIRMED
 **Exploit:** EXPLOITED
+**Vulnerable code** (`src/main/java/org/owasp/webgoat/lessons/jwt/JWTSecretKeyEndpoint.java`, line 14–17):
 ```java
-public static final String[] SECRETS = {"victory", "business", "available", "shipping", "washington"};
-public static final String JWT_SECRET = TextCodec.BASE64.encode(SECRETS[new Random().nextInt(SECRETS.length)]);
+    public static final String[] SECRETS =
+        {"victory", "business", "available", "shipping", "washington"};
+    public static final String JWT_SECRET =
+        TextCodec.BASE64.encode(SECRETS[new Random().nextInt(SECRETS.length)]);
 ```
-The JWT signing key is chosen from a small dictionary of 5 values and base64-encoded. An attacker can brute-force all 5 possibilities (~768 bytes of entropy) and forge valid JWT tokens. The `/JWT/secret` endpoint validates against specific claims (`username`, `Role`).
+**Why it's vulnerable:** The signing key is selected from a 5-element hardcoded array using `java.util.Random` (not `SecureRandom`). With only 5 possible values the entire keyspace is exhausted in under a second.
+**Description:** JWT secret brute-force. Forge a token signed with each of the 5 known secrets; the server will accept whichever one matches the current selection. Allows privilege escalation to any `username`/`Role`.
 **Reproduce:**
 ```bash
 # Forge a JWT signed with each of the 5 known secrets and send until one is accepted.
@@ -114,11 +129,16 @@ done
 **CVSS:** 7.5
 **Status:** CONFIRMED
 **Exploit:** EXPLOITED
-The lesson renders user input in the response without encoding:
+**Vulnerable code** (`src/main/java/org/owasp/webgoat/lessons/xss/CrossSiteScriptingLesson5a.java`, line 52–56):
 ```java
-cart.append("<p>We have charged credit card:" + field1 + "<br />");
+    @PostMapping("/CrossSiteScripting/attack5a")
+    @ResponseBody
+    public AttackResult completed(@RequestParam String field1, ...) {
+        cart.append("<p>We have charged credit card:" + field1 + "<br />");
+        // field1 appended to HTML response without escaping
 ```
-Multiple XSS lessons exist (`/CrossSiteScripting/attack1`, `/CrossSiteScripting/phone-home-xss`, `/CrossSiteScriptingStored/stored-xss`) testing reflected, DOM-based, and stored XSS scenarios.
+**Why it's vulnerable:** `field1` from the POST body is concatenated directly into an HTML string at line 55 and returned in the response body — no `escapeHtml`, no encoding, no sanitisation.
+**Description:** Reflected XSS. Inject `<script>...</script>` or an `<img onerror=...>` payload via `field1`; it executes in the victim's browser. Also present in `/CrossSiteScripting/attack1`, `phone-home-xss`, `/CrossSiteScriptingStored/stored-xss`.
 **Reproduce:**
 ```bash
 # Inject a script tag via the credit card field — confirm it appears unescaped in response body
@@ -153,7 +173,19 @@ File upload handler accepts user-supplied filenames and paths without validation
 **CVSS:** 7.0
 **Status:** CONFIRMED
 **Exploit:** EXPLOITED
-The application makes HTTP requests to user-supplied URLs (e.g., `/SSRF/task2` uses `furBall()` method to fetch external resources). Internal endpoints are reachable via `http://127.0.0.1:8080` or `http://localhost:8080`.
+**Vulnerable code** (`src/main/java/org/owasp/webgoat/lessons/ssrf/SSRFTask2.java`, line 29–36):
+```java
+    @PostMapping("/SSRF/task2")
+    @ResponseBody
+    public AttackResult completed(@RequestParam String url) throws IOException {
+        return furBall(url);  // fetches attacker-supplied URL server-side
+    }
+
+    protected AttackResult furBall(String url) throws IOException {
+        if (url.matches("http://ifconfig.pro")) {
+```
+**Why it's vulnerable:** The `url` POST parameter is passed without validation to `furBall()` at line 32, which performs an outbound HTTP request. The allowlist check at line 36 is bypassable with `http://127.0.0.1:8080/WebGoat/server-info`.
+**Description:** SSRF — the server fetches any URL supplied by the attacker. Use to reach internal services, cloud metadata endpoints (`http://169.254.169.254`), or other containers on the Docker network.
 **Reproduce:**
 ```bash
 # Confirm the app fetches the URL we supply and returns the response body
