@@ -222,9 +222,12 @@ Return a **structured findings report** as your final message using this format:
 ### [SEVERITY] <Vulnerability Class> — <file>:<line>
 **Status:** CONFIRMED | LIKELY | NEEDS CONTEXT
 **Exploit:** EXPLOITED | BLOCKED | UNREACHABLE
-**Evidence:**
-```<snippet>```
-**Description:** <what the vulnerability is>
+**Vulnerable code** (`<file>`, line <N>–<M>):
+```<language>
+<exact lines from get_code_snippet / read_file that contain the sink or vulnerable pattern>
+```
+**Why it's vulnerable:** <one sentence — what specifically on these lines is the problem, e.g. "user-controlled `name` parameter flows directly into `db.query()` at line 42 without sanitisation">
+**Description:** <broader context — what class of attack this enables>
 **Reproduce:**
 ```bash
 # Run from your host — copy/paste to verify
@@ -235,6 +238,12 @@ Return a **structured findings report** as your final message using this format:
 
 ---
 ```
+
+Rules for the `Vulnerable code` block:
+- Use the **exact lines** returned by `get_code_snippet` or `read_file` — do not paraphrase or abbreviate
+- Include **3–5 lines of surrounding context** (lines before and after the sink) so the reader can see the full flow
+- The language fence must match the file extension (`go`, `java`, `js`, `ts`, `py`, `php`, `rb`, etc.)
+- Line numbers in the heading (`<file>:<line>`) must match the snippet
 
 The `Reproduce` block must contain the **exact command** the scanner ran (or would run) during Step 7, with the real container name, port, endpoint, and payload substituted in — not pseudocode. For UNREACHABLE findings where live verification was skipped, provide the command that *would* verify it once the app is running:
 ```bash
