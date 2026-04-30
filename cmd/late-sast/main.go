@@ -128,8 +128,20 @@ func main() {
 			exec.Command("docker", "stop", "-t", "5", containerName).Run() //nolint:errcheck
 			exec.Command("docker", "rm", "-f", containerName).Run()        //nolint:errcheck
 			fmt.Printf("[late-sast] Container %s removed.\n", containerName)
-			os.RemoveAll("/tmp/sast-skill") //nolint:errcheck
-			os.RemoveAll(workDir)           //nolint:errcheck
+			// Docker installs packages as root inside the container, leaving root-owned
+			// files in the bind-mounted workdir. Use a throwaway alpine container
+			// (which has root) to delete them reliably without requiring sudo.
+			removeAsRoot := func(path string) {
+				err := exec.Command("docker", "run", "--rm",
+					"-v", "/tmp:/tmp",
+					"alpine", "rm", "-rf", path).Run()
+				if err != nil {
+					// Fallback: best-effort with the current user
+					os.RemoveAll(path) //nolint:errcheck
+				}
+			}
+			removeAsRoot("/tmp/sast-skill")
+			removeAsRoot(workDir)
 			fmt.Printf("[late-sast] Workdir %s removed.\n", workDir)
 		default:
 			<-cleanupDone // already running, wait for it
