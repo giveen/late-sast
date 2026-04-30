@@ -23,8 +23,6 @@ jobs:
             arch: arm64
           - os: windows
             arch: amd64
-          - os: windows
-            arch: arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -39,12 +37,15 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          CBM_ASSET="codebase-memory-mcp-${{ matrix.os }}-${{ matrix.arch }}"
-          CBM_BIN="codebase-memory-mcp"
-          if [ "${{ matrix.os }}" = "windows" ]; then CBM_BIN="codebase-memory-mcp.exe"; fi
           mkdir -p cmd/late-sast/embedded
-          curl -fsSL "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/${CBM_ASSET}.tar.gz" \
-            | tar -xzO "${CBM_BIN}" > cmd/late-sast/embedded/codebase-memory-mcp
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            curl -fsSL "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-windows-amd64.zip" \
+              -o /tmp/cbm.zip
+            unzip -p /tmp/cbm.zip codebase-memory-mcp.exe > cmd/late-sast/embedded/codebase-memory-mcp
+          else
+            curl -fsSL "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
+              | tar -xzO "codebase-memory-mcp" > cmd/late-sast/embedded/codebase-memory-mcp
+          fi
           chmod +x cmd/late-sast/embedded/codebase-memory-mcp
 
       - name: Build Binary
