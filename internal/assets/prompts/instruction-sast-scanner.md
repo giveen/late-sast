@@ -163,6 +163,25 @@ ctx_index(source="<path>", content="<file contents>")
 ctx_search(query="<keyword>")
 ```
 
+### Step 1f — Semgrep structured SAST scan
+
+Run semgrep with the default ruleset for a structured, JSON-output SAST pass. Non-fatal — skip if unavailable.
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  command -v semgrep >/dev/null 2>&1 || { echo 'semgrep not available — skipping'; exit 0; }
+  semgrep --config=p/default --json --quiet /app 2>/dev/null \
+  | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+for f in r.get(\"results\", []):
+    sev = f[\"extra\"].get(\"severity\", \"\")
+    msg = f[\"extra\"][\"message\"][:120]
+    print(f[\"path\"] + \":\" + str(f[\"start\"][\"line\"]) + \" [\" + f[\"check_id\"] + \"] (\" + sev + \") \" + msg)
+' 2>/dev/null | head -60
+" || true
+```
+Add any `file:line` locations from semgrep `ERROR` or `WARNING` severity results to the source-map in Step 2. Treat semgrep `ERROR` findings as LIKELY candidates pending Judge re-verification in Step 5.
+
 ### Step 2 — Map sources (graph-first)
 You were given `Language`, `Entry points`, and `Key routes` from the setup subagent — **do not call `get_architecture` again**. Use those values directly.
 

@@ -108,6 +108,63 @@ For each notable dependency, call `vul_vendor_product_cve(vendor="<vendor>", pro
 
 ---
 
+### Step 2a — Structured tool scan (JSON output)
+
+Run the static analysis tools installed during setup. These produce machine-readable findings that directly calibrate severity in later steps. All are non-fatal — skip gracefully if unavailable.
+
+**checksec — binary hardening flags:**
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  command -v checksec >/dev/null 2>&1 || { echo 'checksec not available'; exit 0; }
+  find /app -maxdepth 5 -type f -executable ! -name '*.sh' ! -name '*.py' ! -name '*.rb' 2>/dev/null \
+  | head -5 | while read f; do
+      echo \"=== \$f ==\"
+      checksec --output=json --file=\"\$f\" 2>/dev/null
+  done
+" || true
+```
+Parse the JSON output. Key fields per binary:
+- `nx: no` — no executable-stack protection → shellcode injection without bypass
+- `canary: no` — no stack canary → buffer overflows are **directly exploitable** → escalate any overflow finding to **CRITICAL**
+- `pie: no` — fixed load address → ROP gadgets at predictable addresses → overflow finding is **CRITICAL**
+- `relro: no` / `partial` — GOT overwrites possible → use-after-free → arbitrary code execution
+
+Record these flags in a `## Binary Hardening` section. Reference them during severity classification in Step 7.
+
+**semgrep — structured SAST (C/C++/Go/Rust rules):**
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  command -v semgrep >/dev/null 2>&1 || { echo 'semgrep not available'; exit 0; }
+  semgrep --config=p/c --config=p/default --json --quiet /app 2>/dev/null \
+  | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+for f in r.get(\"results\", []):
+    sev = f[\"extra\"].get(\"severity\", \"\")
+    msg = f[\"extra\"][\"message\"][:120]
+    print(f[\"path\"] + \":\" + str(f[\"start\"][\"line\"]) + \" [\" + f[\"check_id\"] + \"] (\" + sev + \") \" + msg)
+' 2>/dev/null | head -60
+" || true
+```
+Each line is `path:line [rule_id] (severity) message`. Add any new `file:line` locations to the grep target list in Step 2.
+
+**gosec — Go security scanner (Go projects only):**
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  command -v gosec >/dev/null 2>&1 || { echo 'gosec not available'; exit 0; }
+  cd /app && gosec -fmt json ./... 2>/dev/null \
+  | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+for i in r.get(\"Issues\", []):
+    print(i[\"file\"] + \":\" + i[\"line\"] + \" [\" + i[\"rule_id\"] + \"] (\" + i[\"severity\"] + \") \" + i[\"details\"])
+' 2>/dev/null | head -60
+" || true
+```
+Priority gosec rules: `G101` (hardcoded creds), `G201/G202` (SQL injection), `G304` (file path traversal), `G401-G501` (weak crypto), `G601` (slice bounds).
+
+---
+
 ### Step 2 — Grep-first dangerous-function discovery
 
 **Do not start with `search_graph` for HTTP routes** — this target has no HTTP server. Instead, grep the source tree for known dangerous function sinks. This is the primary discovery mechanism.
