@@ -32,20 +32,33 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
+
+      - name: Fetch codebase-memory-mcp for embedding
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          CBM_ASSET="codebase-memory-mcp-${{ matrix.os }}-${{ matrix.arch }}"
+          CBM_BIN="codebase-memory-mcp"
+          if [ "${{ matrix.os }}" = "windows" ]; then CBM_BIN="codebase-memory-mcp.exe"; fi
+          mkdir -p cmd/late-sast/embedded
+          curl -fsSL "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/${CBM_ASSET}.tar.gz" \
+            | tar -xzO "${CBM_BIN}" > cmd/late-sast/embedded/codebase-memory-mcp
+          chmod +x cmd/late-sast/embedded/codebase-memory-mcp
 
       - name: Build Binary
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          OUTPUT_NAME=late-${{ matrix.os }}-${{ matrix.arch }}
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            OUTPUT_NAME="${OUTPUT_NAME}.exe"
-          fi
-          go build -ldflags "-X late/internal/common.Version=${{ github.ref_name }}" -o $OUTPUT_NAME ./cmd/late
+          EXT=""
+          if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
+          go build -ldflags "-X late/internal/common.Version=${{ github.ref_name }}" \
+            -tags cbm_embedded \
+            -o late-sast-${{ matrix.os }}-${{ matrix.arch }}${EXT} ./cmd/late-sast
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: late-${{ matrix.os }}-${{ matrix.arch }}*
+          files: late-sast-${{ matrix.os }}-${{ matrix.arch }}*

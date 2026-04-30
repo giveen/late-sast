@@ -56,3 +56,19 @@ func LateSkillsDir() (string, error) {
 func LateProjectSkillsDir() string {
 	return filepath.Join(".late", "skills")
 }
+
+// LateSASTConfigDir returns the config directory for late-sast.
+// It prefers ~/.config/late-sast/ when that directory already contains a
+// config.json (i.e. the user has explicitly set it up), and falls back to
+// ~/.config/late/ for seamless compatibility with an existing late installation.
+func LateSASTConfigDir() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	sastDir := filepath.Join(configDir, "late-sast")
+	if _, err := os.Stat(filepath.Join(sastDir, "config.json")); err == nil {
+		return sastDir, nil
+	}
+	return filepath.Join(configDir, "late"), nil
+}

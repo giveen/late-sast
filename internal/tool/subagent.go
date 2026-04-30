@@ -14,7 +14,7 @@ type SpawnSubagentTool struct {
 
 func (t SpawnSubagentTool) Name() string { return "spawn_subagent" }
 func (t SpawnSubagentTool) Description() string {
-	return "Spawn a specialist subagent to perform a complex task. Use this when you need to isolate a task, such as researching a topic or writing a specific module."
+	return "Spawn a specialist subagent to perform a complex task. Use this to isolate heavy work (scanning, analysis, coding) from the main context."
 }
 func (t SpawnSubagentTool) Parameters() json.RawMessage {
 	// TODO: add reviewer, committer
@@ -29,8 +29,8 @@ func (t SpawnSubagentTool) Parameters() json.RawMessage {
 			},
 			"agent_type": { 
 				"type": "string", 
-				"enum": ["coder"],
-				"description": "The type of subagent to spawn. 'coder' for writing/modifying code."
+				"enum": ["coder", "scanner", "setup"],
+				"description": "The type of subagent to spawn. 'coder' for writing/modifying code. 'setup' for cloning/building/launching a target app. 'scanner' for SAST vulnerability analysis."
 			}
 		},
 		"required": ["goal", "agent_type"]

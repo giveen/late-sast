@@ -123,6 +123,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case AutoSubmitMsg:
+		if msg.Text != "" {
+			focusedState := m.GetAgentState(m.Focused.ID())
+			if focusedState.State == StateIdle {
+				if err := m.Focused.Submit(msg.Text); err == nil {
+					m.Input.Reset()
+					m.Input.SetValue("> ")
+					focusedState.State = StateThinking
+					m.updateViewport()
+				}
+			}
+		}
+		return m, nil
 	case tea.KeyMsg:
 		focusedState := m.GetAgentState(m.Focused.ID())
 		switch msg.String() {

@@ -1,132 +1,153 @@
-# Late Quickstart Guide
+# late-sast Quickstart Guide
 
-This guide gets you productive in Late in under 5 minutes.
+This guide gets you up and running with `late-sast` (the autonomous security auditor) in under 5 minutes.
 
-## Setup
+`late-sast` uses `~/.config/late-sast/` for its config, and falls back to `~/.config/late/` so an existing `late` installation works with zero changes.
 
-**1. Set your endpoint** (any OpenAI-compatible API, e.g. llama.cpp, [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart)): 
+---
+
+## late-sast — Autonomous Security Auditor
+
+### Prerequisites
+
+- Docker installed and running (`docker info` should succeed)
+- An OpenAI-compatible model endpoint (local or cloud)
+- The [codebase-memory MCP server](https://github.com/DeusData/codebase-memory-mcp) — baked into the binary when built with `make build-sast`, otherwise downloaded on first run
+
+### 1. Set your endpoint
 
 ```bash
 # Local (e.g. llama.cpp)
 export OPENAI_BASE_URL="http://localhost:8080"
 
-# Cloud (e.g. Google)
-export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+# Cloud (e.g. OpenRouter, Anthropic, Google)
+export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="your-model"
 ```
 
-> **Windows:** Use your preferred shell's syntax for all environment variables for example `$env:OPENAI_BASE_URL="http://localhost:8080"` in PowerShell.
+> **Windows:** Use PowerShell syntax: `$env:OPENAI_BASE_URL="http://localhost:8080"`
 
-**2. Launch Late from your project directory:**
-
-```bash
-cd your-project
-late
-```
-
-> **macOS:** If macOS blocks the binary, run this command in your terminal (adjust the path if needed): `xattr -d com.apple.quarantine ~/.local/bin/late`
-
-**3. Hybrid Routing (Optional):**
-By default, Late uses the same model for both the Lead Architect (orchestrator) and the ephemeral workers (subagents). You can mix and match models by setting separate environment variables.
-Check the [Configuration](#configuration) section to find out how to persist these settings.
-
-This is useful for using a large, smart model for planning and a fast, cheap model for execution:
+### 2. Run a scan
 
 ```bash
-export LATE_SUBAGENT_MODEL="gemma-4-e4b"
-export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080" # (Optional) falls back to OPENAI_BASE_URL
-export LATE_SUBAGENT_API_KEY="your-other-key"        # (Optional) falls back to OPENAI_API_KEY
+# Scan and write report to current directory
+late-sast https://github.com/owner/repo
+
+# Specify an output directory (created if it doesn't exist)
+late-sast --output ~/sast-reports https://github.com/owner/repo
 ```
 
-## Interface
+The report path is printed at startup. `late-sast` will:
 
-Late is a terminal UI with three areas: the **chat viewport** (scrollable history), the **input box** (bottom), and the **status bar** (shows mode, status, token count, and available keybindings).
+1. Clone the repository into an isolated `/tmp` working directory
+2. Build a full codebase knowledge graph (HTTP routes, auth boundaries, data flows)
+3. Spin up a Docker container matching the repo's language
+4. Install dependencies and start the application
+5. Run a SAST scan across 34 vulnerability classes and grep for hardcoded secrets
+6. Run Trivy for lockfile-based CVE detection and query [cve.circl.lu](https://cve.circl.lu/) for live CVE enrichment (CVSS scores, NVD links)
+7. Attempt live exploitation for every CONFIRMED or LIKELY finding
+8. Write `sast_report_<repo>.md` to the output directory (default: current directory)
+9. Remove the container, cloned source, and all temporary files
 
-### Keybindings
+### 3. Read the report
 
-| Key | Action |
-| --- | --- |
-| `Enter` | Send your message |
-| `↑` `↓` `PgUp` `PgDn` | Scroll the chat viewport |
-| `Tab` | Switch between agent tabs (orchestrator ↔ subagents) |
-| `y` / `n` | Approve or deny a tool call when prompted |
-| `Ctrl+G` | Stop the current agent (cancel generation) |
-| `Esc` / `Ctrl+C` | Quit Late |
+The report is written to the output directory (default: current directory) as `sast_report_<repo>.md`. Each finding is classified:
 
-### Agent Tabs
+| Status | Meaning |
+|--------|---------|
+| **CONFIRMED** | Exploited live — PoC returned meaningful response |
+| **LIKELY** | Statically confirmed, runtime inconclusive |
+| **NEEDS CONTEXT** | Requires credentials or runtime config to verify |
+| **FALSE POSITIVE** | Blocked or path unreachable |
 
-When Late spawns subagents, each one gets its own tab. Use `Tab` to cycle through them:
+### Hybrid Model Routing (Recommended)
 
-- **Main** — the orchestrator (Lead Architect). It plans and delegates.
-- **Subagent tabs** — ephemeral workers executing isolated tasks. They appear when spawned and disappear when finished.
+Use a large model for planning and a faster model for execution:
 
-The status bar at the bottom shows which agent you're currently viewing and its state (Idle, Thinking, Streaming, etc.).
-
-> **Tip:** If a subagent seems stuck, switch to it with `Tab` to see what it's doing. You can stop it with `Ctrl+G` without affecting the orchestrator.
-
-## How to Give Good Instructions
-
-Late works best with clear, specific instructions. Some examples:
-
-```
-# Good
-Add input validation to the CreateUser handler in api/users.go.
-Check for empty email and name fields, return 400 with a JSON error.
-
-# Good
-Refactor the database package to use connection pooling.
-The pool config should come from environment variables.
-
-# Bad
-Make the code better.
+```bash
+export LATE_SUBAGENT_MODEL="your-fast-model"
+export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080"  # optional, falls back to OPENAI_BASE_URL
+export LATE_SUBAGENT_API_KEY="your-other-key"          # optional, falls back to OPENAI_API_KEY
 ```
 
-Late will read your codebase, plan the implementation, and ask you for approval. Make sure to read the generated implementation plan (`./implementation_plan.md`) and the intended changes before approving.
+---
 
-## Tool Approval
+## Recommended Local Models
 
-When the agent wants to run a command or edit a file, you'll see a confirmation prompt:
+`late-sast` is designed for hybrid routing — a large reasoning model as orchestrator and a dense model as subagent. The two models below are fine-tuned for security research and long agentic coding loops.
 
+### Orchestrator — Qwen3.6-35B-A3B-Aggressive
+
+**[HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive](https://huggingface.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive)**
+
+| Property | Value |
+|---|---|
+| Architecture | MoE 35B params, ~3B active |
+| Context | 262 144 tokens |
+| VRAM — IQ3_M | ~15 GB (runs with 4–6 GB free VRAM + CPU offload) |
+| VRAM — Q4_K_P | ~19 GB (recommended, full GPU) |
+| Best for | Security research, exploitation reasoning, ops planning |
+
+```bash
+# Required llama.cpp flags for correct thinking-mode output
+llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_P.gguf \
+  --jinja \
+  --reasoning-format deepseek \
+  --chat-template-kwargs '{"preserve_thinking": true}'
 ```
-The agent wants to execute a bash command.
-   {"command":"npm run build"}
-> Press [y] Allow once | [s] Allow always (session) | [p] Allow always (project) | [g] Allow always (global) | [n] Deny
+
+Sampling settings: `temperature: 0.6  top_p: 0.95  top_k: 20`
+
+### Subagent — Qwen3.6-27B-Balanced
+
+**[HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Balanced](https://huggingface.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Balanced)**
+
+| Property | Value |
+|---|---|
+| Architecture | Dense 27B |
+| Context | 262 144 tokens |
+| VRAM — Q4_K_P | ~18 GB (fits a 24 GB GPU) |
+| Best for | Agentic coding, long tool-call chains, stable generation |
+
+The "Balanced" variant has more predictable sampling than Aggressive across long subagent loops — fewer hallucinated tool calls at turn 200+.
+
+Sampling settings: `temperature: 0.6  presence_penalty: 1.5`
+
+### Serving Both Models with llama-swap
+
+[**mostlygeek/llama-swap**](https://github.com/mostlygeek/llama-swap) is a Go reverse proxy that manages multiple `llama-server` instances behind a single endpoint. It routes requests by model name — exactly what the `OPENAI_MODEL` / `LATE_SUBAGENT_MODEL` split requires.
+
+```yaml
+# llama-swap config snippet
+models:
+  qwen3.6-35b-a3b:
+    proxy: "http://localhost:5801"
+    cmd: "llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_P.gguf --jinja --reasoning-format deepseek --chat-template-kwargs '{\"preserve_thinking\": true}' -c 65536 -ngl 99"
+  qwen3.6-27b-balanced:
+    proxy: "http://localhost:5802"
+    cmd: "llama-server -m /models/Qwen3.6-27B-Balanced-Q4_K_P.gguf -c 65536 -ngl 99"
 ```
 
-- **Read-only commands** (`ls`, `cat`, `grep`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
-- **Everything else** requires explicit approval.
-- Use **`[y] Allow once`** to approve only this single tool call.
-- Use **`[s] Allow always (session)`** to auto-approve matching requests for the rest of the current session.
-- Use **`[p] Allow always (project)`** to remember approval for this project.
-- Use **`[g] Allow always (global)`** to remember approval across all projects on this machine.
-- Use **`[n] Deny`** to block the request.
+Point `late`/`late-sast` at the swap endpoint:
 
-This keeps one-off actions safe while reducing repetitive prompts when you trust a tool in a broader scope.
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_MODEL="qwen3.6-35b-a3b"        # orchestrator
+export LATE_SUBAGENT_MODEL="qwen3.6-27b-balanced"  # subagent
+```
 
-### Permission Decay (TTL)
-
-"Always" approvals are not permanent. Late uses TTL (time-to-live) so trust decays over time:
-
-- **Session scope** (`[s]`) lasts **30 minutes**.
-- **Project scope** (`[p]`) lasts **30 days**.
-- **Global scope** (`[g]`) lasts **30 days**.
-
-When a TTL expires, the approval is automatically ignored and Late will prompt you again. This is intentional: it reduces long-lived stale permissions while keeping day-to-day workflows smooth.
-
-Notes:
-
-- Re-approving a tool/command in the same scope refreshes its TTL.
-- Session approvals are in-memory and expire quickly by design.
-- Project/global approvals are persisted with an expiry timestamp and checked at load time.
+---
 
 ## Configuration
 
-You can set your preferred model selection (orchestrator, subagents) and their respective configuration (host, keys) permanently inside the `config.json`.
+`late-sast` stores its config in a JSON file. Set your model endpoint and credentials there to avoid re-exporting environment variables each session.
 
-**File Locations:**
-* **Linux/macOS:** `~/.config/late/config.json`
-* **Windows:** `%APPDATA%\late\config.json`
+**Config locations:**
+* **Linux/macOS:** `~/.config/late-sast/config.json` (preferred) → falls back to `~/.config/late/config.json`
+* **Windows:** `%APPDATA%\late-sast\config.json` → falls back to `%APPDATA%\late\config.json`
+
+> If you already have `late` configured, `late-sast` will pick it up automatically — no migration needed.
 
 **Setting Precedence:**
 1. Non-empty environment variables
@@ -147,7 +168,9 @@ You can set your preferred model selection (orchestrator, subagents) and their r
 
 ## MCP Integration
 
-Late supports the Model Context Protocol. Add your MCP servers to `~/.config/late/mcp_config.json` (global) or `.late/mcp_config.json` (project-local):
+`late-sast` loads MCP config from `{config-dir}/mcp_config.json` where `config-dir` is `~/.config/late-sast/` if `~/.config/late-sast/config.json` exists, otherwise `~/.config/late/`. In both cases the project-local `.late/mcp_config.json` takes highest precedence. `late` always uses `~/.config/late/mcp_config.json`.
+
+> **late-sast note:** The codebase-memory MCP server is required for SAST scans and is downloaded automatically on first run. You do not need to add it manually.
 
 ```json
 {

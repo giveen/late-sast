@@ -3,3 +3,7 @@ build/
 implementation_plan.md
 pr_review_report.md
 .late/
+/late-sast
+/late
+# embedded CBM binary downloaded at build time
+cmd/late-sast/embedded/codebase-memory-mcp
