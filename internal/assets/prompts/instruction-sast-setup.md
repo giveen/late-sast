@@ -147,6 +147,35 @@ If the app still fails to start after injecting env vars, note it in the summary
 
 ---
 
+## Step 5 — Bootstrap basic scan tools
+
+After the container is running (whether via Path A or Path B), install the minimum toolset the scanner needs for live exploitation. Use the container name you identified above. This is non-fatal — if it fails, continue.
+
+```bash
+docker exec <container-name> sh -c "
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq 2>/dev/null && apt-get install -y -qq curl wget bash procps 2>/dev/null
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl wget bash procps 2>/dev/null
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q curl wget bash procps 2>/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q curl wget bash procps 2>/dev/null
+  else
+    echo 'no known package manager — skipping tool bootstrap'
+  fi
+" || true
+```
+
+Verify the tools are present:
+```bash
+docker exec <container-name> sh -c "command -v curl && command -v wget && command -v bash && echo OK" 2>/dev/null || echo "WARNING: some basic tools missing"
+```
+
+Note the result in `notes` if tools are still missing after bootstrap.
+
+---
+
 ## Constraints
 
 - Fully autonomous — no confirmation prompts
