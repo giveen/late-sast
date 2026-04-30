@@ -133,7 +133,8 @@ func TestLoadConfig_ParsesOpenAIFields(t *testing.T) {
 		"openai_model": "gpt-test",
 		"subagent_base_url": "https://subagent.example/v1",
 		"subagent_api_key": "sub-secret",
-		"subagent_model": "qwen-sub"
+		"subagent_model": "qwen-sub",
+		"auditor_model": "vulnllm-r-7b"
 	}`
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -160,6 +161,134 @@ func TestLoadConfig_ParsesOpenAIFields(t *testing.T) {
 	}
 	if cfg.SubagentModel != "qwen-sub" {
 		t.Fatalf("SubagentModel = %q", cfg.SubagentModel)
+	}
+	if cfg.AuditorModel != "vulnllm-r-7b" {
+		t.Fatalf("AuditorModel = %q", cfg.AuditorModel)
+	}
+}
+
+func TestLoadConfig_AuditorModelAbsentIsEmpty(t *testing.T) {
+	configRoot := t.TempDir()
+	setUserConfigEnv(t, configRoot)
+	configPath := lateConfigPath(t)
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"subagent_model": "qwen-coder"}`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.AuditorModel != "" {
+		t.Fatalf("AuditorModel should be empty when not set, got %q", cfg.AuditorModel)
+	}
+}
+
+func TestResolveAuditorSettings(t *testing.T) {
+	openAI := OpenAISettings{BaseURL: "http://localhost:8080", APIKey: "local-dev", Model: "scout-35b"}
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		env     map[string]string
+		present map[string]bool
+		want    AuditorSettings
+	}{
+		{
+			name: "model from config; base+key inherit from subagent config",
+			cfg: &Config{
+				SubagentBaseURL: "http://localhost:8080",
+				SubagentAPIKey:  "local-dev",
+				AuditorModel:    "vulnllm-r-7b",
+			},
+			want: AuditorSettings{BaseURL: "http://localhost:8080", APIKey: "local-dev", Model: "vulnllm-r-7b"},
+		},
+		{
+			name: "model from env overrides config",
+			cfg: &Config{
+				SubagentBaseURL: "http://localhost:8080",
+				SubagentAPIKey:  "local-dev",
+				AuditorModel:    "vulnllm-r-7b",
+			},
+			env:     map[string]string{"LATE_AUDITOR_MODEL": "custom-audit-model"},
+			present: map[string]bool{"LATE_AUDITOR_MODEL": true},
+			want:    AuditorSettings{BaseURL: "http://localhost:8080", APIKey: "local-dev", Model: "custom-audit-model"},
+		},
+		{
+			name: "base_url from env overrides subagent config",
+			cfg:  &Config{SubagentBaseURL: "http://localhost:8080", AuditorModel: "vulnllm-r-7b"},
+			env: map[string]string{
+				"LATE_AUDITOR_BASE_URL": "http://auditor-host:9090",
+				"LATE_AUDITOR_MODEL":    "",
+			},
+			present: map[string]bool{"LATE_AUDITOR_BASE_URL": true, "LATE_AUDITOR_MODEL": true},
+			want:    AuditorSettings{BaseURL: "http://auditor-host:9090", APIKey: "local-dev", Model: "vulnllm-r-7b"},
+		},
+		{
+			name: "api_key from env overrides subagent config",
+			cfg:  &Config{SubagentAPIKey: "old-key", AuditorModel: "vulnllm-r-7b"},
+			env: map[string]string{
+				"LATE_AUDITOR_API_KEY": "new-key",
+			},
+			present: map[string]bool{"LATE_AUDITOR_API_KEY": true},
+			want:    AuditorSettings{BaseURL: "http://localhost:8080", APIKey: "new-key", Model: "vulnllm-r-7b"},
+		},
+		{
+			name: "empty env falls back to config",
+			cfg: &Config{
+				SubagentBaseURL: "http://localhost:8080",
+				SubagentAPIKey:  "local-dev",
+				AuditorModel:    "vulnllm-r-7b",
+			},
+			env: map[string]string{
+				"LATE_AUDITOR_BASE_URL": "",
+				"LATE_AUDITOR_API_KEY":  "",
+				"LATE_AUDITOR_MODEL":    "",
+			},
+			present: map[string]bool{
+				"LATE_AUDITOR_BASE_URL": true,
+				"LATE_AUDITOR_API_KEY":  true,
+				"LATE_AUDITOR_MODEL":    true,
+			},
+			want: AuditorSettings{BaseURL: "http://localhost:8080", APIKey: "local-dev", Model: "vulnllm-r-7b"},
+		},
+		{
+			name: "no auditor model falls back to empty; base+key from openai",
+			cfg:  &Config{},
+			want: AuditorSettings{BaseURL: "http://localhost:8080", APIKey: "local-dev", Model: ""},
+		},
+		{
+			name: "nil config falls back to openai base+key",
+			cfg:  nil,
+			want: AuditorSettings{BaseURL: "http://localhost:8080", APIKey: "local-dev", Model: ""},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveAuditorSettingsWithEnv(tt.cfg, openAI, func(key string) (string, bool) {
+				value, ok := tt.env[key]
+				if tt.present != nil {
+					ok = tt.present[key]
+				}
+				return value, ok
+			})
+
+			if got.BaseURL != tt.want.BaseURL {
+				t.Fatalf("BaseURL = %q, want %q", got.BaseURL, tt.want.BaseURL)
+			}
+			if got.APIKey != tt.want.APIKey {
+				t.Fatalf("APIKey = %q, want %q", got.APIKey, tt.want.APIKey)
+			}
+			if got.Model != tt.want.Model {
+				t.Fatalf("Model = %q, want %q", got.Model, tt.want.Model)
+			}
+		})
 	}
 }
 

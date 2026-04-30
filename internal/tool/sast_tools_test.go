@@ -165,3 +165,58 @@ func TestSpawnSubagentTool_CallString_MissingGoal(t *testing.T) {
 		t.Errorf("CallString should fall back to 'unknown goal', got: %q", s)
 	}
 }
+
+// ── SpawnSubagentTool agent_type enum ─────────────────────────────────────────
+
+func TestSpawnSubagentTool_AgentTypeEnumContainsAllRoles(t *testing.T) {
+	tool := SpawnSubagentTool{}
+
+	var schema map[string]any
+	if err := json.Unmarshal(tool.Parameters(), &schema); err != nil {
+		t.Fatalf("Parameters() is not valid JSON: %v", err)
+	}
+
+	props, _ := schema["properties"].(map[string]any)
+	agentTypeProp, ok := props["agent_type"].(map[string]any)
+	if !ok {
+		t.Fatal("agent_type property not found")
+	}
+
+	raw, ok := agentTypeProp["enum"].([]any)
+	if !ok {
+		t.Fatal("agent_type enum not found or not an array")
+	}
+
+	enumVals := make(map[string]bool, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			enumVals[s] = true
+		}
+	}
+
+	for _, want := range []string{"coder", "scanner", "binary-scanner", "auditor", "setup"} {
+		if !enumVals[want] {
+			t.Errorf("agent_type enum missing %q; got %v", want, raw)
+		}
+	}
+}
+
+func TestSpawnSubagentTool_Execute_AuditorAgentType(t *testing.T) {
+	called := false
+	tool := SpawnSubagentTool{
+		Runner: func(_ context.Context, goal string, _ []string, agentType string) (string, error) {
+			called = true
+			if agentType != "auditor" {
+				t.Errorf("expected agentType=auditor, got %q", agentType)
+			}
+			return "AUDIT_COMPLETE\n{}", nil
+		},
+	}
+	args := json.RawMessage(`{"goal":"audit hotspots","agent_type":"auditor"}`)
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("runner was never called")
+	}
+}

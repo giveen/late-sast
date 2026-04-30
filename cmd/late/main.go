@@ -206,6 +206,19 @@ func main() {
 		subagentClient.DiscoverBackend(context.Background())
 	}
 
+	// Initialize Auditor Client (VulnLLM-R-7B or similar security-specialist model)
+	resolvedAuditorConfig := appconfig.ResolveAuditorSettings(appConfig, resolvedOpenAIConfig)
+
+	auditorClient := subagentClient // fallback: use subagent model if no auditor model configured
+	if resolvedAuditorConfig.Model != "" {
+		auditorClient = client.NewClient(client.Config{
+			BaseURL: resolvedAuditorConfig.BaseURL,
+			APIKey:  resolvedAuditorConfig.APIKey,
+			Model:   resolvedAuditorConfig.Model,
+		})
+		auditorClient.DiscoverBackend(context.Background())
+	}
+
 	// Flag overrides
 	if !*enableBashReq {
 		enabledTools["bash"] = false
@@ -260,7 +273,19 @@ func main() {
 
 	if *enableSubagentsReq {
 		runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-			child, err := agent.NewSubagentOrchestrator(subagentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
+			// Route to the appropriate model client based on agent role:
+			//   auditor  → security-specialist model (e.g. VulnLLM-R-7B)
+			//   coder    → code-specialist model (e.g. Qwen3-Coder-27B)
+			//   others   → subagent model (same as coder by default)
+			var agentClient *client.Client
+			switch agentType {
+			case "auditor":
+				agentClient = auditorClient
+			default:
+				agentClient = subagentClient
+			}
+
+			child, err := agent.NewSubagentOrchestrator(agentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
 			if err != nil {
 				return "", err
 			}

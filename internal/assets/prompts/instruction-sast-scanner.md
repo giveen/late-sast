@@ -271,6 +271,32 @@ docker exec <container> sh -c "wget -qO- 'http://localhost:<port>/<endpoint>?<pa
 ```
 For BLOCKED findings, show the attempted command and the response that indicated it was blocked.
 
+Before the Scan Coverage summary, emit a `HOTSPOT_LIST` block for the Auditor. This block **must** appear verbatim in your final message — the orchestrator will copy it directly into the auditor subagent call without modification:
+
+```
+HOTSPOT_LIST
+{
+  "repo_path": "<repo_path>",
+  "container": "<container_name>",
+  "hotspots": [
+    {
+      "id": "H1",
+      "file": "<file path>",
+      "line": <line number>,
+      "function": "<function name>",
+      "category": "<user_input|db_query|memory_alloc|auth|file_io|exec|crypto|deserialization>",
+      "snippet": "<3-5 exact lines from the finding's Vulnerable code block>"
+    }
+  ]
+}
+```
+
+Rules for the HOTSPOT_LIST:
+- Include **every** CONFIRMED and LIKELY finding, plus any NEEDS CONTEXT findings
+- Exclude FALSE POSITIVE findings and dependency-only CVE entries (trivy/lockfile results belong only in the report)
+- `snippet` must be the exact lines from the `Vulnerable code` block — not paraphrased
+- Use sequential IDs: H1, H2, H3 …
+
 End with a **Scan Coverage** summary:
 ```
 Languages: <detected>
