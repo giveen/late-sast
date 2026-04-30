@@ -1,6 +1,6 @@
-# late-sast: Autonomous Security Auditor — forked from Late
+# late-sast: Autonomous Security Auditor
 
-> This is **[giveen/late-sast](https://github.com/giveen/late-sast)**, a fork of [mlhher/late](https://github.com/mlhher/late) extended with an autonomous SAST pipeline. The original `late` agent, its architecture, and the core orchestration engine are the work of **mlhher**. The `late-sast` binary, Docker sandboxing workflow, live exploitation pipeline, and vulnerability reporting are original additions in this fork.
+> **late-sast** is maintained at [giveen/late-sast](https://github.com/giveen/late-sast). It is built on the [mlhher/late](https://github.com/mlhher/late) agent engine — the original orchestration engine, subagent dispatch, and tool infrastructure are the work of **mlhher**. The `late-sast` binary, Docker sandboxing, live exploitation pipeline, CVE enrichment, and vulnerability reporting are original additions in this fork.
 
 **late-sast** is an autonomous security auditor built on top of the [Late](https://github.com/mlhher/late) agent engine. It takes a GitHub URL, spins up a throwaway Docker sandbox, installs and runs the target application, performs a full static and dynamic security scan, then attacks its own findings live — and cleans up after itself completely.
 
@@ -72,16 +72,16 @@ late-sast https://github.com/owner/repo
 
 ## 🔨 Build from Source
 
-If you prefer to compile Late yourself (requires Go):
+Requires Go and Docker:
 
 ```bash
 git clone https://github.com/giveen/late-sast.git
 cd late-sast
-make build
-make install
+make build-sast   # downloads + embeds codebase-memory-mcp, produces ./bin/late-sast
+make install-sast # installs to ~/.local/bin/late-sast
 ```
 
-> The original `late` agent (without SAST) is maintained upstream at [mlhher/late](https://github.com/mlhher/late).
+> `make build-sast` automatically fetches the `codebase-memory-mcp` binary for your platform and bakes it into the `late-sast` binary — no separate install step needed.
 
 ## 🔍 late-sast: Autonomous Security Auditor
 
@@ -145,12 +145,31 @@ Every run is fully isolated and self-cleaning:
 
 ## 🛠️ Advanced Features
 
-* **Native MCP Integration:** Dynamically map external MCP servers directly into Late via standard I/O.
-* **Stateful Resilience:** The Orchestrator maintains continuous, newest-first session history on disk (`~/.local/share/late`), ensuring perfect context retention across runs.
-* **Git Worktree Support:** Run independent, parallel Late instances across multiple Git worktrees for isolated feature development without context switching.
-* **Agent Skills:** Full support for [Agent Skills](https://agentskills.io/) for reusable sets of instructions and scripts.
+### Hybrid Model Routing
+Use a large reasoning model as the orchestrator and a faster dense model for the subagent workers — reducing cost without sacrificing depth:
+```bash
+export LATE_SUBAGENT_MODEL="your-fast-model"
+export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080"  # optional
+export LATE_SUBAGENT_API_KEY="your-other-key"          # optional
+```
 
-For more information, check out the [quickstart guide](docs/quickstart.md).
+### Multi-Container Support
+`late-sast` detects and starts compose-based applications (postgres, redis, etc.) automatically. It patches the compose file to join the scan network, then spins up any required sidecars (MySQL, MongoDB, RabbitMQ, Elasticsearch) if the app needs them.
+
+### Live CVE Enrichment
+Dependency files (`package.json`, `requirements.txt`, `go.mod`, `pom.xml`, `Gemfile`) are scanned by Trivy for lockfile CVEs, then enriched via the built-in CVE tools (querying [cve.circl.lu](https://cve.circl.lu/)) for live CVSS scores and NVD links. No external tooling required.
+
+### Secrets Detection
+A dedicated pre-scan step greps the entire codebase for hardcoded credentials, API keys, and private key material before the SAST scan begins. Findings are classified CRITICAL and appear at the top of the report.
+
+### Scan Timeout
+Prevent runaway scans with `--timeout`:
+```bash
+late-sast --timeout 45m https://github.com/owner/repo
+```
+
+### MCP Server Integration
+Any MCP server configured in `~/.config/late-sast/mcp_config.json` is automatically connected and its tools are available to the agent during the scan.
 
 ## 📜 Upstream Credit
 
@@ -168,9 +187,9 @@ CVE data is sourced from the [cve.circl.lu](https://cve.circl.lu/) public API (o
 
 ## 📜 License: BSL 1.1
 
-We built this to generate real engineering leverage, not to supply free backend infrastructure for AI startups.
+`late-sast` is released under the Business Source License 1.1. You are free to use it for any personal or commercial project of your own. The restrictions only apply to packaging `late-sast` itself as a product or service.
 
-* **Free for Builders:** You may use Late freely to write code for any project, including your own commercial startups. We do not restrict your output.
-* **Commercial Restrictions:** You may not monetize Late itself (e.g., wrapping our orchestration engine into a paid AI service), nor deploy Late as internal infrastructure within enterprise environments without a commercial agreement.
+* **Free for Security Engineers:** Use `late-sast` freely to audit any codebase, including client engagements and internal security programmes.
+* **Commercial Restrictions:** You may not resell, wrap, or host `late-sast` as a paid scanning service or embed it as infrastructure in a commercial SaaS product without a separate agreement.
 
-*Late safely converts to an open-source GPLv2 license on February 21, 2030.*
+*Converts to open-source GPLv2 on February 21, 2030.*
