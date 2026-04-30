@@ -174,6 +174,34 @@ docker exec <container-name> sh -c "command -v curl && command -v wget && comman
 
 Note the result in `notes` if tools are still missing after bootstrap.
 
+Install static analysis tools with JSON output (non-fatal — scan continues if any fail):
+```bash
+# semgrep — multi-language SAST, JSON-structured findings
+docker exec <container-name> sh -c "
+  pip install --quiet semgrep 2>/dev/null || python3 -m pip install --quiet semgrep 2>/dev/null || true
+" || true
+
+# checksec — binary hardening flags (NX / stack canary / PIE / RELRO)
+docker exec <container-name> sh -c "
+  pip install --quiet checksec 2>/dev/null || python3 -m pip install --quiet checksec 2>/dev/null || true
+" || true
+
+# gosec — Go-specific security scanner (only installed when Go is present)
+docker exec <container-name> sh -c "
+  command -v go >/dev/null 2>&1 && \
+    go install github.com/securego/gosec/v2/cmd/gosec@latest 2>/dev/null || true
+" || true
+```
+
+Log availability (do not fail on missing tools):
+```bash
+docker exec <container-name> sh -c "
+  echo -n 'semgrep: '; command -v semgrep >/dev/null 2>&1 && semgrep --version 2>/dev/null || echo 'not available'
+  echo -n 'checksec: '; command -v checksec >/dev/null 2>&1 && echo 'available' || echo 'not available'
+  echo -n 'gosec: '; command -v gosec >/dev/null 2>&1 && echo 'available' || echo 'not available'
+" 2>/dev/null || true
+```
+
 ---
 
 ## Constraints
