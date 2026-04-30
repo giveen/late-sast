@@ -1,10 +1,144 @@
-# Late Quickstart Guide
+# late-sast Quickstart Guide
 
-This guide gets you productive in Late in under 5 minutes.
+This guide gets you up and running with both `late-sast` (the autonomous security auditor) and `late` (the coding agent) in under 5 minutes.
 
-## Setup
+Both binaries share the same MCP server setup. `late-sast` uses `~/.config/late-sast/` for its own config if `~/.config/late-sast/config.json` already exists there, and falls back to `~/.config/late/` so an existing `late` installation works with zero changes.
 
-**1. Set your endpoint** (any OpenAI-compatible API, e.g. llama.cpp, [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart)): 
+---
+
+## late-sast — Autonomous Security Auditor
+
+### Prerequisites
+
+- Docker installed and running (`docker info` should succeed)
+- An OpenAI-compatible model endpoint (local or cloud)
+- The [codebase-memory MCP server](https://github.com/DeusData/codebase-memory-mcp) — downloaded automatically on first run
+
+### 1. Set your endpoint
+
+```bash
+# Local (e.g. llama.cpp)
+export OPENAI_BASE_URL="http://localhost:8080"
+
+# Cloud (e.g. OpenRouter, Anthropic, Google)
+export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_MODEL="your-model"
+```
+
+> **Windows:** Use PowerShell syntax: `$env:OPENAI_BASE_URL="http://localhost:8080"`
+
+### 2. Run a scan
+
+```bash
+late-sast https://github.com/owner/repo
+```
+
+That's it. `late-sast` will:
+
+1. Clone the repository into an isolated `/tmp` working directory
+2. Build a full codebase knowledge graph (HTTP routes, auth boundaries, data flows)
+3. Spin up a Docker container matching the repo's language
+4. Install dependencies and start the application
+5. Run a SAST scan across 34 vulnerability classes
+6. Attempt live exploitation for every CONFIRMED or LIKELY finding
+7. Write `sast_report_<repo>.md` to your current directory
+8. Remove the container, cloned source, and all temporary files
+
+### 3. Read the report
+
+The report is written to your current working directory as `sast_report_<repo>.md`. Each finding is classified:
+
+| Status | Meaning |
+|--------|---------|
+| **CONFIRMED** | Exploited live — PoC returned meaningful response |
+| **LIKELY** | Statically confirmed, runtime inconclusive |
+| **NEEDS CONTEXT** | Requires credentials or runtime config to verify |
+| **FALSE POSITIVE** | Blocked or path unreachable |
+
+### Hybrid Model Routing (Recommended)
+
+Use a large model for planning and a faster model for execution:
+
+```bash
+export LATE_SUBAGENT_MODEL="your-fast-model"
+export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080"  # optional, falls back to OPENAI_BASE_URL
+export LATE_SUBAGENT_API_KEY="your-other-key"          # optional, falls back to OPENAI_API_KEY
+```
+
+---
+
+## Recommended Local Models
+
+`late-sast` and `late` are designed for hybrid routing — a large reasoning model as orchestrator and a dense model as subagent. The two models below are fine-tuned for security research and long agentic coding loops.
+
+### Orchestrator — Qwen3.6-35B-A3B-Aggressive
+
+**[HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive](https://huggingface.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive)**
+
+| Property | Value |
+|---|---|
+| Architecture | MoE 35B params, ~3B active |
+| Context | 262 144 tokens |
+| VRAM — IQ3_M | ~15 GB (runs with 4–6 GB free VRAM + CPU offload) |
+| VRAM — Q4_K_P | ~19 GB (recommended, full GPU) |
+| Best for | Security research, exploitation reasoning, ops planning |
+
+```bash
+# Required llama.cpp flags for correct thinking-mode output
+llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_P.gguf \
+  --jinja \
+  --reasoning-format deepseek \
+  --chat-template-kwargs '{"preserve_thinking": true}'
+```
+
+Sampling settings: `temperature: 0.6  top_p: 0.95  top_k: 20`
+
+### Subagent — Qwen3.6-27B-Balanced
+
+**[HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Balanced](https://huggingface.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Balanced)**
+
+| Property | Value |
+|---|---|
+| Architecture | Dense 27B |
+| Context | 262 144 tokens |
+| VRAM — Q4_K_P | ~18 GB (fits a 24 GB GPU) |
+| Best for | Agentic coding, long tool-call chains, stable generation |
+
+The "Balanced" variant has more predictable sampling than Aggressive across long subagent loops — fewer hallucinated tool calls at turn 200+.
+
+Sampling settings: `temperature: 0.6  presence_penalty: 1.5`
+
+### Serving Both Models with llama-swap
+
+[**mostlygeek/llama-swap**](https://github.com/mostlygeek/llama-swap) is a Go reverse proxy that manages multiple `llama-server` instances behind a single endpoint. It routes requests by model name — exactly what the `OPENAI_MODEL` / `LATE_SUBAGENT_MODEL` split requires.
+
+```yaml
+# llama-swap config snippet
+models:
+  qwen3.6-35b-a3b:
+    proxy: "http://localhost:5801"
+    cmd: "llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_P.gguf --jinja --reasoning-format deepseek --chat-template-kwargs '{\"preserve_thinking\": true}' -c 65536 -ngl 99"
+  qwen3.6-27b-balanced:
+    proxy: "http://localhost:5802"
+    cmd: "llama-server -m /models/Qwen3.6-27B-Balanced-Q4_K_P.gguf -c 65536 -ngl 99"
+```
+
+Point `late`/`late-sast` at the swap endpoint:
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_MODEL="qwen3.6-35b-a3b"        # orchestrator
+export LATE_SUBAGENT_MODEL="qwen3.6-27b-balanced"  # subagent
+```
+
+---
+
+## late — Coding Agent
+
+### Setup
+
+**1. Set your endpoint** (any OpenAI-compatible API, e.g. llama.cpp, [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart)):
 
 ```bash
 # Local (e.g. llama.cpp)
@@ -122,11 +256,17 @@ Notes:
 
 ## Configuration
 
-You can set your preferred model selection (orchestrator, subagents) and their respective configuration (host, keys) permanently inside the `config.json`.
+`late` and `late-sast` each have their own config file. Set your model endpoint and credentials in the appropriate file.
 
-**File Locations:**
+**`late-sast` config locations:**
+* **Linux/macOS:** `~/.config/late-sast/config.json` (preferred) → falls back to `~/.config/late/config.json`
+* **Windows:** `%APPDATA%\late-sast\config.json` → falls back to `%APPDATA%\late\config.json`
+
+**`late` config locations:**
 * **Linux/macOS:** `~/.config/late/config.json`
 * **Windows:** `%APPDATA%\late\config.json`
+
+> `late-sast` uses its own directory when `~/.config/late-sast/config.json` exists, otherwise it falls back to `~/.config/late/` automatically — no migration needed if you already have `late` configured.
 
 **Setting Precedence:**
 1. Non-empty environment variables
@@ -147,7 +287,9 @@ You can set your preferred model selection (orchestrator, subagents) and their r
 
 ## MCP Integration
 
-Late supports the Model Context Protocol. Add your MCP servers to `~/.config/late/mcp_config.json` (global) or `.late/mcp_config.json` (project-local):
+`late-sast` loads MCP config from `{config-dir}/mcp_config.json` where `config-dir` is `~/.config/late-sast/` if `~/.config/late-sast/config.json` exists, otherwise `~/.config/late/`. In both cases the project-local `.late/mcp_config.json` takes highest precedence. `late` always uses `~/.config/late/mcp_config.json`.
+
+> **late-sast note:** The codebase-memory MCP server is required for SAST scans and is downloaded automatically on first run. You do not need to add it manually.
 
 ```json
 {

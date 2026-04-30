@@ -25,25 +25,37 @@ type MCPServer struct {
 
 // LoadMCPConfig loads the MCP configuration from the first available config file
 func LoadMCPConfig() (*MCPConfig, error) {
-	configPath, err := findConfigPath()
+	return LoadMCPConfigFromDir("")
+}
+
+// LoadMCPConfigFromDir loads MCP config preferring userConfigDir, then project-local.
+// Pass an empty string to use the default late config directory.
+func LoadMCPConfigFromDir(userConfigDir string) (*MCPConfig, error) {
+	configPath, err := findConfigPathWithDir(userConfigDir)
 	if err != nil {
 		return nil, err
 	}
 
 	if configPath == "" {
-		lateConfigDir, err := common.LateConfigDir()
-		if err != nil {
-			return &MCPConfig{McpServers: make(map[string]MCPServer)}, nil
+		// Resolve the target dir for pre-population
+		var targetDir string
+		if userConfigDir != "" {
+			targetDir = userConfigDir
+		} else {
+			d, err := common.LateConfigDir()
+			if err != nil {
+				return &MCPConfig{McpServers: make(map[string]MCPServer)}, nil
+			}
+			targetDir = d
 		}
 
-		defaultUserPath := filepath.Join(lateConfigDir, "mcp_config.json")
+		defaultUserPath := filepath.Join(targetDir, "mcp_config.json")
 
 		// Pre-populate with a default config
 		emptyConfig := MCPConfig{McpServers: make(map[string]MCPServer)}
 		defaultData, _ := json.MarshalIndent(emptyConfig, "", "  ")
 
-		if err := os.MkdirAll(lateConfigDir, 0700); err == nil {
-			// Ignore write error, just fallback to empty config
+		if err := os.MkdirAll(targetDir, 0700); err == nil {
 			_ = os.WriteFile(defaultUserPath, defaultData, 0600)
 		}
 
@@ -55,16 +67,27 @@ func LoadMCPConfig() (*MCPConfig, error) {
 
 // findConfigPath searches for config files in order of precedence
 func findConfigPath() (string, error) {
+	return findConfigPathWithDir("")
+}
+
+// findConfigPathWithDir searches config files, using userConfigDir for the user-level path.
+func findConfigPathWithDir(userConfigDir string) (string, error) {
 	// 1. Project-level: .late/mcp_config.json in current directory
 	projectPath := common.LateProjectMCPConfigPath()
 	if _, err := os.Stat(projectPath); err == nil {
 		return projectPath, nil
 	}
 
-	// 2. User-level config path
-	userPath, err := common.LateUserMCPConfigPath()
-	if err != nil {
-		return "", fmt.Errorf("failed to get config directory: %w", err)
+	// 2. User-level config path — prefer provided dir, else default late dir
+	var userPath string
+	if userConfigDir != "" {
+		userPath = filepath.Join(userConfigDir, "mcp_config.json")
+	} else {
+		var err error
+		userPath, err = common.LateUserMCPConfigPath()
+		if err != nil {
+			return "", fmt.Errorf("failed to get config directory: %w", err)
+		}
 	}
 
 	if _, err := os.Stat(userPath); err == nil {

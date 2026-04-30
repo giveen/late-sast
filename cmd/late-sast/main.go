@@ -80,10 +80,20 @@ func main() {
 	cwd, _ := os.Getwd()
 	containerName := "sast-" + time.Now().Format("20060102-150405")
 	workDir := "/tmp/" + containerName
+	// Derive repo name from the last path segment of the target URL (e.g. "llama-swap").
+	repoName := "repo"
+	if target != "" {
+		if parts := strings.Split(strings.TrimRight(target, "/"), "/"); len(parts) > 0 {
+			if last := parts[len(parts)-1]; last != "" {
+				repoName = last
+			}
+		}
+	}
 	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
 		"${{CWD}}":            cwd,
 		"${{CONTAINER_NAME}}": containerName,
 		"${{WORKDIR}}":        workDir,
+		"${{REPO_NAME}}":      repoName,
 	})
 
 	if *gemmaThinkingReq {
@@ -118,6 +128,9 @@ func main() {
 			exec.Command("docker", "stop", "-t", "5", containerName).Run() //nolint:errcheck
 			exec.Command("docker", "rm", "-f", containerName).Run()        //nolint:errcheck
 			fmt.Printf("[late-sast] Container %s removed.\n", containerName)
+			os.RemoveAll("/tmp/sast-skill") //nolint:errcheck
+			os.RemoveAll(workDir)           //nolint:errcheck
+			fmt.Printf("[late-sast] Workdir %s removed.\n", workDir)
 		default:
 			<-cleanupDone // already running, wait for it
 		}
@@ -133,8 +146,9 @@ func main() {
 	}()
 	historyPath := filepath.Join(sessionsDir, sessionID+".json")
 
-	// Load app config
-	appConfig, _ := appconfig.LoadConfig()
+	// Load app config — prefer ~/.config/late-sast/, fall back to ~/.config/late/
+	sastCfgDir, _ := pathutil.LateSASTConfigDir()
+	appConfig, _ := appconfig.LoadConfigFromDir(sastCfgDir)
 	enabledTools := make(map[string]bool)
 	if appConfig != nil {
 		for k, v := range appConfig.EnabledTools {
@@ -182,7 +196,7 @@ func main() {
 	mcpClient := mcp.NewClient()
 	defer mcpClient.Close()
 
-	mcpConfig, err := mcp.LoadMCPConfig()
+	mcpConfig, err := mcp.LoadMCPConfigFromDir(sastCfgDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load MCP config: %v\n", err)
 	}
@@ -196,10 +210,12 @@ func main() {
 	// Session + tool registration
 	sess := session.New(c, historyPath, []client.ChatMessage{}, systemPrompt, true)
 
-	// Register SAST tool set — permissive ShellTool, no path restrictions
+	// Register SAST tool set — permissive ShellTool, no path restrictions.
+	// 2-minute timeout prevents curl/docker exec from blocking the agent indefinitely.
 	sess.Registry.Register(&tool.ShellTool{
 		Analyzer:     &tool.SASTBashAnalyzer{},
 		SkipSafePath: true,
+		Timeout:      2 * time.Minute,
 	})
 	sess.Registry.Register(tool.NewReadFileTool())
 	sess.Registry.Register(tool.WriteFileTool{})

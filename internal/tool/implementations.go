@@ -240,9 +240,11 @@ const maxBashOutputChars = 32768
 // ShellTool executes host-native shell commands with security restrictions.
 // Analyzer overrides the default platform analyzer when non-nil (e.g. SASTBashAnalyzer).
 // SkipSafePath disables the IsSafePath guard on the cwd argument when true.
+// Timeout, when non-zero, caps how long a single command may run before it is killed.
 type ShellTool struct {
-	Analyzer    CommandAnalyzer
+	Analyzer     CommandAnalyzer
 	SkipSafePath bool
+	Timeout      time.Duration
 }
 
 func shellDisplayName() string {
@@ -304,7 +306,15 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	// Execute command using a platform-specific shell wrapper.
-	cmd := newShellCommand(ctx, params.Command)
+	// If a timeout is set, derive a child context so long-running commands
+	// (e.g. curl without --max-time) don't block the agent indefinitely.
+	execCtx := ctx
+	if t.Timeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, t.Timeout)
+		defer cancel()
+	}
+	cmd := newShellCommand(execCtx, params.Command)
 	cmd.Dir = params.Cwd
 
 	output, err := cmd.CombinedOutput()
