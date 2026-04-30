@@ -6,6 +6,17 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.6.1] — 2026-04-30
+
+### Fixed
+- **Binary scanner Step 7 — `UNREACHABLE` false negatives** — three pre-checks added before live exploit attempts:
+  - **Pre-check A (platform constraints)** — detects `_windows.go` / `_darwin.go` build-constrained files and marks them `PLATFORM_SPECIFIC` instead of `UNREACHABLE`. Verdict is based on code analysis; the code is still classified CONFIRMED/LIKELY.
+  - **Pre-check B (code-only verifiable findings)** — integer type truncations, unguarded sign conversions, and structural race conditions are now classified `CODE_CONFIRMED` without requiring live execution. Eliminates false `UNREACHABLE` on CWE-190 and CWE-764 findings.
+  - **Pre-check C (CLI flag attack surface)** — for CLI tools, reads `--help`, cross-references flags that accept command strings (`--preview`, `--execute`, `--bind`, `--become`, etc.) against Step 2 grep hits, and probes each flag with a command-injection payload before falling back to generic stdin/argv tests. Catches flag-driven shell injection that generic overflow tests miss.
+- Exploit status vocabulary extended: `CODE_CONFIRMED`, `PLATFORM_SPECIFIC` added alongside existing `EXPLOITED`, `BLOCKED`, `UNREACHABLE`. `UNREACHABLE` is now reserved exclusively for dead code or truly unreachable taint paths.
+
+---
+
 ## [v1.6.0] — 2026-04-30
 
 ### Added
