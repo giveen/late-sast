@@ -136,10 +136,23 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "enter":
-			if focusedState.State == StateIdle {
+			if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
 				input := strings.TrimPrefix(m.Input.Value(), "> ")
 				if strings.TrimSpace(input) == "" {
 					return m, nil
+				}
+
+				// Preflight context check
+				maxTokens := m.Focused.MaxTokens()
+				if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
+					// Use 10% safety margin (90% threshold)
+					threshold := 0.9
+					if float64(focusedState.CumulativeTokenCount) >= float64(maxTokens)*threshold {
+						focusedState.State = StateContextWarning
+						focusedState.ContextWarningShown = true
+						m.updateViewport()
+						return m, nil
+					}
 				}
 
 				if err := m.Focused.Submit(input); err != nil {
@@ -149,6 +162,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.Input.Reset()
 				m.Input.SetValue("> ")
 				focusedState.State = StateThinking
+				focusedState.ContextWarningShown = false // Reset after successful submission
 				// Token count will be calculated in ContentEvent handler
 				m.updateViewport()
 				return m, nil
@@ -290,6 +304,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			case "error":
 				s.State = StateIdle
 				s.StatusText = fmt.Sprintf("Error: %v", event.Error)
+				s.Error = event.Error
 				// We don't clear rendered history so user can see what happened
 			default:
 				s.State = StateIdle

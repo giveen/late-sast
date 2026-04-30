@@ -21,6 +21,7 @@ const (
 	StateConfirmTool
 	StateConfirmSubagent
 	StateStopping
+	StateContextWarning
 )
 
 type ViewState int
@@ -67,6 +68,9 @@ type AppState struct {
 	LastChunks           []string // Cached result of splitMarkdownChunks
 	LastTail             string   // Cached result of splitMarkdownChunks
 	LastTotalContent     string   // To avoid redundant Viewport.SetContent calls
+
+	ContextWarningShown bool // Whether the preflight context warning has been shown for the current input
+	Error               error
 }
 
 type Model struct {
