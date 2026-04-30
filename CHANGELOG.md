@@ -51,7 +51,9 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 - Orchestrator (`instruction-sast.md`) branches on `project_type` to spawn `agent_type: "binary-scanner"` vs `agent_type: "scanner"`.
 - `SKILL.md` vulnerability class table updated to 43 classes with new Binary/Native row.
 
+---
 
+## [v1.4.0] — 2026-04-30
 
 ### Added
 - **Native ProContext documentation tools** (`docs_resolve`, `docs_read`, `docs_search`) — native Go reimplementation of the [ProContext](https://github.com/procontexthq/procontext) MCP server. Downloads the public ProContext registry (~2,100 libraries) once at startup and exposes library documentation lookup without any external process, Python, or MCP handshake. SSRF protection built in (domain allowlist from registry). Non-fatal: if the registry is unreachable the scan continues without docs tools. 26 tests.
