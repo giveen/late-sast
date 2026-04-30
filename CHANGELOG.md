@@ -6,6 +6,17 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.4.0] — 2026-04-30
+
+### Added
+- **Native ProContext documentation tools** (`docs_resolve`, `docs_read`, `docs_search`) — native Go reimplementation of the [ProContext](https://github.com/procontexthq/procontext) MCP server. Downloads the public ProContext registry (~2,100 libraries) once at startup and exposes library documentation lookup without any external process, Python, or MCP handshake. SSRF protection built in (domain allowlist from registry). Non-fatal: if the registry is unreachable the scan continues without docs tools. 26 tests.
+- **In-session knowledge base** (`ctx_index`, `ctx_search`, `ctx_fetch_and_index`) — native Go port of the core concepts from [context-mode](https://github.com/mksglu/context-mode). Indexes large documents (advisories, HTML pages, markdown) into an in-memory BM25 inverted index; retrieves only relevant snippets via ranked search. Raw content never enters the context window: a 100 KB advisory becomes ~35 bytes on index and ~400 bytes on retrieval (~99% context reduction). `ctx_fetch_and_index` includes a 24-hour TTL cache and an SSRF-safe custom dialer that rejects private/loopback IPs at dial time. 23 tests.
+
+### Changed
+- `cmd/late-sast/main.go` — both tool suites registered at startup; ProContext registration is non-fatal (warns to stderr if registry unreachable).
+
+---
+
 ## [v1.3.0] — 2026-04-30
 
 ### Added

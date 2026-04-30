@@ -161,6 +161,26 @@ export LATE_SUBAGENT_API_KEY="your-other-key"          # optional
 ### Live CVE Enrichment
 Dependency files (`package.json`, `requirements.txt`, `go.mod`, `pom.xml`, `Gemfile`) are scanned by Trivy for lockfile CVEs, then enriched via the built-in CVE tools (querying [cve.circl.lu](https://cve.circl.lu/)) for live CVSS scores and NVD links. No external tooling required.
 
+### Library Documentation Lookup
+When a CVE or vulnerable dependency is found, the scanner can resolve authoritative remediation documentation without leaving the context window. Three native Go tools implement the [ProContext](https://github.com/procontexthq/procontext) documentation protocol:
+
+| Tool | What it does |
+|---|---|
+| `docs_resolve(query, language?)` | Resolves a package/library name to its documentation index URL using the ProContext public registry (~2,100 libraries) |
+| `docs_read(url, offset?, limit?)` | Reads a windowed slice of a documentation page with line numbers |
+| `docs_search(url, query)` | Greps a documentation page for a keyword or regex, returning matching lines |
+
+### Context-Efficient Knowledge Base
+Large documents — security advisories, HTML pages, CVE reports — can be indexed once and queried by relevance, keeping raw content out of the context window entirely:
+
+| Tool | What it does |
+|---|---|
+| `ctx_index(source, content)` | Chunks markdown/text by heading boundaries and indexes it with BM25 |
+| `ctx_search(query, max_results?)` | Returns BM25-ranked snippets — never raw document dumps |
+| `ctx_fetch_and_index(url, force?)` | Fetches a URL (HTML or plain text), converts to text, indexes; 24h TTL cache |
+
+A 100 KB advisory becomes ~35 bytes on index call and ~400 bytes on retrieval. SSRF protection blocks private/loopback IP ranges at dial time.
+
 ### Secrets Detection
 A dedicated pre-scan step greps the entire codebase for hardcoded credentials, API keys, and private key material before the SAST scan begins. Findings are classified CRITICAL and appear at the top of the report.
 
@@ -184,6 +204,10 @@ The SAST extensions in this fork (`late-sast` binary, Docker sandbox pipeline, l
 CVE data is sourced from the [cve.circl.lu](https://cve.circl.lu/) public API (operated by CIRCL, no auth required), implemented natively in Go within `late-sast`. Inspired by [roadwy/cve-search_mcp](https://github.com/roadwy/cve-search_mcp) (MIT License).
 
 **[llm-sast-scanner](https://github.com/SunWeb3Sec/llm-sast-scanner)** by SunWeb3Sec — vulnerability reference library and LLM-driven SAST workflow that powers the scanner subagent.
+
+**[ProContext](https://github.com/procontexthq/procontext)** by [@procontexthq](https://github.com/procontexthq) — the documentation registry protocol and `known-libraries.json` public registry (~2,100 libraries) that powers the `docs_resolve`, `docs_read`, and `docs_search` tools. The native Go implementation in `late-sast` faithfully reimplements the ProContext MCP server API without requiring a subprocess or network call to a ProContext instance.
+
+**[context-mode](https://github.com/mksglu/context-mode)** by [@mksglu](https://github.com/mksglu) (Mert Köseoğlu) — the sandbox-index-search pattern, 24h fetch cache, and intent-driven BM25 retrieval architecture that inspired the `ctx_index`, `ctx_search`, and `ctx_fetch_and_index` tools. The native Go implementation in `late-sast` adapts this approach for the scanner's in-memory workload without requiring Node.js or SQLite.
 
 ---
 
