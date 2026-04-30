@@ -1,12 +1,19 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"late/internal/agent"
@@ -129,6 +136,17 @@ func main() {
 		subagentClient.DiscoverBackend(context.Background())
 	}
 
+	// Ensure codebase-memory-mcp is available, downloading if needed
+	if cbmPath, cbmErr := ensureCBM(); cbmErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: codebase-memory-mcp unavailable (%v) — graph intelligence disabled\n", cbmErr)
+	} else {
+		// Add its directory to PATH so the MCP config can find it by name
+		cbmDir := filepath.Dir(cbmPath)
+		if cur := os.Getenv("PATH"); !strings.Contains(cur, cbmDir) {
+			os.Setenv("PATH", cbmDir+string(os.PathListSeparator)+cur)
+		}
+	}
+
 	// MCP client
 	mcpClient := mcp.NewClient()
 	defer mcpClient.Close()
@@ -235,6 +253,101 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// ensureCBM ensures codebase-memory-mcp is available on the system.
+// It checks PATH and ~/.local/bin first; if neither has the binary it downloads
+// the appropriate release from GitHub and installs it to ~/.local/bin/.
+func ensureCBM() (string, error) {
+	const binaryName = "codebase-memory-mcp"
+
+	// 1. Already on PATH?
+	if path, err := exec.LookPath(binaryName); err == nil {
+		return path, nil
+	}
+
+	// 2. In ~/.local/bin?
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	localBin := filepath.Join(home, ".local", "bin", binaryName)
+	if _, err := os.Stat(localBin); err == nil {
+		return localBin, nil
+	}
+
+	// 3. Download from GitHub releases
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	// GitHub release naming: linux-amd64, linux-arm64, darwin-amd64, darwin-arm64, windows-amd64
+	archMap := map[string]string{"amd64": "amd64", "arm64": "arm64"}
+	arch, ok := archMap[goarch]
+	if !ok {
+		return "", fmt.Errorf("unsupported architecture: %s", goarch)
+	}
+	assetName := fmt.Sprintf("%s-%s-%s", binaryName, goos, arch)
+	tarURL := fmt.Sprintf(
+		"https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/%s.tar.gz",
+		assetName,
+	)
+
+	fmt.Printf("[late-sast] Downloading codebase-memory-mcp (%s/%s)...\n", goos, arch)
+
+	//nolint:gosec // URL is constructed from a fixed base and runtime constants only
+	resp, err := http.Get(tarURL) //nolint:noctx
+	if err != nil {
+		return "", fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download returned HTTP %d for %s", resp.StatusCode, tarURL)
+	}
+
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("gzip open: %w", err)
+	}
+	defer gz.Close()
+
+	if err := os.MkdirAll(filepath.Dir(localBin), 0755); err != nil {
+		return "", fmt.Errorf("mkdir ~/.local/bin: %w", err)
+	}
+
+	tr := tar.NewReader(gz)
+	installed := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("tar read: %w", err)
+		}
+		// Match the bare binary name (archives may contain e.g. "codebase-memory-mcp" or "./codebase-memory-mcp")
+		base := filepath.Base(hdr.Name)
+		if base != binaryName {
+			continue
+		}
+		f, err := os.OpenFile(localBin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		if err != nil {
+			return "", fmt.Errorf("create binary: %w", err)
+		}
+		if _, err := io.Copy(f, tr); err != nil { //nolint:gosec
+			f.Close()
+			return "", fmt.Errorf("write binary: %w", err)
+		}
+		f.Close()
+		installed = true
+		break
+	}
+
+	if !installed {
+		return "", fmt.Errorf("binary %q not found inside archive %s", binaryName, tarURL)
+	}
+
+	fmt.Printf("[late-sast] Installed codebase-memory-mcp to %s\n", localBin)
+	return localBin, nil
 }
 
 // extractSASTSkill writes the embedded llm-sast-scanner skill files to destDir.
