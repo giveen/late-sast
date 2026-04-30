@@ -31,10 +31,14 @@ export OPENAI_MODEL="your-model"
 ### 2. Run a scan
 
 ```bash
+# Scan and write report to current directory
 late-sast https://github.com/owner/repo
+
+# Specify an output directory (created if it doesn't exist)
+late-sast --output ~/sast-reports https://github.com/owner/repo
 ```
 
-That's it. `late-sast` will:
+The report path is printed at startup. `late-sast` will:
 
 1. Clone the repository into an isolated `/tmp` working directory
 2. Build a full codebase knowledge graph (HTTP routes, auth boundaries, data flows)
@@ -42,12 +46,12 @@ That's it. `late-sast` will:
 4. Install dependencies and start the application
 5. Run a SAST scan across 34 vulnerability classes
 6. Attempt live exploitation for every CONFIRMED or LIKELY finding
-7. Write `sast_report_<repo>.md` to your current directory
+7. Write `sast_report_<repo>.md` to the output directory (default: current directory)
 8. Remove the container, cloned source, and all temporary files
 
 ### 3. Read the report
 
-The report is written to your current working directory as `sast_report_<repo>.md`. Each finding is classified:
+The report is written to the output directory (default: current directory) as `sast_report_<repo>.md`. Each finding is classified:
 
 | Status | Meaning |
 |--------|---------|

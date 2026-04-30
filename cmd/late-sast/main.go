@@ -28,7 +28,6 @@ import (
 	"late/internal/orchestrator"
 	"late/internal/pathutil"
 	"late/internal/session"
-	"late/internal/skill"
 	"late/internal/tool"
 	"late/internal/tui"
 
@@ -38,15 +37,17 @@ import (
 
 func main() {
 	targetReq := flag.String("target", "", "GitHub URL of the repository to audit")
+	outputReq := flag.String("output", "", "Directory to write the SAST report (default: current directory)")
+	timeoutReq := flag.Duration("timeout", 0, "Wall-clock scan timeout (e.g. 90m, 2h). 0 = no limit")
 	versionReq := flag.Bool("version", false, "Show version")
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum turns per subagent")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token for Gemma 4 models")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: late-sast [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "  late-sast --target https://github.com/owner/repo\n\n")
-		fmt.Fprintf(os.Stderr, "  Alternatively, provide the URL as a positional argument:\n")
-		fmt.Fprintf(os.Stderr, "  late-sast https://github.com/owner/repo\n\n")
+		fmt.Fprintf(os.Stderr, "  late-sast https://github.com/owner/repo\n")
+		fmt.Fprintf(os.Stderr, "  late-sast --output ~/reports https://github.com/owner/repo\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -60,6 +61,23 @@ func main() {
 	target := *targetReq
 	if target == "" && flag.NArg() > 0 {
 		target = flag.Arg(0)
+	}
+
+	// Reap stale containers from any previous crashed run that share the "sast-" prefix.
+	// This prevents "name already in use" errors on subsequent runs.
+	if out, err := exec.Command("docker", "ps", "-aq", "--filter", "name=sast-").Output(); err == nil {
+		if ids := strings.Fields(string(out)); len(ids) > 0 {
+			args := append([]string{"rm", "-f"}, ids...)
+			if rmErr := exec.Command("docker", args...).Run(); rmErr == nil {
+				fmt.Printf("[late-sast] Reaped %d stale container(s) from previous run.\n", len(ids))
+			}
+		}
+	}
+	// Remove stale docker networks from previous runs.
+	if out, err := exec.Command("docker", "network", "ls", "--filter", "name=sast-", "-q").Output(); err == nil {
+		for _, netID := range strings.Fields(string(out)) {
+			exec.Command("docker", "network", "rm", netID).Run() //nolint:errcheck
+		}
 	}
 
 	// Extract embedded SAST skill files to /tmp/sast-skill so the agent can read them
@@ -80,6 +98,8 @@ func main() {
 	cwd, _ := os.Getwd()
 	containerName := "sast-" + time.Now().Format("20060102-150405")
 	workDir := "/tmp/" + containerName
+	networkName := containerName + "-net"
+	composeProject := containerName
 	// Derive repo name from the last path segment of the target URL (e.g. "llama-swap").
 	repoName := "repo"
 	if target != "" {
@@ -89,11 +109,25 @@ func main() {
 			}
 		}
 	}
+	// Resolve output directory: flag > cwd. Create it if it doesn't exist.
+	outputDir := *outputReq
+	if outputDir == "" {
+		outputDir = cwd
+	} else {
+		outputDir = filepath.Clean(outputDir)
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
-		"${{CWD}}":            cwd,
-		"${{CONTAINER_NAME}}": containerName,
-		"${{WORKDIR}}":        workDir,
-		"${{REPO_NAME}}":      repoName,
+		"${{CWD}}":             cwd,
+		"${{CONTAINER_NAME}}":  containerName,
+		"${{WORKDIR}}":         workDir,
+		"${{REPO_NAME}}":       repoName,
+		"${{OUTPUT_DIR}}":      outputDir,
+		"${{NETWORK_NAME}}":    networkName,
+		"${{COMPOSE_PROJECT}}": composeProject,
 	})
 
 	if *gemmaThinkingReq {
@@ -107,6 +141,7 @@ func main() {
 	}
 
 	fmt.Println("Starting late-sast...")
+	fmt.Printf("[late-sast] Report will be written to: %s/sast_report_%s.md\n", outputDir, repoName)
 
 	// Session setup (non-persistent for audit runs)
 	sessionsDir, err := session.SessionDir()
@@ -127,6 +162,17 @@ func main() {
 			fmt.Printf("\n[late-sast] Cleaning up container %s...\n", containerName)
 			exec.Command("docker", "stop", "-t", "5", containerName).Run() //nolint:errcheck
 			exec.Command("docker", "rm", "-f", containerName).Run()        //nolint:errcheck
+			// Tear down any docker-compose services for this project
+			exec.Command("docker", "compose", "-p", composeProject, "down", "-v", "--remove-orphans").Run() //nolint:errcheck
+			// Remove any manually-started sidecar containers (named sast-<ts>-*)
+			if out, err := exec.Command("docker", "ps", "-aq", "--filter", "name="+containerName+"-").Output(); err == nil {
+				if ids := strings.Fields(string(out)); len(ids) > 0 {
+					args := append([]string{"rm", "-f"}, ids...)
+					exec.Command("docker", args...).Run() //nolint:errcheck
+				}
+			}
+			// Remove the shared docker network
+			exec.Command("docker", "network", "rm", networkName).Run() //nolint:errcheck
 			fmt.Printf("[late-sast] Container %s removed.\n", containerName)
 			// Docker installs packages as root inside the container, leaving root-owned
 			// files in the bind-mounted workdir. Use a throwaway alpine container
@@ -156,6 +202,16 @@ func main() {
 		cleanupContainer()
 		os.Exit(0)
 	}()
+
+	// Wall-clock timeout: if --timeout is set, fire cleanup and exit when it expires.
+	if *timeoutReq > 0 {
+		go func() {
+			<-time.After(*timeoutReq)
+			fmt.Fprintf(os.Stderr, "\n[late-sast] Scan timeout (%s) reached — aborting.\n", *timeoutReq)
+			cleanupContainer()
+			os.Exit(2)
+		}()
+	}
 	historyPath := filepath.Join(sessionsDir, sessionID+".json")
 
 	// Load app config — prefer ~/.config/late-sast/, fall back to ~/.config/late/
@@ -167,11 +223,10 @@ func main() {
 			enabledTools[k] = v
 		}
 	}
-	// SAST always needs bash, read_file, write_file, target_edit
+	// SAST always needs bash, read_file, write_file
 	enabledTools["bash"] = true
 	enabledTools["read_file"] = true
 	enabledTools["write_file"] = true
-	enabledTools["target_edit"] = true
 
 	// OpenAI client setup
 	resolvedOpenAI := appconfig.ResolveOpenAISettings(appConfig)
@@ -231,21 +286,6 @@ func main() {
 	})
 	sess.Registry.Register(tool.NewReadFileTool())
 	sess.Registry.Register(tool.WriteFileTool{})
-	sess.Registry.Register(tool.NewTargetEditTool())
-
-	// Register skills (project + user directories)
-	skillDirs := []string{}
-	if userSkillsDir, err := pathutil.LateSkillsDir(); err == nil {
-		skillDirs = append(skillDirs, userSkillsDir)
-	}
-	skillDirs = append(skillDirs, pathutil.LateProjectSkillsDir())
-	if skills, err := skill.DiscoverSkills(skillDirs); err == nil && len(skills) > 0 {
-		skillMap := make(map[string]*skill.Skill)
-		for _, s := range skills {
-			skillMap[s.Metadata.Name] = s
-		}
-		sess.Registry.Register(tool.ActivateSkillTool{Skills: skillMap, Reg: sess.Registry})
-	}
 
 	// Register MCP tools
 	for _, t := range mcpClient.GetTools() {
