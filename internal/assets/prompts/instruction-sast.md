@@ -18,10 +18,26 @@ mkdir -p /tmp/sast-target && cd /tmp/sast-target
 git clone <github-url> /tmp/sast-target/repo
 ```
 
-### Step 2 — Index with codebase-memory-mcp
-Immediately call `index_repository` with `repo_path=/tmp/sast-target/repo`.  
-Then call `get_architecture` to map languages, entry points, routes, and clusters.  
-**Do not read files one by one — use the graph first.**
+### Step 2 — Index the repository ⚡ DO THIS BEFORE ANYTHING ELSE
+
+**This is the first analytical action. Call these two MCP tools immediately after cloning — before reading any files, before Docker, before anything.**
+
+```
+index_repository(repo_path="/tmp/sast-target/repo", mode="full")
+```
+
+Wait for indexing to complete, then:
+
+```
+get_architecture(project="/tmp/sast-target/repo")
+```
+
+The architecture response tells you: primary language(s), all HTTP entry points, route handlers, authentication boundaries, database access patterns, and major clusters. **Everything that follows is driven by this graph — never grep or read files to discover structure.**
+
+Also read the SAST skill definition now so it is loaded before the scan:
+```
+read_file("/tmp/sast-skill/SKILL.md")
+```
 
 ### Step 3 — Detect language & build a Docker sandbox
 Inspect the repository architecture output to determine the primary language.
@@ -71,9 +87,7 @@ Note the port the application listens on for later verification.
 
 ### Step 6 — SAST Scan (llm-sast-scanner workflow)
 
-The llm-sast-scanner skill files are available at `/tmp/sast-skill/`. Read `/tmp/sast-skill/SKILL.md` first for the full workflow definition.
-
-Execute the full 6-step llm-sast-scanner workflow:
+The llm-sast-scanner skill files are available at `/tmp/sast-skill/` (already loaded in Step 2). Execute the full 6-step workflow:
 
 **6.1 Load vulnerability references**  
 Use `read_file` to load reference files from `/tmp/sast-skill/references/`. Always load at minimum: `sql_injection.md`, `xss.md`, `ssrf.md`, `rce.md`, `idor.md`, `authentication_jwt.md`, `path_traversal_lfi_rfi.md`. Load additional references based on the detected language and framework. Full list is in `/tmp/sast-skill/SKILL.md`.
