@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"late/internal/agent"
@@ -100,6 +102,37 @@ func main() {
 		os.Exit(1)
 	}
 	sessionID := fmt.Sprintf("sast-%s", time.Now().Format("20060102-150405"))
+
+	// Container name is unique per session so parallel runs don't collide.
+	// We inject it into the system prompt so the agent always uses the right name.
+	containerName := "sast-" + time.Now().Format("20060102-150405")
+	systemPrompt = strings.ReplaceAll(systemPrompt, "sast-target", containerName)
+
+	// Register cleanup: stop+remove the Docker container on exit (Ctrl-C, Ctrl-Q, or normal exit).
+	cleanupDone := make(chan struct{})
+	cleanupOnce := make(chan struct{}, 1)
+	cleanupOnce <- struct{}{}
+	cleanupContainer := func() {
+		select {
+		case <-cleanupOnce:
+			defer close(cleanupDone)
+			fmt.Printf("\n[late-sast] Cleaning up container %s...\n", containerName)
+			exec.Command("docker", "stop", "-t", "5", containerName).Run() //nolint:errcheck
+			exec.Command("docker", "rm", "-f", containerName).Run()        //nolint:errcheck
+			fmt.Printf("[late-sast] Container %s removed.\n", containerName)
+		default:
+			<-cleanupDone // already running, wait for it
+		}
+	}
+
+	// Handle OS signals (Ctrl-C = SIGINT, kill = SIGTERM)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cleanupContainer()
+		os.Exit(0)
+	}()
 	historyPath := filepath.Join(sessionsDir, sessionID+".json")
 
 	// Load app config
@@ -251,8 +284,12 @@ func main() {
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
+		cleanupContainer()
 		os.Exit(1)
 	}
+
+	// Normal exit (Ctrl-Q or agent finished) — clean up too.
+	cleanupContainer()
 }
 
 // ensureCBM ensures codebase-memory-mcp is available on the system.
