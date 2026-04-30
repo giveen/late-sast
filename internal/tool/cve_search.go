@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const cveBaseURL = "https://cve.circl.lu/api/"
+var cveBaseURL = "https://cve.circl.lu/api/"
 
 var cveHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
