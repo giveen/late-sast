@@ -102,7 +102,8 @@ late-sast https://github.com/owner/repo  # Requires Docker
 | **3. Sandbox** | A Docker container matching the repo's language (Go, Python, Node, Java, etc.) is created and the source is mounted inside |
 | **4. Install** | Dependencies are installed inside the container exactly as documented in the repo's README |
 | **5. Launch** | The application is started inside the container and its listening port is discovered |
-| **6. SAST Scan** | The agent runs a full vulnerability scan across 34 vulnerability classes (see below), tracing taint paths from every HTTP entry point to dangerous sinks |
+| **6. SAST Scan** | The agent runs a full vulnerability scan across 34 vulnerability classes (see below), tracing taint paths from every HTTP entry point to dangerous sinks. Hardcoded secrets are grepped separately. |
+| **6b. CVE Lookup** | Trivy scans lockfiles for CVEs; built-in CVE tools query [cve.circl.lu](https://cve.circl.lu/) directly for live CVSS scores and NVD links — no external dependencies |
 | **7. Live Exploitation** | For every CONFIRMED or LIKELY finding, a real proof-of-concept is attempted against the running application — each finding is marked **EXPLOITED**, **BLOCKED**, or **UNREACHABLE** |
 | **8. Report + Cleanup** | A structured Markdown report (`sast_report_<repo>.md`) is written to the current directory, then the Docker container, cloned source, and all temporary files are removed |
 
@@ -158,6 +159,8 @@ The core `late` agent (orchestrator, TUI, subagent dispatch, session persistence
 The SAST extensions in this fork (`late-sast` binary, Docker sandbox pipeline, live exploitation workflow, embedded vulnerability references) are original additions by [giveen](https://github.com/giveen), also released under BSL 1.1.
 
 **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** by DeusData — graph-based code intelligence MCP server used by `late-sast` for architecture extraction, taint tracing, and vulnerability mapping.
+
+CVE data is sourced from the [cve.circl.lu](https://cve.circl.lu/) public API (operated by CIRCL, no auth required), implemented natively in Go within `late-sast`. Inspired by [roadwy/cve-search_mcp](https://github.com/roadwy/cve-search_mcp) (MIT License).
 
 **[llm-sast-scanner](https://github.com/SunWeb3Sec/llm-sast-scanner)** by SunWeb3Sec — vulnerability reference library and LLM-driven SAST workflow that powers the scanner subagent.
 

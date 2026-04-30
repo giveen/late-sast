@@ -12,7 +12,7 @@ Both binaries share the same MCP server setup. `late-sast` uses `~/.config/late-
 
 - Docker installed and running (`docker info` should succeed)
 - An OpenAI-compatible model endpoint (local or cloud)
-- The [codebase-memory MCP server](https://github.com/DeusData/codebase-memory-mcp) — downloaded automatically on first run
+- The [codebase-memory MCP server](https://github.com/DeusData/codebase-memory-mcp) — baked into the binary when built with `make build-sast`, otherwise downloaded on first run
 
 ### 1. Set your endpoint
 
@@ -44,10 +44,11 @@ The report path is printed at startup. `late-sast` will:
 2. Build a full codebase knowledge graph (HTTP routes, auth boundaries, data flows)
 3. Spin up a Docker container matching the repo's language
 4. Install dependencies and start the application
-5. Run a SAST scan across 34 vulnerability classes
-6. Attempt live exploitation for every CONFIRMED or LIKELY finding
-7. Write `sast_report_<repo>.md` to the output directory (default: current directory)
-8. Remove the container, cloned source, and all temporary files
+5. Run a SAST scan across 34 vulnerability classes and grep for hardcoded secrets
+6. Run Trivy for lockfile-based CVE detection and query [cve.circl.lu](https://cve.circl.lu/) for live CVE enrichment (CVSS scores, NVD links) via `cve-search_mcp`
+7. Attempt live exploitation for every CONFIRMED or LIKELY finding
+8. Write `sast_report_<repo>.md` to the output directory (default: current directory)
+9. Remove the container, cloned source, and all temporary files
 
 ### 3. Read the report
 

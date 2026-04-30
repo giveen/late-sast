@@ -287,6 +287,12 @@ func main() {
 	sess.Registry.Register(tool.NewReadFileTool())
 	sess.Registry.Register(tool.WriteFileTool{})
 
+	// CVE lookup tools (native Go — no external dependencies)
+	sess.Registry.Register(tool.VulVendorProductCVETool{})
+	sess.Registry.Register(tool.VulCVESearchTool{})
+	sess.Registry.Register(tool.VulVendorProductsTool{})
+	sess.Registry.Register(tool.VulLastCVEsTool{})
+
 	// Register MCP tools
 	for _, t := range mcpClient.GetTools() {
 		if enabled, exists := enabledTools[t.Name()]; exists && !enabled {
@@ -359,10 +365,31 @@ func main() {
 }
 
 // ensureCBM ensures codebase-memory-mcp is available on the system.
-// It checks PATH and ~/.local/bin first; if neither has the binary it downloads
-// the appropriate release from GitHub and installs it to ~/.local/bin/.
+// When built with -tags cbm_embedded the binary is extracted from the baked-in
+// cbmBinaryData; otherwise it is downloaded from GitHub Releases.
 func ensureCBM() (string, error) {
 	const binaryName = "codebase-memory-mcp"
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	localBin := filepath.Join(home, ".local", "bin", binaryName)
+
+	// 0. Embedded binary — extract if not already present or size differs.
+	if len(cbmBinaryData) > 0 {
+		stat, statErr := os.Stat(localBin)
+		if statErr != nil || stat.Size() != int64(len(cbmBinaryData)) {
+			if err := os.MkdirAll(filepath.Dir(localBin), 0755); err != nil {
+				return "", fmt.Errorf("mkdir ~/.local/bin: %w", err)
+			}
+			if err := os.WriteFile(localBin, cbmBinaryData, 0755); err != nil {
+				return "", fmt.Errorf("write embedded codebase-memory-mcp: %w", err)
+			}
+			fmt.Printf("[late-sast] Extracted embedded codebase-memory-mcp to %s\n", localBin)
+		}
+		return localBin, nil
+	}
 
 	// 1. Already on PATH?
 	if path, err := exec.LookPath(binaryName); err == nil {
@@ -370,11 +397,6 @@ func ensureCBM() (string, error) {
 	}
 
 	// 2. In ~/.local/bin?
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("could not determine home directory: %w", err)
-	}
-	localBin := filepath.Join(home, ".local", "bin", binaryName)
 	if _, err := os.Stat(localBin); err == nil {
 		return localBin, nil
 	}

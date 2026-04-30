@@ -48,6 +48,31 @@ docker exec ${{CONTAINER_NAME}} sh -c "
 ```
 Then re-run the scan. Include any HIGH or CRITICAL CVEs in the report under `## Dependency Vulnerabilities`.
 
+### Step 1d — CVE lookup
+Use the built-in CVE tools to query the live cve.circl.lu database for known vulnerabilities in the target's key dependencies. First extract dependency names from the repo:
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  cat /app/package.json 2>/dev/null | grep -E '\"[a-z]' | head -30
+  cat /app/requirements.txt 2>/dev/null | head -30
+  cat /app/go.mod 2>/dev/null | grep -E '^require|^\t' | head -30
+  cat /app/pom.xml 2>/dev/null | grep -E '<groupId>|<artifactId>|<version>' | head -40
+  cat /app/Gemfile 2>/dev/null | head -20
+"
+```
+For each notable dependency (frameworks, ORMs, auth libraries, HTTP clients), call:
+```
+vul_vendor_product_cve(vendor="<vendor>", product="<package-name>")
+```
+For packages where the vendor is unknown, try the package name as vendor too, e.g. `vul_vendor_product_cve(vendor="expressjs", product="express")`.
+
+For each CVE result returned:
+- Filter to CVSS score ≥ 7.0 (HIGH and CRITICAL only)
+- Check if the installed version falls within the affected range
+- If affected: record the CVE ID, CVSS score, description, and affected versions
+- Format the CVE link as: `https://nvd.nist.gov/vuln/detail/<CVE-ID>`
+
+Include all confirmed CVE matches in the report under `## CVE Findings`.
+
 ### Step 2 — Map sources (graph-first)
 You were given `Language`, `Entry points`, and `Key routes` from the setup subagent — **do not call `get_architecture` again**. Use those values directly.
 

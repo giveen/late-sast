@@ -101,6 +101,14 @@ Analyzer: late-sast v1 (llm-sast-scanner + live verification)
 ## Medium Findings
 ## Low Findings
 ## Dependency Vulnerabilities
+(Trivy/lockfile findings)
+
+## CVE Findings
+| CVE | Package | CVSS | Severity | Description | Link |
+|-----|---------|------|----------|-------------|------|
+| CVE-YYYY-XXXXX | package@version | N.N | CRITICAL/HIGH | Brief description | [NVD](https://nvd.nist.gov/vuln/detail/CVE-YYYY-XXXXX) |
+
+_Omit this section if no CVEs with CVSS ≥ 7.0 were confirmed for the installed versions._
 ## Informational
 ## Unverifiable Findings (NEEDS CONTEXT)
 
