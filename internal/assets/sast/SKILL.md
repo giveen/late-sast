@@ -31,6 +31,7 @@ This skill covers the following 34 vulnerability classes. Each has a dedicated r
 | **Server-Side** | SSRF, Path Traversal/LFI/RFI, Insecure Deserialization, Arbitrary File Upload, JNDI Injection, Race Conditions |
 | **Protocol & Infrastructure** | CSRF, Open Redirect, HTTP Request Smuggling/Desync, Denial of Service, CVE Patterns |
 | **Language/Platform** | PHP Security, Mobile Security (Android/iOS) |
+| **Binary/Native** | Memory Corruption (CWE-787/125/121/122), Use-After-Free (CWE-416), Integer Overflow (CWE-190/191), Dangerous Functions (CWE-676), Format String (CWE-134), Binary Command Injection (CWE-78), Privilege Management (CWE-250/272/732), Sensitive Memory Exposure (CWE-226), NULL Pointer Dereference (CWE-476) |
 
 ---
 
@@ -84,10 +85,20 @@ references/mobile_security.md            — Mobile security (Android / iOS)
 references/session_fixation.md           — Session fixation
 ```
 
-**Loading strategy:**
-- For a targeted review (e.g., "check for SQL injection"), load only the relevant reference(s).
-- For a full audit, load all 34 references and scan systematically.
-- Always load references for the top OWASP risks even if not explicitly requested.
+**Binary/Native-code references** (used by the `binary-scanner` agent for C, C++, Go CLI, Rust targets):
+```
+references/memory_corruption.md          — CWE-787/125/121/122 buffer overflow, OOB read/write
+references/use_after_free.md             — CWE-416/415 use-after-free, double-free
+references/integer_overflow.md           — CWE-190/191/680 integer overflow/underflow
+references/dangerous_functions.md        — CWE-676/120 gets/strcpy/sprintf/scanf
+references/format_string.md             — CWE-134 printf(user_input)
+references/binary_command_injection.md   — CWE-78 system()/popen()/exec.Command (native)
+references/privilege_management.md       — CWE-250/272/732 root without drop, SUID
+references/sensitive_memory_exposure.md  — CWE-226/200/401 passwords not zeroed, fd leaks
+references/null_pointer_dereference.md   — CWE-476 NULL/nil dereference
+```
+
+All 43 reference files are pre-indexed into the BM25 knowledge base at scanner startup via `ctx_search`. Use `ctx_search(query="<vulnerability pattern>")` to retrieve relevant snippets — never load the files directly.
 
 ---
 
