@@ -37,13 +37,15 @@ docker network create ${{NETWORK_NAME}}
 
 ### Step 4 — Detect launch strategy
 
-Check the repository root for compose files in this order:
+Check the repository root for compose files and a Dockerfile:
 ```bash
 ls ${{WORKDIR}}/repo/docker-compose.yml ${{WORKDIR}}/repo/docker-compose.yaml ${{WORKDIR}}/repo/compose.yml 2>/dev/null
+ls ${{WORKDIR}}/repo/Dockerfile ${{WORKDIR}}/repo/dockerfile 2>/dev/null
 ```
 
 **If a compose file exists → use Path A.**
-**If no compose file → use Path B.**
+**If no compose file but a `Dockerfile` exists → use Path C.**
+**If neither → use Path B.**
 
 ---
 
@@ -147,6 +149,49 @@ If the app still fails to start after injecting env vars, note it in the summary
 
 ---
 
+### Path C — Build from Dockerfile
+
+When no compose file exists but a `Dockerfile` is present at the repo root, build and run it directly. The source is still mounted read-only at `/app` so static analysis tools have access to the full codebase regardless of what the image copies in.
+
+**Step C1 — Build the image:**
+```bash
+docker build -t ${{CONTAINER_NAME}}-image ${{WORKDIR}}/repo 2>&1 | tail -5
+```
+If the build fails, fall through to Path B (do **not** use the partial image).
+
+**Step C2 — Run on the scan network with source mounted:**
+```bash
+docker run -d --name ${{CONTAINER_NAME}} \
+  --network ${{NETWORK_NAME}} \
+  -v ${{WORKDIR}}/repo:/app \
+  -w /app \
+  ${{CONTAINER_NAME}}-image
+```
+If the container exits immediately (the image has no long-running process), restart with a keep-alive override:
+```bash
+docker rm -f ${{CONTAINER_NAME}} 2>/dev/null
+docker run -d --name ${{CONTAINER_NAME}} \
+  --network ${{NETWORK_NAME}} \
+  -v ${{WORKDIR}}/repo:/app \
+  -w /app \
+  --entrypoint sh \
+  ${{CONTAINER_NAME}}-image -c 'tail -f /dev/null'
+```
+
+**Step C3 — Detect exposed port:**
+```bash
+docker inspect ${{CONTAINER_NAME}} \
+  --format '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}} {{end}}' 2>/dev/null
+```
+Fall back to reading `EXPOSE` lines from the Dockerfile:
+```bash
+grep -i '^EXPOSE' ${{WORKDIR}}/repo/Dockerfile 2>/dev/null
+```
+
+Set `container` in the summary to `${{CONTAINER_NAME}}`. **Record `${{CONTAINER_NAME}}-image` in the `notes` field** so the orchestrator can remove the built image during cleanup.
+
+---
+
 ## Step 5 — Bootstrap basic scan tools
 
 After the container is running (whether via Path A or Path B), install the minimum toolset the scanner needs for live exploitation. Use the container name you identified above. This is non-fatal — if it fails, continue.
@@ -199,8 +244,15 @@ docker exec <container-name> sh -c "
   echo -n 'semgrep: '; command -v semgrep >/dev/null 2>&1 && semgrep --version 2>/dev/null || echo 'not available'
   echo -n 'checksec: '; command -v checksec >/dev/null 2>&1 && echo 'available' || echo 'not available'
   echo -n 'gosec: '; command -v gosec >/dev/null 2>&1 && echo 'available' || echo 'not available'
+  echo -n 'cargo-audit: '; command -v cargo-audit >/dev/null 2>&1 && echo 'available' || echo 'not available'
 " 2>/dev/null || true
 ```
+
+# cargo audit — Rust dependency vulnerability scanner (only when cargo is present)
+docker exec <container-name> sh -c "
+  command -v cargo >/dev/null 2>&1 && \
+    cargo install cargo-audit --quiet 2>/dev/null || true
+" || true
 
 ---
 

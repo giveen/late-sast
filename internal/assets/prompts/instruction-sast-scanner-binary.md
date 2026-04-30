@@ -106,6 +106,44 @@ docker exec ${{CONTAINER_NAME}} sh -c "
 ```
 For each notable dependency, call `vul_vendor_product_cve(vendor="<vendor>", product="<name>")`. Filter to CVSS ≥ 7.0 and confirmed affected version range. Format CVE links as `https://nvd.nist.gov/vuln/detail/<CVE-ID>`.
 
+### Step 1e — Dependency documentation & CVE remediation enrichment
+
+For every HIGH/CRITICAL CVE found in Step 1d, look up authoritative remediation guidance without dumping raw content into context:
+
+1. Resolve the library's documentation index:
+```
+docs_resolve(query="<package-name>", language="<language>")
+```
+This returns an `index_url` if the library is in the ~2,100-library ProContext registry (covers major Go, Rust, and C++ libraries).
+
+2. Fetch and index the documentation page (raw content stays out of context; 24 h cache):
+```
+ctx_fetch_and_index(url="<index_url>")
+```
+
+3. Search for the relevant advisory or upgrade guide:
+```
+ctx_search(query="<CVE-ID> security upgrade remediation")
+```
+
+For **Rust targets**, also run `cargo audit` for a language-native dependency vulnerability report:
+```bash
+docker exec ${{CONTAINER_NAME}} sh -c "
+  command -v cargo-audit >/dev/null 2>&1 || { echo 'cargo-audit not available'; exit 0; }
+  cd /app && cargo audit --json 2>/dev/null \
+  | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+for v in r.get(\"vulnerabilities\", {}).get(\"list\", []):
+    adv = v[\"advisory\"]
+    print(adv[\"id\"] + \" [\" + adv[\"package\"] + \"] CVSS:\" + str(adv.get(\"cvss\",\"?\")) + \" \" + adv[\"title\"])
+' 2>/dev/null | head -30
+" || true
+```
+Report each `cargo audit` advisory with CVSS ≥ 7.0 under `## Dependency Vulnerabilities`.
+
+Use the returned snippets to enrich the finding's `Remediation` field. If `docs_resolve` returns no match, use the CVE description alone.
+
 ---
 
 ### Step 2a — Structured tool scan (JSON output)
@@ -135,7 +173,12 @@ Record these flags in a `## Binary Hardening` section. Reference them during sev
 ```bash
 docker exec ${{CONTAINER_NAME}} sh -c "
   command -v semgrep >/dev/null 2>&1 || { echo 'semgrep not available'; exit 0; }
-  semgrep --config=p/c --config=p/default --json --quiet /app 2>/dev/null \
+  # Language-specific rule packs: p/golang covers net/http taint + os/exec; p/rust covers unsafe blocks
+  LANG=$(cat /app/go.mod 2>/dev/null | head -1 | grep -q '^module' && echo go || (ls /app/Cargo.toml 2>/dev/null && echo rust || echo c))
+  PACKS="--config=p/c --config=p/default"
+  [ "$LANG" = "go" ] && PACKS="--config=p/golang --config=p/default"
+  [ "$LANG" = "rust" ] && PACKS="--config=p/rust --config=p/default"
+  semgrep $PACKS --json --quiet /app 2>/dev/null \
   | python3 -c '
 import json, sys
 r = json.load(sys.stdin)
