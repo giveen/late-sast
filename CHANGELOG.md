@@ -6,7 +6,30 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
-## [v1.4.0] — 2026-04-30
+## [v1.5.0] — 2026-04-30
+
+### Added
+- **Binary/native-code SAST pipeline** — new `binary-scanner` subagent type for C, C++, Go CLI, and Rust targets with no HTTP server. Automatically selected when `project_type == "binary"` (C/C++ always; Go/Rust when `entry_points == 0` and no HTTP framework detected in `go.mod`).
+- **9-class binary vulnerability reference library** — pre-indexed into the BM25 knowledge base alongside the 34 existing web classes (43 total). Grounded in the 2025 CWE Top 25 and OWASP Secure Coding Practices checklist §Memory Management:
+  - `memory_corruption.md` — CWE-787 #5 / CWE-125 #8 / CWE-121 #14 / CWE-122 #16 (stack/heap buffer overflow, OOB read/write)
+  - `use_after_free.md` — CWE-416 #7 (14 KEV CVEs)
+  - `integer_overflow.md` — CWE-190/191/680 overflow→allocation sizing
+  - `dangerous_functions.md` — CWE-676/120 #11 (`gets`, `strcpy`, `sprintf`, `scanf`)
+  - `format_string.md` — CWE-134 `printf(user_input)`
+  - `binary_command_injection.md` — CWE-78 #9 (20 KEV CVEs) `system()`/`popen()`/`exec.Command`
+  - `privilege_management.md` — CWE-250/272/732 root without privilege drop, SUID misuse
+  - `null_pointer_dereference.md` — CWE-476 #13 unchecked `malloc`/`fopen`, nil panics in Go
+  - `sensitive_memory_exposure.md` — CWE-226/200/401 passwords not zeroed (`explicit_bzero`), fd leaks, Heartbleed-class over-reads
+- **Grep-first binary scanner workflow** — Step 2 searches for dangerous function sinks (`gets`, `strcpy`, `system`, `printf` with non-literal first arg) across all `.c`/`.cpp`/`.go`/`.rs` files before invoking the graph. Taint traces from `argv`/`stdin`/`recv()`/`getenv()` to sinks via `trace_path`.
+- **Binary invocation exploit verification** — Step 7 invokes the compiled binary directly with oversized input and checks exit codes: `139` (SIGSEGV) = overflow confirmed, `134` (SIGABRT) = stack canary / heap corruption, `136` (SIGFPE) = integer exception. Format string PoC: `%p.%p.%p.%p` pipeline. Command injection PoC: writes `/tmp/rce_proof`.
+- **Privilege audit step** (Step 6 in binary scanner) — checks for root without `setuid`/`setgid` drop, SUID binaries (`find -perm -4000`), world-writable file creation (`O_CREAT` with `0666`/`0777`), and missing `explicit_bzero`/`memset_s` on credential buffers.
+- **`project_type` field in `SETUP_COMPLETE`** — setup subagent now emits `"project_type": "web" | "binary"` in its JSON handoff, enabling the orchestrator to route deterministically.
+
+### Changed
+- Orchestrator (`instruction-sast.md`) branches on `project_type` to spawn `agent_type: "binary-scanner"` vs `agent_type: "scanner"`.
+- `SKILL.md` vulnerability class table updated to 43 classes with new Binary/Native row.
+
+
 
 ### Added
 - **Native ProContext documentation tools** (`docs_resolve`, `docs_read`, `docs_search`) — native Go reimplementation of the [ProContext](https://github.com/procontexthq/procontext) MCP server. Downloads the public ProContext registry (~2,100 libraries) once at startup and exposes library documentation lookup without any external process, Python, or MCP handshake. SSRF protection built in (domain allowlist from registry). Non-fatal: if the registry is unreachable the scan continues without docs tools. 26 tests.
