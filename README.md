@@ -1,5 +1,8 @@
 # late-sast: Autonomous Security Auditor
 
+[![CI](https://github.com/giveen/late-sast/actions/workflows/ci.yml/badge.svg)](https://github.com/giveen/late-sast/actions/workflows/ci.yml)
+[![Release](https://github.com/giveen/late-sast/actions/workflows/release.yml/badge.svg)](https://github.com/giveen/late-sast/actions/workflows/release.yml)
+
 > **late-sast** is maintained at [giveen/late-sast](https://github.com/giveen/late-sast). It is built on the [mlhher/late](https://github.com/mlhher/late) agent engine — the original orchestration engine, subagent dispatch, and tool infrastructure are the work of **mlhher**. The `late-sast` binary, Docker sandboxing, live exploitation pipeline, CVE enrichment, and vulnerability reporting are original additions in this fork.
 
 **late-sast** is an autonomous security auditor built on top of the [Late](https://github.com/mlhher/late) agent engine. It takes a GitHub URL, spins up a throwaway Docker sandbox, installs and runs the target application, performs a full static and dynamic security scan, then attacks its own findings live — and cleans up after itself completely.

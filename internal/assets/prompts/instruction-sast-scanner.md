@@ -92,6 +92,34 @@ For each CVE result returned:
 
 Include all confirmed CVE matches in the report under `## CVE Findings`.
 
+### Step 1e — Documentation lookup & remediation enrichment
+
+For every HIGH/CRITICAL CVE found in Step 1d, and for every vulnerable dependency identified in Step 1c, look up authoritative remediation documentation **without dumping raw content into context**:
+
+1. Resolve the library's documentation index:
+```
+docs_resolve(query="<package-name>", language="<language>")
+```
+This returns an `index_url` (e.g. `https://expressjs.com/llms.txt`) if the library is in the ~2,100-library ProContext registry.
+
+2. Fetch and index the documentation page (raw content stays out of context; 24h cache):
+```
+ctx_fetch_and_index(url="<index_url>")
+```
+
+3. Search for the relevant advisory or upgrade guide:
+```
+ctx_search(query="<CVE-ID> security upgrade remediation")
+```
+
+Use the returned snippets to enrich the finding's `Remediation` field with version-specific, library-official guidance. If `docs_resolve` returns no match, skip steps 2–3 and use the CVE description alone.
+
+You can also use `ctx_index` + `ctx_search` any time you need to analyse a large file (log, config, lockfile) without spending context budget:
+```
+ctx_index(source="<path>", content="<file contents>")
+ctx_search(query="<keyword>")
+```
+
 ### Step 2 — Map sources (graph-first)
 You were given `Language`, `Entry points`, and `Key routes` from the setup subagent — **do not call `get_architecture` again**. Use those values directly.
 
