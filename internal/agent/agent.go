@@ -28,7 +28,8 @@ func NewSubagentOrchestrator(
 ) (common.Orchestrator, error) {
 	// 1. Determine System Prompt
 	systemPrompt := ""
-	if agentType == "coder" {
+	switch agentType {
+	case "coder":
 		content, err := assets.PromptsFS.ReadFile("prompts/instruction-coding.md")
 		if err != nil {
 			return nil, fmt.Errorf("failed to load embedded subagent prompt: %w", err)
@@ -43,13 +44,25 @@ func NewSubagentOrchestrator(
 				})
 			}
 		}
-
-		if gemmaThinking {
-			systemPrompt = "<|think|>" + systemPrompt
+	case "scanner":
+		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-scanner.md")
+		if err != nil {
+			return nil, fmt.Errorf("failed to load embedded scanner prompt: %w", err)
 		}
-	} else {
+		systemPrompt = string(content)
+	case "setup":
+		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-setup.md")
+		if err != nil {
+			return nil, fmt.Errorf("failed to load embedded setup prompt: %w", err)
+		}
+		systemPrompt = string(content)
+	default:
 		// TODO: reviewer, committer
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
+	}
+
+	if gemmaThinking {
+		systemPrompt = "<|think|>" + systemPrompt
 	}
 
 	// 2. Create Session

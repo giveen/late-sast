@@ -157,6 +157,10 @@ The core `late` agent (orchestrator, TUI, subagent dispatch, session persistence
 
 The SAST extensions in this fork (`late-sast` binary, Docker sandbox pipeline, live exploitation workflow, embedded vulnerability references) are original additions by [giveen](https://github.com/giveen), also released under BSL 1.1.
 
+**[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** by DeusData — graph-based code intelligence MCP server used by `late-sast` for architecture extraction, taint tracing, and vulnerability mapping.
+
+**[llm-sast-scanner](https://github.com/SunWeb3Sec/llm-sast-scanner)** by SunWeb3Sec — vulnerability reference library and LLM-driven SAST workflow that powers the scanner subagent.
+
 ---
 
 ## 📜 License: BSL 1.1
