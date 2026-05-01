@@ -27,7 +27,7 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 - **Fyne thread warnings at shutdown** — goroutines that stream events were calling `fyne.Do` after the Fyne event loop had drained, causing "Error in Fyne call thread" log spam. Fixed by wiring `window.SetCloseIntercept` → `rootAgent.Cancel()` so event-loop goroutines are stopped before Fyne shuts down.
 
 ### Changed
-- **`make install`** now builds and installs **both** `late-sast` and `late` (general assistant). Previously `install-late` incorrectly clobbered the `late-sast` binary.
+- **`make install`** now reliably installs `late-sast` without being clobbered by `install-late`. The `late` binary remains optional compatibility tooling from the upstream engine, but this fork's primary target is `late-sast`.
 - **`fetch-cbm`** skips the network download when the embedded binary already exists (avoids a multi-second stall on every `make install`).
 - **`ChildAddedEvent`** carries an `AgentType string` field so the GUI can label subagent tabs correctly without a separate lookup.
 - **`ContentEvent`** carries a `client.Usage` field (PromptTokens, CompletionTokens, TotalTokens) for real-time context window tracking.
