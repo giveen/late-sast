@@ -64,6 +64,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if stateBefore == StateConfirmTool && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
 				forwardToInput = false
 			}
+		case "?":
+			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+				forwardToInput = false
+			}
 		}
 	}
 
@@ -147,6 +151,18 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
+
+		case "?":
+			// Toggle the full help overlay only when the input field is empty
+			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+				if m.Mode == ViewHelp {
+					m.Mode = ViewChat
+				} else {
+					m.Mode = ViewHelp
+				}
+				m.updateViewport()
+				return m, nil
+			}
 
 		case "enter":
 			input := strings.TrimPrefix(m.Input.Value(), "> ")

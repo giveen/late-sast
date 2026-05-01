@@ -4,6 +4,7 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 
+	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -98,6 +99,10 @@ type Model struct {
 
 	// Active spinner animation
 	Spinner spinner.Model
+
+	// Key bindings and help overlay
+	Keys KeyMap
+	Help help.Model
 
 	// Performance caches
 	cachedRenderer      *glamour.TermRenderer

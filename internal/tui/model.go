@@ -3,6 +3,7 @@ package tui
 import (
 	"late/internal/common"
 
+	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -54,6 +55,15 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 		}
 	}
 
+	// Initialize help model with theme-matched styles
+	h := help.New()
+	h.Styles.FullKey = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	h.Styles.FullDesc = lipgloss.NewStyle().Foreground(subtextColor)
+	h.Styles.FullSeparator = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
+	h.Styles.ShortKey = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	h.Styles.ShortDesc = lipgloss.NewStyle().Foreground(subtextColor)
+	h.Styles.ShortSeparator = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
+
 	m := Model{
 		Mode:                ViewChat,
 		Root:                root,
@@ -66,6 +76,8 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 		AgentStates:         make(map[string]*AppState),
 		InspectingTool:      false,
 		Spinner:             spinner.New(spinner.WithSpinner(spinner.Dot)),
+		Keys:                DefaultKeyMap,
+		Help:                h,
 		cachedRendererWidth: -1, // Force first creation
 	}
 	// Initialize root state

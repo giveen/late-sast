@@ -13,9 +13,45 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// htmlTagRe strips HTML formatting tags that LLMs sometimes emit (e.g. <pre>, </pre>, <code>).
-// It targets only well-formed HTML element tags, not bare angle brackets in code.
-var htmlTagRe = regexp.MustCompile(`</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?>|</>`)
+// htmlTagRe strips the specific HTML formatting tags that LLMs sometimes emit as
+// runaway output (e.g. <pre>, </pre>, <details>, <summary>). It uses an explicit
+// allowlist so it never touches angle-bracket constructs in code such as C++
+// templates (vector<int>), generics (<T>), or XML payload snippets.
+var htmlTagRe = regexp.MustCompile(`(?i)</?(?:pre|code|br|p|li|ol|ul|details|summary|div|span|h[1-6]|blockquote|hr|table|thead|tbody|tr|th|td|em|strong|b|i|a|img|figure|figcaption|section|article|aside|header|footer|nav|main|form|input|button|select|option|textarea|label|script|style|html|head|body)(?:\s[^>]*)?>|</>`)
+
+// collapseRepetition removes model-runaway output: collapses runs of blank lines
+// to a single blank line, and drops any line that repeats more than maxRep times
+// consecutively (e.g. hundreds of </pre> tags after stripping).
+func collapseRepetition(s string) string {
+	const maxRep = 3
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	var lastLine string
+	repCount := 0
+	consecBlank := 0
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			consecBlank++
+			if consecBlank <= 1 {
+				out = append(out, l)
+			}
+			continue
+		}
+		consecBlank = 0
+		if trimmed == lastLine {
+			repCount++
+			if repCount >= maxRep {
+				continue
+			}
+		} else {
+			repCount = 0
+			lastLine = trimmed
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
+}
 
 func (m Model) View() tea.View {
 	if m.Width == 0 || m.Height == 0 {
@@ -42,6 +78,17 @@ func (m Model) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.BackgroundColor = appBgColor
+	s := m.GetAgentState(m.Focused.ID())
+	switch s.State {
+	case StateThinking:
+		v.WindowTitle = "late — thinking…"
+	case StateStreaming:
+		v.WindowTitle = "late — streaming…"
+	case StateConfirmTool:
+		v.WindowTitle = "late — confirm tool"
+	default:
+		v.WindowTitle = "late"
+	}
 	return v
 }
 
@@ -119,6 +166,7 @@ func (m *Model) statusBarView() string {
 
 	// Build key hints
 	stopKey := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Ctrl+g"), statusTextStyle.Render(" Stop "))
+	helpHint := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("?"), statusTextStyle.Render(" Help "))
 
 	// Add hierarchy hints
 	var hierarchyHint string
@@ -138,7 +186,7 @@ func (m *Model) statusBarView() string {
 		tokenDisplay = fmt.Sprintf(" | %d/%d (%d%%)", s.CumulativeTokenCount, maxTokens, pct)
 	}
 	tokenStyled := statusKeyStyle.Render(tokenDisplay)
-	hints := lipgloss.JoinHorizontal(lipgloss.Left, hierarchyHint, stopKey)
+	hints := lipgloss.JoinHorizontal(lipgloss.Left, hierarchyHint, helpHint, stopKey)
 
 	spaceWidth := w - lipgloss.Width(mode) - lipgloss.Width(status) - lipgloss.Width(warning) - lipgloss.Width(tokenStyled) - lipgloss.Width(hints)
 	if spaceWidth < 0 {
@@ -154,6 +202,22 @@ func (m *Model) statusBarView() string {
 
 func (m *Model) updateViewport() {
 	if m.Focused == nil {
+		return
+	}
+
+	// Full-screen help overlay — render key bindings and return early.
+	if m.Mode == ViewHelp {
+		m.Help.SetWidth(m.Viewport.Width())
+		header := lipgloss.NewStyle().
+			Foreground(primaryColor).Bold(true).
+			Padding(0, 1).MarginBottom(1).
+			Render("Late — Key Bindings")
+		fullHelp := m.Help.FullHelpView(m.Keys.FullHelp())
+		footer := lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Padding(1, 1).
+			Render("Press ? or Esc to close")
+		m.Viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, header, fullHelp, footer))
 		return
 	}
 
@@ -267,6 +331,8 @@ func (m *Model) updateViewport() {
 				t := strings.TrimLeft(tail, "\n")
 				// Strip HTML tags that models sometimes emit (e.g. </pre></li></ol>)
 				t = htmlTagRe.ReplaceAllString(t, "")
+				// Collapse blank-line runs and repeated-line loops left by tag stripping
+				t = collapseRepetition(t)
 				if t != "" {
 					// Pulsing Caret for streaming effect
 					ms := float64(time.Now().UnixNano()) / 1e6
@@ -456,6 +522,8 @@ func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
 	// Strip HTML formatting tags that models occasionally emit (e.g. <pre>, </pre>).
 	// Do this before glamour so goldmark never sees raw HTML blocks.
 	content = htmlTagRe.ReplaceAllString(content, "")
+	// Collapse blank-line runs and repeated-line loops left by tag stripping.
+	content = collapseRepetition(content)
 	// Use new renderer to avoid background color issues
 	md, _ := m.GetRenderer(innerWidth).Render(content)
 	//md = strings.TrimRight(md, "\n")

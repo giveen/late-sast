@@ -6,6 +6,16 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.7.2] — 2026-04-30
+
+### Added
+- **Help overlay (`?`)** — pressing `?` when the input field is empty opens a full-screen key binding reference rendered with the `bubbles/v2/help` bubble. Lists all shortcuts (send, stop, tab, back, allow-once/session/project/global, deny, quit) in two columns styled with the app's amethyst palette. `?` or `Esc` closes the overlay.
+- **Typed `KeyMap`** (`internal/tui/keys.go`) — all TUI key bindings are now declared as `key.Binding` entries, replacing the scattered hard-coded string literals. Implements `help.KeyMap` (`ShortHelp`/`FullHelp`) so the help bubble renders them automatically.
+- **Dynamic terminal window title** — `View()` now sets `view.WindowTitle` based on agent state: `late`, `late — thinking…`, `late — streaming…`, or `late — confirm tool`. Updates live as the agent works.
+- **`? Help` hint in status bar** — a `? Help` key hint is now shown in the status bar alongside `Ctrl+g Stop`.
+
+---
+
 ## [v1.7.1] — 2026-04-30
 
 ### Fixed
