@@ -83,8 +83,14 @@ func NewSubagentOrchestrator(
 
 	// Auditor is a small 7B model — give it extra generation budget so it can
 	// complete all hotspot verdicts without truncating mid-JSON.
+	// Also set a repeat_penalty so the model does not enter a repetition loop
+	// on long reasoning chains (common failure mode for sub-10B models).
 	if agentType == "auditor" {
 		sess.SetMaxTokens(8192)
+		sess.SetExtraBody(map[string]any{
+			"repeat_penalty": 1.15,
+			"repeat_last_n":  512,
+		})
 	}
 	// Inherit all tools from parent (including MCP tools)
 	if parent != nil && parent.Registry() != nil {

@@ -6,6 +6,14 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.7.2.2] — 2026-04-30
+
+### Fixed
+- **Auditor repetition loop on long reasoning chains** — VulnLLM-R-7B (llama.cpp) would enter an infinite "code. code. code." repetition loop when processing multi-hotspot SAST reports because no `repeat_penalty` was sent to the server. Added `repeat_penalty: 1.15` and `repeat_last_n: 512` to the auditor session via a new `Session.SetExtraBody` method. These parameters are flattened to the request root by `marshalFlattened` so llama.cpp applies them natively.
+- **`Session.SetExtraBody`** — new method on `Session` allows per-session default `extra_body` parameters (merged into every `StartStream` call; caller-supplied values take precedence).
+
+---
+
 ## [v1.7.2.1] — 2026-04-30
 
 ### Fixed

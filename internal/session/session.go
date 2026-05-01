@@ -20,6 +20,7 @@ type Session struct {
 	systemPrompt string
 	useTools     bool
 	maxTokens    int
+	extraBody    map[string]any
 	Registry     *tool.Registry
 }
 
@@ -35,9 +36,19 @@ func New(c *client.Client, historyPath string, history []client.ChatMessage, sys
 }
 
 // SetMaxTokens sets the max_tokens for generation on this session.
-// Zero means use the server default.
+// Zero means use the server default. Negative values are clamped to zero.
 func (s *Session) SetMaxTokens(n int) {
+	if n < 0 {
+		n = 0
+	}
 	s.maxTokens = n
+}
+
+// SetExtraBody sets key-value pairs that are merged into every request's
+// extra_body (flattened to the root by marshalFlattened). Useful for
+// model-specific sampling parameters such as repeat_penalty.
+func (s *Session) SetExtraBody(extra map[string]any) {
+	s.extraBody = extra
 }
 
 // ExecuteTool executes a tool call and returns the response as a string.
@@ -133,10 +144,22 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 	}
 	messages = append(messages, s.History...)
 
+	mergedExtra := extraBody
+	if len(s.extraBody) > 0 {
+		mergedExtra = make(map[string]any, len(s.extraBody)+len(extraBody))
+		for k, v := range s.extraBody {
+			mergedExtra[k] = v
+		}
+		// Caller-supplied values take precedence
+		for k, v := range extraBody {
+			mergedExtra[k] = v
+		}
+	}
+
 	req := client.ChatCompletionRequest{
 		Messages:  messages,
 		MaxTokens: s.maxTokens,
-		ExtraBody: extraBody,
+		ExtraBody: mergedExtra,
 	}
 
 	if s.useTools {
