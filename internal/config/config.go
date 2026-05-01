@@ -71,6 +71,44 @@ func LoadConfig() (*Config, error) {
 	return LoadConfigFromDir(lateConfigDir)
 }
 
+func SaveConfig(cfg *Config) error {
+	lateConfigDir, err := pathutil.LateConfigDir()
+	if err != nil {
+		return err
+	}
+	return SaveConfigFromDir(lateConfigDir, cfg)
+}
+
+// SaveConfigFromDir writes config.json to the given directory with secure
+// permissions. A nil cfg is treated as defaultConfig().
+func SaveConfigFromDir(lateConfigDir string, cfg *Config) error {
+	if cfg == nil {
+		fallback := defaultConfig()
+		cfg = &fallback
+	}
+	if cfg.EnabledTools == nil {
+		cfg.EnabledTools = defaultConfig().EnabledTools
+	}
+
+	if err := os.MkdirAll(lateConfigDir, configDirPerm); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	configPath := filepath.Join(lateConfigDir, "config.json")
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(configPath, data, configFilePerm); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	if err := ensureSecureConfigPermissions(lateConfigDir, configPath); err != nil {
+		return err
+	}
+	return nil
+}
+
 // LoadConfigFromDir loads config.json from the given directory.
 // Used by late-sast to support its own config dir with fallback.
 func LoadConfigFromDir(lateConfigDir string) (*Config, error) {

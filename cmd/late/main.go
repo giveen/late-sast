@@ -225,7 +225,11 @@ func main() {
 	}
 
 	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
-	executor.RegisterTools(sess.Registry, enabledTools, true)
+	skillsDir := ""
+	if appConfig != nil {
+		skillsDir = appConfig.SkillsDir
+	}
+	executor.RegisterTools(sess.Registry, enabledTools, true, skillsDir)
 
 	// Register MCP tools into the session registry
 	for _, t := range mcpClient.GetTools() {

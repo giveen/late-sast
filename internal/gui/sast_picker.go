@@ -108,6 +108,10 @@ func (a *App) buildPickerContent(onStart func(SASTPickerResult), defaultOutputDi
 		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
 	)
+	settingsBtn := widget.NewButton("Settings", func() {
+		a.showSettingsDialog()
+	})
+	header := container.NewBorder(nil, nil, nil, settingsBtn, title)
 
 	modeLabel := widget.NewLabel("Workflow")
 	modeGroup := widget.NewRadioGroup(
@@ -233,7 +237,7 @@ func (a *App) buildPickerContent(onStart func(SASTPickerResult), defaultOutputDi
 
 	return container.NewCenter(
 		container.NewVBox(
-			title,
+			header,
 			widget.NewSeparator(),
 			modeLabel,
 			modeGroup,

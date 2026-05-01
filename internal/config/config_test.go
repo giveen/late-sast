@@ -167,6 +167,67 @@ func TestLoadConfig_ParsesOpenAIFields(t *testing.T) {
 	}
 }
 
+func TestSaveConfigFromDir_RoundTrip(t *testing.T) {
+	configRoot := t.TempDir()
+	lateDir := filepath.Join(configRoot, "late-sast")
+
+	input := &Config{
+		EnabledTools: map[string]bool{
+			"bash":      true,
+			"read_file": true,
+		},
+		OpenAIBaseURL:   "https://example.test/v1",
+		OpenAIAPIKey:    "secret",
+		OpenAIModel:     "gpt-test",
+		SubagentBaseURL: "https://sub.example/v1",
+		SubagentAPIKey:  "sub-secret",
+		SubagentModel:   "qwen-sub",
+		AuditorBaseURL:  "https://audit.example/v1",
+		AuditorAPIKey:   "aud-secret",
+		AuditorModel:    "vuln-audit",
+		SkillsDir:       "/tmp/skills",
+	}
+
+	if err := SaveConfigFromDir(lateDir, input); err != nil {
+		t.Fatalf("SaveConfigFromDir() error = %v", err)
+	}
+
+	got, err := LoadConfigFromDir(lateDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+
+	if got.OpenAIBaseURL != input.OpenAIBaseURL || got.OpenAIModel != input.OpenAIModel {
+		t.Fatalf("saved OpenAI fields mismatch: got=%+v", got)
+	}
+	if got.SubagentModel != input.SubagentModel || got.AuditorModel != input.AuditorModel {
+		t.Fatalf("saved model fields mismatch: got=%+v", got)
+	}
+	if got.SkillsDir != input.SkillsDir {
+		t.Fatalf("SkillsDir = %q, want %q", got.SkillsDir, input.SkillsDir)
+	}
+	if !got.EnabledTools["bash"] || !got.EnabledTools["read_file"] {
+		t.Fatalf("enabled tools not saved: %+v", got.EnabledTools)
+	}
+}
+
+func TestSaveConfigFromDir_NilConfigWritesDefault(t *testing.T) {
+	configRoot := t.TempDir()
+	lateDir := filepath.Join(configRoot, "late")
+
+	if err := SaveConfigFromDir(lateDir, nil); err != nil {
+		t.Fatalf("SaveConfigFromDir(nil) error = %v", err)
+	}
+
+	got, err := LoadConfigFromDir(lateDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if got.EnabledTools == nil || !got.EnabledTools["bash"] {
+		t.Fatalf("default enabled tools missing: %+v", got.EnabledTools)
+	}
+}
+
 func TestLoadConfig_AuditorModelAbsentIsEmpty(t *testing.T) {
 	configRoot := t.TempDir()
 	setUserConfigEnv(t, configRoot)

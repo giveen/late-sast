@@ -10,6 +10,7 @@ import (
 	"late/internal/session"
 	"late/internal/skill"
 	"late/internal/tool"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -160,7 +161,9 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 // RegisterTools registers the common tool set on a session's registry.
 // If isPlanning is true, it only registers read-only tools and the planning tool.
 // Otherwise, it registers the full set of coding tools.
-func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning bool) {
+// configuredSkillsDir is optional; when provided, its skills are discovered
+// additively alongside default skill directories.
+func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning bool, configuredSkillsDir ...string) {
 	if enabledTools == nil {
 		enabledTools = make(map[string]bool)
 	}
@@ -186,12 +189,10 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 		}
 	}
 
-	// Register Skills
-	skillDirs := []string{}
-	if userSkillsDir, err := pathutil.LateSkillsDir(); err == nil {
-		skillDirs = append(skillDirs, userSkillsDir)
-	}
-	skillDirs = append(skillDirs, pathutil.LateProjectSkillsDir())
+	// Register Skills. This is additive: configured dir (if any) + defaults.
+	// Precedence is controlled by directory order because later duplicate names
+	// overwrite earlier entries in skillMap.
+	skillDirs := buildSkillDirs(configuredSkillsDir...)
 
 	skills, err := skill.DiscoverSkills(skillDirs)
 	if err == nil && len(skills) > 0 {
@@ -204,6 +205,34 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 			Reg:    reg,
 		})
 	}
+}
+
+func buildSkillDirs(configuredSkillsDir ...string) []string {
+	var dirs []string
+	seen := make(map[string]struct{})
+
+	addDir := func(dir string) {
+		d := strings.TrimSpace(dir)
+		if d == "" {
+			return
+		}
+		d = filepath.Clean(d)
+		if _, exists := seen[d]; exists {
+			return
+		}
+		seen[d] = struct{}{}
+		dirs = append(dirs, d)
+	}
+
+	if len(configuredSkillsDir) > 0 {
+		addDir(configuredSkillsDir[0])
+	}
+	if userSkillsDir, err := pathutil.LateSkillsDir(); err == nil {
+		addDir(userSkillsDir)
+	}
+	addDir(pathutil.LateProjectSkillsDir())
+
+	return dirs
 }
 
 // --- Consume Stream ---

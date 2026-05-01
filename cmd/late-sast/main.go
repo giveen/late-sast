@@ -545,6 +545,7 @@ func main() {
 	} else {
 		// ── GUI path — shows target picker when no target supplied via CLI ────
 		guiApp := gui.NewApp()
+		guiApp.SetConfigDir(sastCfgDir)
 		guiApp.SetOnQuit(cleanupContainer)
 
 		setupFn := func(res gui.SASTPickerResult) (common.Orchestrator, string) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/pathutil"
 	"late/internal/session"
 	"path/filepath"
 	"strings"
@@ -342,5 +343,49 @@ func TestRegisterTools_Planning(t *testing.T) {
 	}
 	if sess.Registry.Get("bash") == nil {
 		t.Error("bash should be registered in planning mode")
+	}
+}
+
+func TestBuildSkillDirs_AdditiveOrdering(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	configured := filepath.Join(t.TempDir(), "custom-skills")
+	userSkillsDir, err := pathutil.LateSkillsDir()
+	if err != nil {
+		t.Fatalf("LateSkillsDir() error = %v", err)
+	}
+
+	got := buildSkillDirs(configured)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 skill dirs, got %d: %v", len(got), got)
+	}
+	if got[0] != configured {
+		t.Fatalf("expected configured dir first, got %q", got[0])
+	}
+	if got[1] != userSkillsDir {
+		t.Fatalf("expected user skills dir second, got %q (want %q)", got[1], userSkillsDir)
+	}
+	if got[2] != pathutil.LateProjectSkillsDir() {
+		t.Fatalf("expected project skills dir third, got %q", got[2])
+	}
+}
+
+func TestBuildSkillDirs_DeduplicatesConfiguredAndDefault(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	userSkillsDir, err := pathutil.LateSkillsDir()
+	if err != nil {
+		t.Fatalf("LateSkillsDir() error = %v", err)
+	}
+
+	got := buildSkillDirs(userSkillsDir)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 unique skill dirs, got %d: %v", len(got), got)
+	}
+	if got[0] != userSkillsDir {
+		t.Fatalf("expected user/configured dir first, got %q", got[0])
+	}
+	if got[1] != pathutil.LateProjectSkillsDir() {
+		t.Fatalf("expected project skills dir second, got %q", got[1])
 	}
 }

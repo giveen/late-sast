@@ -34,6 +34,7 @@ type App struct {
 	mainChat   *ChatPanel
 	mainInput  *InputPanel
 	usageLabel *widget.Label // shows "Context: N / M (X%)"
+	configDir  string        // config directory backing the Settings dialog
 
 	mu            sync.Mutex
 	phaseCounter  map[string]int // label → open count
@@ -55,6 +56,10 @@ func NewApp() *App {
 // SetOnQuit registers a callback to be invoked (in a background goroutine)
 // before the Fyne app exits. Use it for cleanup tasks like stopping containers.
 func (a *App) SetOnQuit(fn func()) { a.onQuit = fn }
+
+// SetConfigDir sets the config directory used by the Settings dialog.
+// If empty, the dialog falls back to the default late config directory.
+func (a *App) SetConfigDir(dir string) { a.configDir = dir }
 
 // ConfirmMiddleware returns a ToolMiddleware that uses Fyne dialogs for
 // tool-call confirmation. Safe to call before Run() — the window field
@@ -113,13 +118,17 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 	a.window.SetCloseIntercept(handleQuit)
 
 	quitBtn = widget.NewButton("⏹ Stop & Quit", handleQuit)
+	settingsBtn := widget.NewButton("Settings", func() {
+		a.showSettingsDialog()
+	})
+	topBar := container.NewBorder(nil, nil, quitBtn, settingsBtn, nil)
 
 	bottomBar := container.NewVBox(
 		a.mainInput,
 		container.NewBorder(nil, nil, statusLabel, a.usageLabel, nil),
 	)
 	mainContent := container.NewBorder(
-		container.NewHBox(quitBtn),
+		topBar,
 		bottomBar,
 		nil, nil,
 		a.mainChat,
