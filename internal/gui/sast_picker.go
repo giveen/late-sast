@@ -10,14 +10,16 @@ import (
 	fyneapp "fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 )
 
 // SASTPickerResult holds the user's target selection from the launcher screen.
 type SASTPickerResult struct {
-	URL       string // GitHub URL (empty when LocalPath is set)
-	LocalPath string // local directory path (empty when URL is set)
-	OutputDir string // where to write the report; empty means use default (cwd)
+	URL              string // GitHub URL (empty when LocalPath is set)
+	LocalPath        string // local directory path (empty when URL is set)
+	RetestReportPath string // path to a previous report for retest mode
+	OutputDir        string // where to write the report; empty means use default (cwd)
 }
 
 // RunSAST initialises Fyne, shows a target-picker screen when no target is
@@ -25,12 +27,12 @@ type SASTPickerResult struct {
 // setupFn builds the fully wired orchestrator and returns it together with
 // the message to auto-submit as the first audit task.
 //
-// When knownTarget or knownLocalPath is non-empty the picker is skipped and
-// the scan starts immediately — backwards-compatible with CLI flag behaviour.
+// When knownTarget, knownLocalPath, or knownRetestPath is non-empty the picker
+// is skipped and the scan starts immediately — backwards-compatible with CLI flags.
 //
 // This call blocks until the window is closed.
 func (a *App) RunSAST(
-	knownTarget, knownLocalPath, knownOutputDir string,
+	knownTarget, knownLocalPath, knownRetestPath, knownOutputDir string,
 	setupFn func(SASTPickerResult) (common.Orchestrator, string),
 ) {
 	a.fyneApp = fyneapp.NewWithID("io.late.sast")
@@ -65,7 +67,7 @@ func (a *App) RunSAST(
 		}
 	}
 
-	if knownTarget != "" || knownLocalPath != "" {
+	if knownTarget != "" || knownLocalPath != "" || knownRetestPath != "" {
 		// Target already known via CLI — show a brief loading screen while
 		// setup runs in the background.
 		a.window.Resize(fyne.NewSize(1150, 750))
@@ -73,13 +75,14 @@ func (a *App) RunSAST(
 			widget.NewLabel("Starting scan…"),
 		))
 		go transition(SASTPickerResult{
-			URL:       knownTarget,
-			LocalPath: knownLocalPath,
-			OutputDir: knownOutputDir,
+			URL:              knownTarget,
+			LocalPath:        knownLocalPath,
+			RetestReportPath: knownRetestPath,
+			OutputDir:        knownOutputDir,
 		})
 	} else {
 		// No target supplied — show the interactive picker.
-		a.window.Resize(fyne.NewSize(700, 460))
+		a.window.Resize(fyne.NewSize(980, 660))
 		a.window.SetContent(a.buildPickerContent(
 			func(res SASTPickerResult) {
 				fyne.Do(func() {
@@ -101,10 +104,17 @@ func (a *App) RunSAST(
 // clicks "Start Scan".
 func (a *App) buildPickerContent(onStart func(SASTPickerResult), defaultOutputDir string) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle(
-		"Late SAST — Select Target",
+		"Late SAST — Start",
 		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
 	)
+
+	modeLabel := widget.NewLabel("Workflow")
+	modeGroup := widget.NewRadioGroup(
+		[]string{"New Scan", "Retest Previous Report"},
+		func(string) {},
+	)
+	modeGroup.SetSelected("New Scan")
 
 	// ── GitHub URL field ──────────────────────────────────────────────────
 	urlLabel := widget.NewLabel("GitHub repository URL")
@@ -127,6 +137,23 @@ func (a *App) buildPickerContent(onStart func(SASTPickerResult), defaultOutputDi
 		}, a.window)
 	})
 
+	// ── Retest report selection + browse button ───────────────────────────
+	retestLabel := widget.NewLabel("Previous SAST report (.md)")
+	retestEntry := widget.NewEntry()
+	retestEntry.SetPlaceHolder("/path/to/sast_report_<repo>.md")
+
+	retestBrowse := widget.NewButton("Browse…", func() {
+		d := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+			if err != nil || r == nil {
+				return
+			}
+			retestEntry.SetText(r.URI().Path())
+			_ = r.Close()
+		}, a.window)
+		d.SetFilter(storage.NewExtensionFileFilter([]string{".md"}))
+		d.Show()
+	})
+
 	// ── Output directory field ────────────────────────────────────────────
 	outputLabel := widget.NewLabel("Output directory  (default: current directory)")
 	outputEntry := widget.NewEntry()
@@ -146,10 +173,35 @@ func (a *App) buildPickerContent(onStart func(SASTPickerResult), defaultOutputDi
 	errLabel := widget.NewLabel("")
 	errLabel.Hide()
 
+	scanSection := container.NewVBox(
+		urlLabel,
+		urlEntry,
+		localLabel,
+		container.NewBorder(nil, nil, nil, browseBtn, localEntry),
+	)
+	retestSection := container.NewVBox(
+		retestLabel,
+		container.NewBorder(nil, nil, nil, retestBrowse, retestEntry),
+	)
+	retestSection.Hide()
+
 	startBtn := widget.NewButton("Start Scan", func() {
+		mode := modeGroup.Selected
 		url := strings.TrimSpace(urlEntry.Text)
 		localPath := strings.TrimSpace(localEntry.Text)
+		retestPath := strings.TrimSpace(retestEntry.Text)
 		outputDir := strings.TrimSpace(outputEntry.Text)
+
+		if mode == "Retest Previous Report" {
+			if retestPath == "" {
+				errLabel.SetText("Select a previous SAST report to retest.")
+				errLabel.Show()
+				return
+			}
+			errLabel.Hide()
+			onStart(SASTPickerResult{RetestReportPath: retestPath, OutputDir: outputDir})
+			return
+		}
 
 		if url == "" && localPath == "" {
 			errLabel.SetText("Enter a GitHub URL or select a local directory.")
@@ -166,14 +218,28 @@ func (a *App) buildPickerContent(onStart func(SASTPickerResult), defaultOutputDi
 	})
 	startBtn.Importance = widget.HighImportance
 
+	modeGroup.OnChanged = func(value string) {
+		errLabel.Hide()
+		if value == "Retest Previous Report" {
+			scanSection.Hide()
+			retestSection.Show()
+			startBtn.SetText("Start Retest")
+			return
+		}
+		retestSection.Hide()
+		scanSection.Show()
+		startBtn.SetText("Start Scan")
+	}
+
 	return container.NewCenter(
 		container.NewVBox(
 			title,
 			widget.NewSeparator(),
-			urlLabel,
-			urlEntry,
-			localLabel,
-			container.NewBorder(nil, nil, nil, browseBtn, localEntry),
+			modeLabel,
+			modeGroup,
+			widget.NewSeparator(),
+			scanSection,
+			retestSection,
 			widget.NewSeparator(),
 			outputLabel,
 			container.NewBorder(nil, nil, nil, outputBrowse, outputEntry),

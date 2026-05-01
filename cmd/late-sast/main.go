@@ -323,7 +323,24 @@ func main() {
 		rootAgent  *orchestrator.BaseOrchestrator
 		initialMsg string
 	}
-	buildScan := func(pickedTarget, pickedLocalPath, pickedOutputDir string) sessionResult {
+	buildScan := func(pickedTarget, pickedLocalPath, pickedOutputDir, pickedRetestPath string) sessionResult {
+		activeRetestPath := retestPath
+		if pickedRetestPath != "" {
+			activeRetestPath = pickedRetestPath
+		}
+		if activeRetestPath != "" {
+			abs, err := filepath.Abs(activeRetestPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error resolving retest path: %v\n", err)
+				os.Exit(1)
+			}
+			if _, err := os.Stat(abs); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: retest report %q does not exist\n", abs)
+				os.Exit(1)
+			}
+			activeRetestPath = abs
+		}
+
 		if pickedOutputDir == "" {
 			pickedOutputDir = outputDir
 		}
@@ -344,7 +361,7 @@ func main() {
 
 		// Load SAST system prompt — retest uses a different prompt.
 		promptFile := "prompts/instruction-sast.md"
-		if retestPath != "" {
+		if activeRetestPath != "" {
 			promptFile = "prompts/instruction-sast-retest.md"
 		}
 		content, err := assets.PromptsFS.ReadFile(promptFile)
@@ -355,15 +372,15 @@ func main() {
 		systemPrompt := string(content)
 
 		// In retest mode: extract the original target and repo name from the report.
-		if retestPath != "" {
-			reportBytes, readErr := os.ReadFile(retestPath)
+		if activeRetestPath != "" {
+			reportBytes, readErr := os.ReadFile(activeRetestPath)
 			if readErr != nil {
 				fmt.Fprintf(os.Stderr, "Error reading retest report: %v\n", readErr)
 				os.Exit(1)
 			}
 			parsedTarget, parsedRepo := parseReportHeader(string(reportBytes))
 			if parsedTarget == "" {
-				fmt.Fprintf(os.Stderr, "Error: could not find a 'Target:' line in %s\n", retestPath)
+				fmt.Fprintf(os.Stderr, "Error: could not find a 'Target:' line in %s\n", activeRetestPath)
 				os.Exit(1)
 			}
 			pickedTarget = parsedTarget
@@ -396,8 +413,8 @@ func main() {
 		// Build initial audit message.
 		var initialMessage string
 		switch {
-		case retestPath != "":
-			initialMessage = fmt.Sprintf("Retest the confirmed and likely findings from the previous SAST report.\nPrevious report: %s\nTarget: %s", retestPath, pickedTarget)
+		case activeRetestPath != "":
+			initialMessage = fmt.Sprintf("Retest the confirmed and likely findings from the previous SAST report.\nPrevious report: %s\nTarget: %s", activeRetestPath, pickedTarget)
 		case pickedLocalPath != "":
 			initialMessage = fmt.Sprintf("Perform a complete security audit of the local repository at: %s", pickedLocalPath)
 		case pickedTarget != "":
@@ -405,7 +422,7 @@ func main() {
 		}
 
 		reportLabel := fmt.Sprintf("sast_report_%s.md", repoName)
-		if retestPath != "" {
+		if activeRetestPath != "" {
 			reportLabel = fmt.Sprintf("sast_retest_%s.md", repoName)
 		}
 		fmt.Println("Starting late-sast...")
@@ -466,7 +483,7 @@ func main() {
 
 	if *useTUIReq {
 		// ── TUI path — old behaviour, completely unchanged ───────────────────
-		sr := buildScan(target, localPath, outputDir)
+		sr := buildScan(target, localPath, outputDir, retestPath)
 		sess, rootAgent, initialMessage := sr.sess, sr.rootAgent, sr.initialMsg
 
 		renderer, _ := glamour.NewTermRenderer(
@@ -531,7 +548,7 @@ func main() {
 		guiApp.SetOnQuit(cleanupContainer)
 
 		setupFn := func(res gui.SASTPickerResult) (common.Orchestrator, string) {
-			sr := buildScan(res.URL, res.LocalPath, res.OutputDir)
+			sr := buildScan(res.URL, res.LocalPath, res.OutputDir, res.RetestReportPath)
 			sess, rootAgent := sr.sess, sr.rootAgent
 
 			baseCtx := context.WithValue(context.Background(), common.SkipConfirmationKey, true)
@@ -569,7 +586,7 @@ func main() {
 			return rootAgent, sr.initialMsg
 		}
 
-		guiApp.RunSAST(target, localPath, outputDir, setupFn)
+		guiApp.RunSAST(target, localPath, retestPath, outputDir, setupFn)
 	}
 
 	// Normal exit — clean up Docker resources.
