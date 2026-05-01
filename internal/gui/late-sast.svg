@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Shield outer -->
+  <path d="M32 4 L56 14 L56 36 C56 51 44 61 32 63 C20 61 8 51 8 36 L8 14 Z"
+        fill="#2D1B3E"/>
+  <!-- Shield inner -->
+  <path d="M32 10 L50 18 L50 36 C50 48 42 56 32 58 C22 56 14 48 14 36 L14 18 Z"
+        fill="#6C3D80"/>
+  <!-- Bug body -->
+  <ellipse cx="32" cy="36" rx="8" ry="10" fill="#ECF0F1"/>
+  <!-- Bug head -->
+  <circle cx="32" cy="25" r="5" fill="#ECF0F1"/>
+  <!-- Bug eyes -->
+  <circle cx="30" cy="24" r="1.5" fill="#6C3D80"/>
+  <circle cx="34" cy="24" r="1.5" fill="#6C3D80"/>
+  <!-- Bug antennae -->
+  <line x1="30" y1="21" x2="27" y2="16" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="34" y1="21" x2="37" y2="16" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Bug legs left -->
+  <line x1="24" y1="32" x2="19" y2="29" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="24" y1="36" x2="19" y2="36" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="24" y1="40" x2="19" y2="43" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Bug legs right -->
+  <line x1="40" y1="32" x2="45" y2="29" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="40" y1="36" x2="45" y2="36" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="40" y1="40" x2="45" y2="43" stroke="#ECF0F1" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

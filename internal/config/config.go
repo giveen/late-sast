@@ -45,6 +45,8 @@ type Config struct {
 	SubagentBaseURL string          `json:"subagent_base_url,omitempty"`
 	SubagentAPIKey  string          `json:"subagent_api_key,omitempty"`
 	SubagentModel   string          `json:"subagent_model,omitempty"`
+	AuditorBaseURL  string          `json:"auditor_base_url,omitempty"`
+	AuditorAPIKey   string          `json:"auditor_api_key,omitempty"`
 	AuditorModel    string          `json:"auditor_model,omitempty"`
 	SkillsDir       string          `json:"skills_dir,omitempty"`
 }
@@ -67,6 +69,44 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 	return LoadConfigFromDir(lateConfigDir)
+}
+
+func SaveConfig(cfg *Config) error {
+	lateConfigDir, err := pathutil.LateConfigDir()
+	if err != nil {
+		return err
+	}
+	return SaveConfigFromDir(lateConfigDir, cfg)
+}
+
+// SaveConfigFromDir writes config.json to the given directory with secure
+// permissions. A nil cfg is treated as defaultConfig().
+func SaveConfigFromDir(lateConfigDir string, cfg *Config) error {
+	if cfg == nil {
+		fallback := defaultConfig()
+		cfg = &fallback
+	}
+	if cfg.EnabledTools == nil {
+		cfg.EnabledTools = defaultConfig().EnabledTools
+	}
+
+	if err := os.MkdirAll(lateConfigDir, configDirPerm); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	configPath := filepath.Join(lateConfigDir, "config.json")
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(configPath, data, configFilePerm); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	if err := ensureSecureConfigPermissions(lateConfigDir, configPath); err != nil {
+		return err
+	}
+	return nil
 }
 
 // LoadConfigFromDir loads config.json from the given directory.
@@ -164,6 +204,12 @@ func ResolveAuditorSettingsWithEnv(cfg *Config, openAI OpenAISettings, lookup En
 		}
 		if cfg.SubagentAPIKey != "" {
 			resolved.APIKey = cfg.SubagentAPIKey
+		}
+		if cfg.AuditorBaseURL != "" {
+			resolved.BaseURL = cfg.AuditorBaseURL
+		}
+		if cfg.AuditorAPIKey != "" {
+			resolved.APIKey = cfg.AuditorAPIKey
 		}
 		resolved.Model = cfg.AuditorModel
 	}

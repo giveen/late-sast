@@ -6,6 +6,35 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.8.0] — 2026-05-01
+
+### Added
+- **Graphical user interface (Fyne v2)** — a full desktop GUI replaces the terminal as the default interface. Launch without `--tui` to open the GUI; use `--tui` to keep the original Bubble Tea terminal experience.
+  - **Target picker screen** — on first launch with no flags, a compact window lets you enter a GitHub URL, browse for a local repository, and choose an output directory before starting the scan. Supplying `--target` / `--path` / `--output` via CLI skips the picker as before.
+  - **Streaming chat panel** — assistant messages render incrementally as they stream. Markdown is parsed with goldmark (bold, italic, headings, code blocks, lists, horizontal rules) and displayed as `widget.RichText` segments using a custom dark amethyst theme.
+  - **Per-subagent tabs** — each spawned subagent (Setup, Testing Codebase, Live Exploit, Making Report) opens in its own tab with a dedicated **■ Stop** button and a live token counter (`used / max`) in the tab header. Completed tabs close automatically.
+  - **Reasoning / thinking accordion** — chain-of-thought reasoning streams into a collapsible "Thinking…" section above the response. The section starts collapsed and is never reopened automatically — click it at any time to read the model's reasoning. Renamed to "Thoughts" once the turn ends.
+  - **Context window usage bar** — the bottom of the main tab shows `Context: N / M (X%)` token counts, updated after each model response.
+  - **Stop & Quit button** — top-left of the main tab. Cancels the running agent, runs container cleanup, then closes the window. Button text changes to "Stopping…" and disables on first click (idempotent via `sync.Once`).
+  - **Tool-confirmation dialogs** — all tool-approval prompts (allow once / allow for session / allow for project / allow always / deny) use native Fyne dialog boxes instead of TUI key presses.
+  - **Custom dark theme** — amethyst palette (`#9B59B6`), near-black background (`#191919`), `ECF0F1` text. Applied globally via a `fyne.Theme` implementation.
+  - **Window icon** — purple shield-and-bug SVG icon embedded in the binary and set as the window icon (`window.SetIcon`). Displays in title bar and taskbar while the app is running.
+- **`make install-desktop`** — installs a `.desktop` launcher entry and the SVG icon to `~/.local/share/applications` and `~/.local/share/icons/hicolor/scalable/apps` so `late-sast` appears in the system application launcher.
+- **GUI log file** — when running in GUI mode, all stdout/stderr (including Fyne internals, docker output, and agent logs) is redirected to `~/.cache/late-sast/late-sast.log` so the launching terminal stays silent. Use `--tui` to keep output in the terminal.
+
+### Fixed
+- **`LANG=C` locale error** — Fyne's locale parser rejects the `C` and `POSIX` pseudo-locales. `$LANG` is now normalised to `en_US.UTF-8` at startup when it is empty, `C`, or `POSIX`.
+- **Fyne thread warnings at shutdown** — goroutines that stream events were calling `fyne.Do` after the Fyne event loop had drained, causing "Error in Fyne call thread" log spam. Fixed by wiring `window.SetCloseIntercept` → `rootAgent.Cancel()` so event-loop goroutines are stopped before Fyne shuts down.
+
+### Changed
+- **`make install`** now reliably installs `late-sast` without being clobbered by `install-late`. The `late` binary remains optional compatibility tooling from the upstream engine, but this fork's primary target is `late-sast`.
+- **`fetch-cbm`** skips the network download when the embedded binary already exists (avoids a multi-second stall on every `make install`).
+- **`ChildAddedEvent`** carries an `AgentType string` field so the GUI can label subagent tabs correctly without a separate lookup.
+- **`ContentEvent`** carries a `client.Usage` field (PromptTokens, CompletionTokens, TotalTokens) for real-time context window tracking.
+- **`NewSubagentOrchestrator`** — the `tui.Messenger` parameter replaced with a generic `agent.MiddlewareFactory` function type, eliminating the circular `agent → tui` import and allowing the GUI to inject its own confirmation middleware without forking the agent package.
+
+---
+
 ## [v1.7.2.2] — 2026-04-30
 
 ### Fixed

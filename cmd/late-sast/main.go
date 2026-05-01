@@ -24,8 +24,9 @@ import (
 	"late/internal/assets"
 	"late/internal/assets/sast"
 	"late/internal/client"
-	appconfig "late/internal/config"
 	"late/internal/common"
+	appconfig "late/internal/config"
+	"late/internal/gui"
 	"late/internal/mcp"
 	"late/internal/orchestrator"
 	"late/internal/pathutil"
@@ -38,6 +39,12 @@ import (
 )
 
 func main() {
+	// Fyne's locale parser rejects the "C" pseudo-locale.
+	// Normalise to a well-formed BCP-47 tag before Fyne initialises.
+	if lc := os.Getenv("LANG"); lc == "" || lc == "C" || lc == "POSIX" {
+		os.Setenv("LANG", "en_US.UTF-8")
+	}
+
 	targetReq := flag.String("target", "", "GitHub URL of the repository to audit")
 	outputReq := flag.String("output", "", "Directory to write the SAST report (default: current directory)")
 	timeoutReq := flag.Duration("timeout", 0, "Wall-clock scan timeout (e.g. 90m, 2h). 0 = no limit")
@@ -47,6 +54,7 @@ func main() {
 
 	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")
 	retestReq := flag.String("retest", "", "Path to a previous SAST report — retests all confirmed findings to check if they have been fixed")
+	useTUIReq := flag.Bool("tui", false, "Use terminal UI instead of the graphical interface")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: late-sast [flags]\n\n")
@@ -62,6 +70,22 @@ func main() {
 	if *versionReq {
 		fmt.Printf("late-sast %s\n", common.Version)
 		return
+	}
+
+	// GUI mode: redirect stdout and stderr to a log file so the terminal the
+	// user launched from stays clean. Logs go to ~/.cache/late-sast/late-sast.log.
+	// syscall.Dup2 redirects at the fd level, so Fyne internals, C libraries,
+	// and child processes (docker) all write to the same log file.
+	if !*useTUIReq {
+		if cacheDir, err := pathutil.LateSASTCacheDir(); err == nil {
+			os.MkdirAll(cacheDir, 0755) //nolint:errcheck
+			logPath := filepath.Join(cacheDir, "late-sast.log")
+			if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+				syscall.Dup2(int(lf.Fd()), 1) //nolint:errcheck
+				syscall.Dup2(int(lf.Fd()), 2) //nolint:errcheck
+				lf.Close()
+			}
+		}
 	}
 
 	// Accept positional URL as an alternative to --target
@@ -131,59 +155,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: failed to extract SAST skill files: %v\n", err)
 	}
 
-	// Derive repo name early — retest mode may override from the report header.
-	repoName := "repo"
-	if localPath != "" {
-		if base := filepath.Base(localPath); base != "" && base != "." {
-			repoName = base
-		}
-	} else if target != "" {
-		if parts := strings.Split(strings.TrimRight(target, "/"), "/"); len(parts) > 0 {
-			if last := parts[len(parts)-1]; last != "" {
-				repoName = last
-			}
-		}
-	}
-
-	// Load SAST system prompt — retest mode uses a different prompt
-	promptFile := "prompts/instruction-sast.md"
-	if retestPath != "" {
-		promptFile = "prompts/instruction-sast-retest.md"
-	}
-	content, err := assets.PromptsFS.ReadFile(promptFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading SAST system prompt: %v\n", err)
-		os.Exit(1)
-	}
-	systemPrompt := string(content)
-
-	// In retest mode: extract the original target and repo name from the report header.
-	// This sets target/repoName so the placeholder substitution below works normally.
-	if retestPath != "" {
-		reportBytes, readErr := os.ReadFile(retestPath)
-		if readErr != nil {
-			fmt.Fprintf(os.Stderr, "Error reading retest report: %v\n", readErr)
-			os.Exit(1)
-		}
-		parsedTarget, parsedRepo := parseReportHeader(string(reportBytes))
-		if parsedTarget == "" {
-			fmt.Fprintf(os.Stderr, "Error: could not find a 'Target:' line in %s\n", retestPath)
-			os.Exit(1)
-		}
-		target = parsedTarget
-		if parsedRepo != "" {
-			repoName = parsedRepo
-		}
-	}
-
 	// Container name and workdir are unique per session — no parallel run collisions.
-	// All three placeholders are resolved via the standard ${{}} mechanism.
 	cwd, _ := os.Getwd()
 	containerName := "sast-" + time.Now().Format("20060102-150405")
 	workDir := "/tmp/" + containerName
 	networkName := containerName + "-net"
 	composeProject := containerName
-	// Resolve output directory: flag > cwd. Create it if it doesn't exist.
+	// Resolve output directory from flag; picker may override for GUI mode.
 	outputDir := *outputReq
 	if outputDir == "" {
 		outputDir = cwd
@@ -194,38 +172,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
-		"${{CWD}}":             cwd,
-		"${{CONTAINER_NAME}}":  containerName,
-		"${{WORKDIR}}":         workDir,
-		"${{REPO_NAME}}":       repoName,
-		"${{OUTPUT_DIR}}":      outputDir,
-		"${{NETWORK_NAME}}":    networkName,
-		"${{COMPOSE_PROJECT}}": composeProject,
-		"${{VERSION}}":         common.Version,
-	})
-
-	if *gemmaThinkingReq {
-		systemPrompt = "<|think|>" + systemPrompt
-	}
-
-	// Build initial audit message
-	var initialMessage string
-	switch {
-	case retestPath != "":
-		initialMessage = fmt.Sprintf("Retest the confirmed and likely findings from the previous SAST report.\nPrevious report: %s\nTarget: %s", retestPath, target)
-	case localPath != "":
-		initialMessage = fmt.Sprintf("Perform a complete security audit of the local repository at: %s", localPath)
-	case target != "":
-		initialMessage = fmt.Sprintf("Perform a complete security audit of: %s", target)
-	}
-
-	reportLabel := fmt.Sprintf("sast_report_%s.md", repoName)
-	if retestPath != "" {
-		reportLabel = fmt.Sprintf("sast_retest_%s.md", repoName)
-	}
-	fmt.Println("Starting late-sast...")
-	fmt.Printf("[late-sast] Report will be written to: %s/%s\n", outputDir, reportLabel)
 
 	// Session setup (non-persistent for audit runs)
 	sessionsDir, err := session.SessionDir()
@@ -271,7 +217,6 @@ func main() {
 				}
 			}
 			removeAsRoot("/tmp/sast-skill")
-			removeAsRoot("/tmp/semgrep-skills")
 			removeAsRoot(workDir)
 			fmt.Printf("[late-sast] Workdir %s removed.\n", workDir)
 		default:
@@ -370,129 +315,282 @@ func main() {
 		}
 	}
 
-	// Session + tool registration
-	sess := session.New(c, historyPath, []client.ChatMessage{}, systemPrompt, true)
-
-	// Register SAST tool set — permissive ShellTool, no path restrictions.
-	// 2-minute timeout prevents curl/docker exec from blocking the agent indefinitely.
-	sess.Registry.Register(&tool.ShellTool{
-		Analyzer:     &tool.SASTBashAnalyzer{},
-		SkipSafePath: true,
-		Timeout:      2 * time.Minute,
-	})
-	sess.Registry.Register(tool.NewReadFileTool())
-	sess.Registry.Register(tool.WriteFileTool{})
-
-	// CVE lookup tools (native Go — no external dependencies)
-	sess.Registry.Register(tool.VulVendorProductCVETool{})
-	sess.Registry.Register(tool.VulCVESearchTool{})
-	sess.Registry.Register(tool.VulVendorProductsTool{})
-	sess.Registry.Register(tool.VulLastCVEsTool{})
-
-	// Compose network patching (YAML-AST-based, deterministic)
-	sess.Registry.Register(tool.PatchComposeNetworkTool{})
-
-	// Documentation lookup tools — native Go reimplementation of ProContext.
-	// Fetches the public ProContext registry (~2100 libraries) once at startup.
-	// Non-fatal: if the registry is unreachable the scan continues without docs tools.
-	if docsClient, docsErr := tool.NewProContextClient(); docsErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: ProContext registry unavailable (%v) — docs_resolve/read/search disabled\n", docsErr)
-	} else {
-		sess.Registry.Register(tool.DocsResolveTool{Client: docsClient})
-		sess.Registry.Register(tool.DocsReadTool{Client: docsClient})
-		sess.Registry.Register(tool.DocsSearchTool{Client: docsClient})
+	// buildScan constructs the system prompt, session, tools, and root
+	// orchestrator for a given target. It is called either directly (TUI path)
+	// or from the GUI picker callback (GUI mode).
+	type sessionResult struct {
+		sess       *session.Session
+		rootAgent  *orchestrator.BaseOrchestrator
+		initialMsg string
 	}
-
-	// Context-window knowledge base — index large docs/advisories once, retrieve
-	// only relevant snippets via BM25 search (raw content never enters context).
-	// Inspired by context-mode; implemented natively with no external deps.
-	//
-	// Pre-index all SAST vulnerability reference files so the scanner subagent
-	// can ctx_search them without ever reading their content into the conversation.
-	// This prevents ~128 KB of reference material from being dumped into context
-	// before a single line of code is scanned.
-	ctxIdx := tool.NewContextIndex()
-	indexSASTReferences(ctxIdx, "/tmp/sast-skill")
-	if err := fetchAndIndexSemgrepSkills(ctxIdx, "/tmp/semgrep-skills"); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: semgrep code-security skills unavailable (%v) — skipping\n", err)
-	}
-	sess.Registry.Register(tool.CtxIndexTool{Index: ctxIdx})
-	sess.Registry.Register(tool.CtxSearchTool{Index: ctxIdx})
-	sess.Registry.Register(tool.CtxFetchAndIndexTool{Index: ctxIdx})
-	sess.Registry.Register(tool.CtxIndexFileTool{Index: ctxIdx})
-
-	// Register MCP tools
-	for _, t := range mcpClient.GetTools() {
-		if enabled, exists := enabledTools[t.Name()]; exists && !enabled {
-			continue
+	buildScan := func(pickedTarget, pickedLocalPath, pickedOutputDir, pickedRetestPath string) sessionResult {
+		activeRetestPath := retestPath
+		if pickedRetestPath != "" {
+			activeRetestPath = pickedRetestPath
 		}
-		sess.Registry.Register(t)
-	}
+		if activeRetestPath != "" {
+			abs, err := filepath.Abs(activeRetestPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error resolving retest path: %v\n", err)
+				os.Exit(1)
+			}
+			if _, err := os.Stat(abs); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: retest report %q does not exist\n", abs)
+				os.Exit(1)
+			}
+			activeRetestPath = abs
+		}
 
-	// TUI renderer
-	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(tui.LateTheme),
-		glamour.WithWordWrap(80),
-		glamour.WithPreservedNewLines(),
-	)
+		if pickedOutputDir == "" {
+			pickedOutputDir = outputDir
+		}
 
-	// Root orchestrator
-	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
-	model := tui.NewModel(rootAgent, renderer)
-	p := tea.NewProgram(model)
+		// Derive repo name from the chosen target/path.
+		repoName := "repo"
+		if pickedLocalPath != "" {
+			if base := filepath.Base(pickedLocalPath); base != "" && base != "." {
+				repoName = base
+			}
+		} else if pickedTarget != "" {
+			if parts := strings.Split(strings.TrimRight(pickedTarget, "/"), "/"); len(parts) > 0 {
+				if last := parts[len(parts)-1]; last != "" {
+					repoName = last
+				}
+			}
+		}
 
-	go func() {
-		p.Send(tui.SetMessengerMsg{Messenger: p})
+		// Load SAST system prompt — retest uses a different prompt.
+		promptFile := "prompts/instruction-sast.md"
+		if activeRetestPath != "" {
+			promptFile = "prompts/instruction-sast-retest.md"
+		}
+		content, err := assets.PromptsFS.ReadFile(promptFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading SAST system prompt: %v\n", err)
+			os.Exit(1)
+		}
+		systemPrompt := string(content)
 
-		// SAST runs fully unsupervised — no prompts
-		ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
-		ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
-		ctx = context.WithValue(ctx, common.ToolApprovalKey, true)
-		rootAgent.SetContext(ctx)
+		// In retest mode: extract the original target and repo name from the report.
+		if activeRetestPath != "" {
+			reportBytes, readErr := os.ReadFile(activeRetestPath)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "Error reading retest report: %v\n", readErr)
+				os.Exit(1)
+			}
+			parsedTarget, parsedRepo := parseReportHeader(string(reportBytes))
+			if parsedTarget == "" {
+				fmt.Fprintf(os.Stderr, "Error: could not find a 'Target:' line in %s\n", activeRetestPath)
+				os.Exit(1)
+			}
+			pickedTarget = parsedTarget
+			if parsedRepo != "" {
+				repoName = parsedRepo
+			}
+		}
 
-		rootAgent.SetMiddlewares([]common.ToolMiddleware{
-			tui.TUIConfirmMiddleware(p, sess.Registry),
+		// Ensure output dir exists.
+		if err := os.MkdirAll(pickedOutputDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+			os.Exit(1)
+		}
+
+		systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
+			"${{CWD}}":             cwd,
+			"${{CONTAINER_NAME}}":  containerName,
+			"${{WORKDIR}}":         workDir,
+			"${{REPO_NAME}}":       repoName,
+			"${{OUTPUT_DIR}}":      pickedOutputDir,
+			"${{NETWORK_NAME}}":    networkName,
+			"${{COMPOSE_PROJECT}}": composeProject,
+			"${{VERSION}}":         common.Version,
 		})
 
-		ForwardOrchestratorEvents(p, rootAgent)
-
-		// Auto-submit the initial audit task if a target was provided
-		if initialMessage != "" {
-			// Small delay to let the TUI render its first frame
-			time.Sleep(300 * time.Millisecond)
-			p.Send(tui.AutoSubmitMsg{Text: initialMessage})
+		if *gemmaThinkingReq {
+			systemPrompt = "<|think|>" + systemPrompt
 		}
-	}()
 
-	// Subagent support
-	runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-		agentClient := subagentClient
-		if agentType == "auditor" {
-			agentClient = auditorClient
+		// Build initial audit message.
+		var initialMessage string
+		switch {
+		case activeRetestPath != "":
+			initialMessage = fmt.Sprintf("Retest the confirmed and likely findings from the previous SAST report.\nPrevious report: %s\nTarget: %s", activeRetestPath, pickedTarget)
+		case pickedLocalPath != "":
+			initialMessage = fmt.Sprintf("Perform a complete security audit of the local repository at: %s", pickedLocalPath)
+		case pickedTarget != "":
+			initialMessage = fmt.Sprintf("Perform a complete security audit of: %s", pickedTarget)
 		}
-		child, err := agent.NewSubagentOrchestrator(
-			agentClient, goal, ctxFiles, agentType,
-			enabledTools, true, *gemmaThinkingReq,
-			*subagentMaxTurns, rootAgent, p,
+
+		reportLabel := fmt.Sprintf("sast_report_%s.md", repoName)
+		if activeRetestPath != "" {
+			reportLabel = fmt.Sprintf("sast_retest_%s.md", repoName)
+		}
+		fmt.Println("Starting late-sast...")
+		fmt.Printf("[late-sast] Report will be written to: %s/%s\n", pickedOutputDir, reportLabel)
+
+		// Session + tool registration.
+		sess := session.New(c, historyPath, []client.ChatMessage{}, systemPrompt, true)
+
+		sess.Registry.Register(&tool.ShellTool{
+			Analyzer:     &tool.SASTBashAnalyzer{},
+			SkipSafePath: true,
+			Timeout:      2 * time.Minute,
+		})
+		sess.Registry.Register(tool.NewReadFileTool())
+		sess.Registry.Register(tool.WriteFileTool{})
+
+		sess.Registry.Register(tool.VulVendorProductCVETool{})
+		sess.Registry.Register(tool.VulCVESearchTool{})
+		sess.Registry.Register(tool.VulVendorProductsTool{})
+		sess.Registry.Register(tool.VulLastCVEsTool{})
+
+		sess.Registry.Register(tool.PatchComposeNetworkTool{})
+
+		if docsClient, docsErr := tool.NewProContextClient(); docsErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: ProContext registry unavailable (%v) — docs_resolve/read/search disabled\n", docsErr)
+		} else {
+			sess.Registry.Register(tool.DocsResolveTool{Client: docsClient})
+			sess.Registry.Register(tool.DocsReadTool{Client: docsClient})
+			sess.Registry.Register(tool.DocsSearchTool{Client: docsClient})
+		}
+
+		ctxIdx := tool.NewContextIndex()
+		indexSASTReferences(ctxIdx, "/tmp/sast-skill")
+		semgrepCacheDir := func() string {
+			if d, err := pathutil.LateSASTCacheDir(); err == nil {
+				return filepath.Join(d, "semgrep-skills")
+			}
+			return "/tmp/semgrep-skills"
+		}()
+		if err := fetchAndIndexSemgrepSkills(context.Background(), ctxIdx, semgrepCacheDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: semgrep code-security skills unavailable (%v) — skipping\n", err)
+		}
+		sess.Registry.Register(tool.CtxIndexTool{Index: ctxIdx})
+		sess.Registry.Register(tool.CtxSearchTool{Index: ctxIdx})
+		sess.Registry.Register(tool.CtxFetchAndIndexTool{Index: ctxIdx})
+		sess.Registry.Register(tool.CtxIndexFileTool{Index: ctxIdx})
+
+		for _, t := range mcpClient.GetTools() {
+			if enabled, exists := enabledTools[t.Name()]; exists && !enabled {
+				continue
+			}
+			sess.Registry.Register(t)
+		}
+
+		rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
+		return sessionResult{sess: sess, rootAgent: rootAgent, initialMsg: initialMessage}
+	}
+
+	if *useTUIReq {
+		// ── TUI path — old behaviour, completely unchanged ───────────────────
+		sr := buildScan(target, localPath, outputDir, retestPath)
+		sess, rootAgent, initialMessage := sr.sess, sr.rootAgent, sr.initialMsg
+
+		renderer, _ := glamour.NewTermRenderer(
+			glamour.WithStylesFromJSONBytes(tui.LateTheme),
+			glamour.WithWordWrap(80),
+			glamour.WithPreservedNewLines(),
 		)
-		if err != nil {
-			return "", err
-		}
-		res, err := child.Execute("")
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
-	}
-	sess.Registry.Register(tool.SpawnSubagentTool{Runner: runner})
+		model := tui.NewModel(rootAgent, renderer)
+		p := tea.NewProgram(model)
 
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		cleanupContainer()
-		os.Exit(1)
+		go func() {
+			p.Send(tui.SetMessengerMsg{Messenger: p})
+
+			ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
+			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
+			ctx = context.WithValue(ctx, common.ToolApprovalKey, true)
+			rootAgent.SetContext(ctx)
+			rootAgent.SetMiddlewares([]common.ToolMiddleware{
+				tui.TUIConfirmMiddleware(p, sess.Registry),
+			})
+			ForwardOrchestratorEvents(p, rootAgent)
+
+			if initialMessage != "" {
+				time.Sleep(300 * time.Millisecond)
+				p.Send(tui.AutoSubmitMsg{Text: initialMessage})
+			}
+		}()
+
+		sess.Registry.Register(tool.SpawnSubagentTool{
+			Runner: func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
+				agentClient := subagentClient
+				if agentType == "auditor" {
+					agentClient = auditorClient
+				}
+				child, err := agent.NewSubagentOrchestrator(
+					agentClient, goal, ctxFiles, agentType,
+					enabledTools, true, *gemmaThinkingReq,
+					*subagentMaxTurns, rootAgent,
+					func(reg *common.ToolRegistry) []common.ToolMiddleware {
+						return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
+					},
+				)
+				if err != nil {
+					return "", err
+				}
+				res, err := child.Execute("")
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
+			},
+		})
+
+		if _, err := p.Run(); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			cleanupContainer()
+			os.Exit(1)
+		}
+	} else {
+		// ── GUI path — shows target picker when no target supplied via CLI ────
+		guiApp := gui.NewApp()
+		guiApp.SetConfigDir(sastCfgDir)
+		guiApp.SetOnQuit(cleanupContainer)
+
+		setupFn := func(res gui.SASTPickerResult) (common.Orchestrator, string) {
+			sr := buildScan(res.URL, res.LocalPath, res.OutputDir, res.RetestReportPath)
+			sess, rootAgent := sr.sess, sr.rootAgent
+
+			baseCtx := context.WithValue(context.Background(), common.SkipConfirmationKey, true)
+			baseCtx = context.WithValue(baseCtx, common.ToolApprovalKey, true)
+			rootAgent.SetContext(baseCtx)
+			rootAgent.SetMiddlewares([]common.ToolMiddleware{
+				guiApp.ConfirmMiddleware(sess.Registry, true),
+			})
+
+			sess.Registry.Register(tool.SpawnSubagentTool{
+				Runner: func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
+					agentClient := subagentClient
+					if agentType == "auditor" {
+						agentClient = auditorClient
+					}
+					child, err := agent.NewSubagentOrchestrator(
+						agentClient, goal, ctxFiles, agentType,
+						enabledTools, true, *gemmaThinkingReq,
+						*subagentMaxTurns, rootAgent,
+						func(reg *common.ToolRegistry) []common.ToolMiddleware {
+							return []common.ToolMiddleware{guiApp.ConfirmMiddleware(reg, true)}
+						},
+					)
+					if err != nil {
+						return "", err
+					}
+					res, err := child.Execute("")
+					if err != nil {
+						return "", err
+					}
+					return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
+				},
+			})
+
+			return rootAgent, sr.initialMsg
+		}
+
+		guiApp.RunSAST(target, localPath, retestPath, outputDir, setupFn)
 	}
 
-	// Normal exit (Ctrl-Q or agent finished) — clean up too.
+	// Normal exit — clean up Docker resources.
 	cleanupContainer()
 }
 
@@ -626,9 +724,9 @@ func extractSASTSkill(destDir string) error {
 }
 
 // fetchAndIndexSemgrepSkills downloads the semgrep/skills code-security zip
-// (if not already cached), extracts it to destDir, and indexes all rule
-// markdown files into the BM25 index. Non-fatal — caller logs the error.
-func fetchAndIndexSemgrepSkills(idx *tool.ContextIndex, destDir string) error {
+// (if not already cached at the persistent cache dir), extracts it, and indexes
+// all rule markdown files into the BM25 index. Non-fatal — caller logs the error.
+func fetchAndIndexSemgrepSkills(ctx context.Context, idx *tool.ContextIndex, destDir string) error {
 	const zipURL = "https://github.com/semgrep/skills/raw/main/skills/code-security.zip"
 	rulesDir := filepath.Join(destDir, "code-security", "rules")
 
@@ -641,8 +739,15 @@ func fetchAndIndexSemgrepSkills(idx *tool.ContextIndex, destDir string) error {
 		return fmt.Errorf("mkdir %s: %w", destDir, err)
 	}
 
-	// Download
-	resp, err := http.Get(zipURL) //nolint:gosec // URL is a hardcoded constant
+	// Download with a bounded timeout so startup never hangs indefinitely.
+	dlCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, zipURL, nil)
+	if err != nil {
+		return fmt.Errorf("build semgrep skills request: %w", err)
+	}
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download semgrep skills: %w", err)
 	}
@@ -657,13 +762,26 @@ func fetchAndIndexSemgrepSkills(idx *tool.ContextIndex, destDir string) error {
 		return fmt.Errorf("read semgrep skills zip: %w", err)
 	}
 
-	// Extract
+	// Extract — guard against Zip Slip by verifying every entry stays inside destDir.
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		return fmt.Errorf("open semgrep skills zip: %w", err)
 	}
+	absDestDir, err := filepath.Abs(destDir)
+	if err != nil {
+		return fmt.Errorf("resolve destDir: %w", err)
+	}
 	for _, f := range zr.File {
-		dest := filepath.Join(destDir, f.Name)
+		// Reject absolute paths and clean the name before joining.
+		name := filepath.Clean(f.Name)
+		if filepath.IsAbs(name) {
+			continue
+		}
+		dest := filepath.Join(absDestDir, name)
+		// Ensure the resolved path is still inside destDir.
+		if !strings.HasPrefix(dest+string(filepath.Separator), absDestDir+string(filepath.Separator)) {
+			continue
+		}
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(dest, 0755) //nolint:errcheck
 			continue

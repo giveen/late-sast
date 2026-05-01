@@ -7,19 +7,65 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/pathutil"
-	"late/internal/skill"
 	"late/internal/session"
+	"late/internal/skill"
 	"late/internal/tool"
+	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 // --- Stream Accumulator ---
+
+// execHTMLTagRe strips known HTML formatting tags that models sometimes emit into
+// their output. Uses the same allowlist as the TUI renderer so generic angle-bracket
+// constructs (C++ templates, XML snippets, generic type params) are left intact.
+var execHTMLTagRe = regexp.MustCompile(`(?i)</?(?:pre|code|br|p|li|ol|ul|details|summary|div|span|h[1-6]|blockquote|hr|table|thead|tbody|tr|th|td|em|strong|b|i|a|img|figure|figcaption|section|article|aside|header|footer|nav|main|form|input|button|select|option|textarea|label|script|style|html|head|body)(?:\s[^>]*)?>|</>`)
+
+// sanitizeContent strips HTML tags and collapses repeated-line loops before the
+// assistant message is committed to session history. This keeps runaway model
+// output (hundreds of </pre> tags) from inflating the context window.
+func sanitizeContent(s string) string {
+	if s == "" {
+		return s
+	}
+	const maxRep = 3
+	s = execHTMLTagRe.ReplaceAllString(s, "")
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	var lastLine string
+	repCount := 0
+	consecBlank := 0
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			consecBlank++
+			if consecBlank <= 1 {
+				out = append(out, l)
+			}
+			continue
+		}
+		consecBlank = 0
+		if trimmed == lastLine {
+			repCount++
+			if repCount >= maxRep {
+				continue
+			}
+		} else {
+			repCount = 0
+			lastLine = trimmed
+		}
+		out = append(out, l)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
 
 // StreamAccumulator collects streaming deltas into coherent content.
 // This replaces the duplicated accumulation logic in tui/state.go (GenerationState.Append)
 // and agent/agent.go (manual accumulation loop).
 type StreamAccumulator struct {
-	Content   string
-	Reasoning string
+	Content      string
+	Reasoning    string
 	ToolCalls    []client.ToolCall
 	Usage        client.Usage
 	FinishReason string
@@ -87,16 +133,16 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 		// Fail-closed: if no confirmation middleware is provided, do not
 		// execute shell commands (they must be explicitly approved by a
 		// middleware such as the TUI confirm middleware).
-if len(middlewares) == 0 {
-				if t := sess.Registry.Get(tc.Function.Name); t != nil {
-					if _, ok := t.(*tool.ShellTool); ok {
-						result := "shell command requires explicit approval before execution"
-						if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
-							return err
-						}
-						continue
+		if len(middlewares) == 0 {
+			if t := sess.Registry.Get(tc.Function.Name); t != nil {
+				if _, ok := t.(*tool.ShellTool); ok {
+					result := "shell command requires explicit approval before execution"
+					if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
+						return err
 					}
+					continue
 				}
+			}
 		}
 
 		result, err := runner(ctx, tc)
@@ -115,7 +161,9 @@ if len(middlewares) == 0 {
 // RegisterTools registers the common tool set on a session's registry.
 // If isPlanning is true, it only registers read-only tools and the planning tool.
 // Otherwise, it registers the full set of coding tools.
-func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning bool) {
+// configuredSkillsDir is optional; when provided, its skills are discovered
+// additively alongside default skill directories.
+func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning bool, configuredSkillsDir ...string) {
 	if enabledTools == nil {
 		enabledTools = make(map[string]bool)
 	}
@@ -141,12 +189,10 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 		}
 	}
 
-	// Register Skills
-	skillDirs := []string{}
-	if userSkillsDir, err := pathutil.LateSkillsDir(); err == nil {
-		skillDirs = append(skillDirs, userSkillsDir)
-	}
-	skillDirs = append(skillDirs, pathutil.LateProjectSkillsDir())
+	// Register Skills. This is additive: configured dir (if any) + defaults.
+	// Precedence is controlled by directory order because later duplicate names
+	// overwrite earlier entries in skillMap.
+	skillDirs := buildSkillDirs(configuredSkillsDir...)
 
 	skills, err := skill.DiscoverSkills(skillDirs)
 	if err == nil && len(skills) > 0 {
@@ -159,6 +205,34 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 			Reg:    reg,
 		})
 	}
+}
+
+func buildSkillDirs(configuredSkillsDir ...string) []string {
+	var dirs []string
+	seen := make(map[string]struct{})
+
+	addDir := func(dir string) {
+		d := strings.TrimSpace(dir)
+		if d == "" {
+			return
+		}
+		d = filepath.Clean(d)
+		if _, exists := seen[d]; exists {
+			return
+		}
+		seen[d] = struct{}{}
+		dirs = append(dirs, d)
+	}
+
+	if len(configuredSkillsDir) > 0 {
+		addDir(configuredSkillsDir[0])
+	}
+	if userSkillsDir, err := pathutil.LateSkillsDir(); err == nil {
+		addDir(userSkillsDir)
+	}
+	addDir(pathutil.LateProjectSkillsDir())
+
+	return dirs
 }
 
 // --- Consume Stream ---
@@ -267,7 +341,7 @@ func RunLoop(
 			acc.ToolCalls = validCalls
 		}
 
-		if err := sess.AddAssistantMessageWithTools(acc.Content, acc.Reasoning, acc.ToolCalls); err != nil {
+		if err := sess.AddAssistantMessageWithTools(sanitizeContent(acc.Content), acc.Reasoning, acc.ToolCalls); err != nil {
 			return "", fmt.Errorf("failed to save history: %w", err)
 		}
 

@@ -324,13 +324,14 @@ func (o *BaseOrchestrator) Reset() error {
 	return session.SaveHistory(o.sess.HistoryPath, nil)
 }
 
-func (o *BaseOrchestrator) AddChild(child common.Orchestrator) {
+func (o *BaseOrchestrator) AddChild(child common.Orchestrator, agentType string) {
 	o.mu.Lock()
 	o.children = append(o.children, child)
 	o.mu.Unlock()
 
 	o.eventCh <- common.ChildAddedEvent{
-		ParentID: o.id,
-		Child:    child,
+		ParentID:  o.id,
+		Child:     child,
+		AgentType: agentType,
 	}
 }
