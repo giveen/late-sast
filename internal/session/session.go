@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/debug"
 	"late/internal/tool"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,7 @@ type Session struct {
 	maxTokens    int
 	extraBody    map[string]any
 	Registry     *tool.Registry
+	debugLogger  *debug.Logger
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {
@@ -51,14 +53,31 @@ func (s *Session) SetExtraBody(extra map[string]any) {
 	s.extraBody = extra
 }
 
+// SetDebugLogger sets the debug logger for this session.
+func (s *Session) SetDebugLogger(logger *debug.Logger) {
+	s.debugLogger = logger
+}
+
 // ExecuteTool executes a tool call and returns the response as a string.
 func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, error) {
+	// Log tool call if debug logging is enabled
+	if s.debugLogger != nil && s.debugLogger.Enabled() {
+		s.debugLogger.LogToolCall(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+	}
+
 	// First check registry
 	t := s.Registry.Get(tc.Function.Name)
 	if t == nil {
 		return "", fmt.Errorf("tool not found: %s", tc.Function.Name)
 	}
-	return t.Execute(ctx, json.RawMessage(tc.Function.Arguments))
+	result, err := t.Execute(ctx, json.RawMessage(tc.Function.Arguments))
+
+	// Log tool result if debug logging is enabled
+	if s.debugLogger != nil && s.debugLogger.Enabled() {
+		s.debugLogger.LogToolResult(tc.Function.Name, tc.ID, result)
+	}
+
+	return result, err
 }
 
 // AddToolResultMessage adds a tool response message to history.
@@ -164,6 +183,21 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 
 	if s.useTools {
 		req.Tools = s.GetToolDefinitions()
+	}
+
+	// Log the outgoing LLM request
+	if s.debugLogger != nil && s.debugLogger.Enabled() {
+		toolNames := make([]string, 0, len(req.Tools))
+		for _, t := range req.Tools {
+			toolNames = append(toolNames, t.Function.Name)
+		}
+		s.debugLogger.LogEvent("LLM_REQUEST", "Sending request to LLM", map[string]interface{}{
+			"model":      s.client.Model(),
+			"base_url":   s.client.BaseURL(),
+			"history_len": len(s.History),
+			"tools":      toolNames,
+			"max_tokens": s.maxTokens,
+		})
 	}
 
 	streamOut, streamErr := s.client.ChatCompletionStream(ctx, req)

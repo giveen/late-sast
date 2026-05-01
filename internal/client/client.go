@@ -326,6 +326,14 @@ func (c *Client) IsLlamaCPP() bool {
 	return c.backend == BackendLlamaCPP
 }
 
+func (c *Client) Model() string {
+	return c.cfg.Model
+}
+
+func (c *Client) BaseURL() string {
+	return c.cfg.BaseURL
+}
+
 func (c *Client) marshalFlattened(req ChatCompletionRequest) ([]byte, error) {
 	// Marshal the request normally first
 	raw, err := json.Marshal(req)

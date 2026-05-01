@@ -6,6 +6,7 @@ import (
 	"late/internal/assets"
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/debug"
 	"late/internal/executor"
 	"late/internal/orchestrator"
 	"late/internal/session"
@@ -28,6 +29,7 @@ func NewSubagentOrchestrator(
 	maxTurns int,
 	parent common.Orchestrator,
 	middlewareFactory MiddlewareFactory,
+	debugLogger *debug.Logger,
 ) (common.Orchestrator, error) {
 	// 1. Determine System Prompt
 	systemPrompt := ""
@@ -83,6 +85,11 @@ func NewSubagentOrchestrator(
 	// 2. Create Session
 	// Subagents should not persist their history to the sessions directory
 	sess := session.New(c, "", []client.ChatMessage{}, systemPrompt, true)
+
+	// Set debug logger if provided
+	if debugLogger != nil {
+		sess.SetDebugLogger(debugLogger)
+	}
 
 	// Auditor is a small 7B model — give it extra generation budget so it can
 	// complete all hotspot verdicts without truncating mid-JSON.

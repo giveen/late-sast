@@ -10,6 +10,7 @@ require (
 	fyne.io/fyne/v2 v2.7.3
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/yuin/goldmark v1.8.2
+	golang.org/x/sys v0.43.0
 	golang.org/x/term v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
 	mvdan.cc/sh/v3 v3.13.1

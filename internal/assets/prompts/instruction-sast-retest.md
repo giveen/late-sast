@@ -77,7 +77,48 @@ Replay the original exploit payload against `http://localhost:<port>`. A `4xx` o
 - `STILL_PRESENT` — the same vulnerable pattern is unchanged, no effective remediation found
 - `CANNOT_VERIFY` — file deleted/moved, path inaccessible, ambiguous refactor, or insufficient context to judge
 
-### Step 4 — Write the retest report
+### Step 4 — Security Policy & Prior Disclosure Check
+
+#### 4a — Security policy file
+
+Before writing the report, check whether the repository has a security policy file:
+
+```bash
+find ${{WORKDIR}}/repo -maxdepth 4 -type f \
+  \( -iname "SECURITY.md" -o -iname "SECURITY.txt" -o -iname "SECURITY" \) \
+  2>/dev/null | head -5
+```
+
+If one or more files are found, read the first result and note any:
+- Scope exclusions or conditions listed as out-of-scope
+- Accepted risks the maintainers have acknowledged
+
+For any `STILL_PRESENT` finding that falls within an explicitly accepted risk or out-of-scope area, add a note beneath it: `> **Note: Acceptable risk acknowledged by maintainer** — <quote the relevant policy excerpt verbatim>`
+
+Do not remove or change the verdict — the note is purely informational. If no security policy exists, skip silently.
+
+#### 4b — GitHub Security Advisories (prior disclosure check)
+
+**Only run this sub-step if the target is a GitHub URL.** Extract `{owner}` and `{repo}` from the GitHub URL.
+
+Query the GitHub Security Advisories API, fetching all pages until the result set is exhausted:
+
+```bash
+# Repeat with ?page=2, ?page=3, ... until response is empty array []
+curl -s --max-time 15 \
+  "https://api.github.com/repos/{owner}/{repo}/security-advisories?per_page=100&page=1" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28"
+```
+
+**Continue fetching pages until the API returns an empty array `[]`.**
+
+For each `STILL_PRESENT` finding, check if it matches a published advisory (same vuln class + same component/file area, or matching CVE ID). If matched, add a note:
+`> **Previously disclosed** — [GHSA-xxxx-xxxx-xxxx](<html_url>) (<severity>, published <published_at>): <summary>`
+
+If the API returns a non-200 response or the repo has no published advisories, skip silently.
+
+### Step 5 — Write the retest report
 
 Write `${{OUTPUT_DIR}}/sast_retest_${{REPO_NAME}}.md` using the following format:
 
@@ -122,7 +163,7 @@ Cannot verify: <Z>
 
 _Omit any section that has no entries._
 
-### Step 5 — Cleanup
+### Step 6 — Cleanup
 
 ```bash
 docker stop ${{CONTAINER_NAME}} 2>/dev/null; docker rm -f ${{CONTAINER_NAME}} 2>/dev/null

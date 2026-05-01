@@ -265,7 +265,7 @@ func main() {
 			child, err := agent.NewSubagentOrchestrator(
 				agentClient, goal, ctxFiles, agentType,
 				enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns,
-				rootAgent, mwFactory,
+				rootAgent, mwFactory, nil,
 			)
 			if err != nil {
 				return "", err

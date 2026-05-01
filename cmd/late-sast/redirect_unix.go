@@ -4,7 +4,8 @@ package main
 
 import (
 	"os"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 func redirectStdoutStderrToFile(logPath string) error {
@@ -14,10 +15,10 @@ func redirectStdoutStderrToFile(logPath string) error {
 	}
 	defer lf.Close()
 
-	if err := syscall.Dup2(int(lf.Fd()), 1); err != nil {
+	if err := unix.Dup2(int(lf.Fd()), 1); err != nil {
 		return err
 	}
-	if err := syscall.Dup2(int(lf.Fd()), 2); err != nil {
+	if err := unix.Dup2(int(lf.Fd()), 2); err != nil {
 		return err
 	}
 	return nil

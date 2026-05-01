@@ -26,6 +26,7 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 	appconfig "late/internal/config"
+	"late/internal/debug"
 	"late/internal/gui"
 	"late/internal/mcp"
 	"late/internal/orchestrator"
@@ -318,6 +319,7 @@ func main() {
 		sess       *session.Session
 		rootAgent  *orchestrator.BaseOrchestrator
 		initialMsg string
+		debugLog   *debug.Logger
 	}
 	buildScan := func(pickedTarget, pickedLocalPath, pickedOutputDir, pickedRetestPath string) sessionResult {
 		activeRetestPath := retestPath
@@ -427,6 +429,17 @@ func main() {
 		// Session + tool registration.
 		sess := session.New(c, historyPath, []client.ChatMessage{}, systemPrompt, true)
 
+		// Re-read config at scan time so settings changes (e.g. debug toggle) take
+		// effect without requiring a restart of the application.
+		var debugLog *debug.Logger
+		if latestCfg, err := appconfig.LoadConfigFromDir(sastCfgDir); err == nil && latestCfg != nil && latestCfg.DebugLogging {
+			debugLog = debug.New(pickedOutputDir)
+			sess.SetDebugLogger(debugLog)
+			if debugLog.Enabled() {
+				fmt.Printf("[late-sast] Debug logging enabled → %s\n", debugLog.FilePath())
+			}
+		}
+
 		sess.Registry.Register(&tool.ShellTool{
 			Analyzer:     &tool.SASTBashAnalyzer{},
 			SkipSafePath: true,
@@ -474,13 +487,13 @@ func main() {
 		}
 
 		rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
-		return sessionResult{sess: sess, rootAgent: rootAgent, initialMsg: initialMessage}
+		return sessionResult{sess: sess, rootAgent: rootAgent, initialMsg: initialMessage, debugLog: debugLog}
 	}
 
 	if *useTUIReq {
 		// ── TUI path — old behaviour, completely unchanged ───────────────────
 		sr := buildScan(target, localPath, outputDir, retestPath)
-		sess, rootAgent, initialMessage := sr.sess, sr.rootAgent, sr.initialMsg
+		sess, rootAgent, initialMessage, debugLog := sr.sess, sr.rootAgent, sr.initialMsg, sr.debugLog
 
 		renderer, _ := glamour.NewTermRenderer(
 			glamour.WithStylesFromJSONBytes(tui.LateTheme),
@@ -521,6 +534,7 @@ func main() {
 					func(reg *common.ToolRegistry) []common.ToolMiddleware {
 						return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
 					},
+					debugLog,
 				)
 				if err != nil {
 					return "", err
@@ -546,7 +560,7 @@ func main() {
 
 		setupFn := func(res gui.SASTPickerResult) (common.Orchestrator, string) {
 			sr := buildScan(res.URL, res.LocalPath, res.OutputDir, res.RetestReportPath)
-			sess, rootAgent := sr.sess, sr.rootAgent
+			sess, rootAgent, debugLog := sr.sess, sr.rootAgent, sr.debugLog
 
 			baseCtx := context.WithValue(context.Background(), common.SkipConfirmationKey, true)
 			baseCtx = context.WithValue(baseCtx, common.ToolApprovalKey, true)
@@ -568,6 +582,7 @@ func main() {
 						func(reg *common.ToolRegistry) []common.ToolMiddleware {
 							return []common.ToolMiddleware{guiApp.ConfirmMiddleware(reg, true)}
 						},
+						debugLog,
 					)
 					if err != nil {
 						return "", err

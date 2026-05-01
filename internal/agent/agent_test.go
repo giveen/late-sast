@@ -35,7 +35,8 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		true,  // gemmaThinking
 		100,   // maxTurns
 		parent,
-		nil,   // messenger
+		nil, // messenger
+		nil, // debugLogger
 	)
 
 	if err != nil {
@@ -67,7 +68,8 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		false, // gemmaThinking
 		100,   // maxTurns
 		parent,
-		nil,   // messenger
+		nil, // messenger
+		nil, // debugLogger
 	)
 
 	if err != nil {
@@ -107,11 +109,12 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 		[]string{},
 		"coder",
 		enabledTools,
-		true,  // injectCWD
-		true,  // gemmaThinking
-		100,   // maxTurns
+		true, // injectCWD
+		true, // gemmaThinking
+		100,  // maxTurns
 		parent,
-		nil,   // messenger
+		nil, // messenger
+		nil, // debugLogger
 	)
 
 	if err != nil {
@@ -162,7 +165,7 @@ func TestNewSubagentOrchestrator_AuditorLoadsPrompt(t *testing.T) {
 	c, parent := newTestParent(t)
 	enabledTools := map[string]bool{"bash": true}
 
-	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, false, 40, parent, nil)
+	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, false, 40, parent, nil, nil)
 	if err != nil {
 		t.Fatalf("auditor agent type returned error: %v", err)
 	}
@@ -187,7 +190,7 @@ func TestNewSubagentOrchestrator_AuditorNoGemmaThinking(t *testing.T) {
 	c, parent := newTestParent(t)
 	enabledTools := map[string]bool{"bash": true}
 
-	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, false, 40, parent, nil)
+	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, false, 40, parent, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,7 +206,7 @@ func TestNewSubagentOrchestrator_AuditorWithGemmaThinking(t *testing.T) {
 	c, parent := newTestParent(t)
 	enabledTools := map[string]bool{"bash": true}
 
-	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, true, 40, parent, nil)
+	child, err := NewSubagentOrchestrator(c, "audit hotspots", []string{}, "auditor", enabledTools, false, true, 40, parent, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -219,7 +222,7 @@ func TestNewSubagentOrchestrator_UnknownAgentTypeErrors(t *testing.T) {
 	c, parent := newTestParent(t)
 	enabledTools := map[string]bool{}
 
-	_, err := NewSubagentOrchestrator(c, "goal", []string{}, "nonexistent-role", enabledTools, false, false, 10, parent, nil)
+	_, err := NewSubagentOrchestrator(c, "goal", []string{}, "nonexistent-role", enabledTools, false, false, 10, parent, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent type")
 	}

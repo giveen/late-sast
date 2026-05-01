@@ -57,6 +57,9 @@ func (a *App) showSettingsDialog() {
 	skillsDirEntry := widget.NewEntry()
 	skillsDirEntry.SetText(cfg.SkillsDir)
 
+	debugLoggingCheck := widget.NewCheck("Enable Debug Logging", nil)
+	debugLoggingCheck.SetChecked(cfg.DebugLogging)
+
 	form := widget.NewForm(
 		widget.NewFormItem("OpenAI Base URL", openAIBaseURLEntry),
 		widget.NewFormItem("OpenAI API Key", openAIAPIKeyEntry),
@@ -68,6 +71,7 @@ func (a *App) showSettingsDialog() {
 		widget.NewFormItem("Auditor API Key", auditorAPIKeyEntry),
 		widget.NewFormItem("Auditor Model", auditorModelEntry),
 		widget.NewFormItem("Skills Directory", skillsDirEntry),
+		widget.NewFormItem("", debugLoggingCheck),
 	)
 
 	pathLabel := widget.NewLabel("Config file: " + filepath.Join(cfgDir, "config.json"))
@@ -100,6 +104,7 @@ func (a *App) showSettingsDialog() {
 		updated.AuditorAPIKey = strings.TrimSpace(auditorAPIKeyEntry.Text)
 		updated.AuditorModel = strings.TrimSpace(auditorModelEntry.Text)
 		updated.SkillsDir = strings.TrimSpace(skillsDirEntry.Text)
+		updated.DebugLogging = debugLoggingCheck.Checked
 
 		if err := config.SaveConfigFromDir(cfgDir, &updated); err != nil {
 			dialog.ShowError(err, a.window)

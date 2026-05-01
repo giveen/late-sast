@@ -103,7 +103,71 @@ Wait for the `AUDIT_COMPLETE` block. Parse the JSON:
 
 If the auditor returns no `AUDIT_COMPLETE` block (ran out of turns), proceed with the scanner's original findings unchanged and note in the Coverage summary: `Auditor: incomplete`.
 
-### Step 3 — Report & cleanup
+### Step 3 — Security Policy & Prior Disclosure Check
+
+#### 3a — Security policy file
+
+Before writing the report, check whether the repository has a security policy file:
+
+```bash
+find ${{WORKDIR}}/repo -maxdepth 4 -type f \
+  \( -iname "SECURITY.md" -o -iname "SECURITY.txt" -o -iname "SECURITY" \) \
+  2>/dev/null | head -5
+```
+
+If one or more files are found, read the first result:
+
+```bash
+cat <path from find output>
+```
+
+Parse the security policy for:
+- **Scope exclusions** — features, attack classes, or conditions explicitly listed as out-of-scope or accepted risks (e.g. "self-hosted deployments are considered trusted", "physical access is out of scope", "admin-only issues are accepted")
+- **Accepted risks** — issues the maintainers have explicitly acknowledged and chosen not to fix (e.g. "SSRF mitigated to acceptable levels")
+- **Reporting preferences** — severity thresholds for what the project considers worth reporting
+
+For every finding in the merged scanner + auditor results, cross-reference against the policy:
+- If a finding falls entirely within an explicitly stated **accepted risk or out-of-scope** area, add a note to that finding: `> **Note: Acceptable risk acknowledged by maintainer** — <quote the relevant policy excerpt verbatim>`
+- Do **not** remove or downgrade the finding's severity — keep it as-is so the reader has full context. The note is purely informational.
+- If no security policy file exists, skip this step silently.
+
+#### 3b — GitHub Security Advisories (prior disclosure check)
+
+**Only run this sub-step if the target is a GitHub URL.** Extract `{owner}` and `{repo}` from the GitHub URL.
+
+Query the GitHub Security Advisories API, fetching all pages until the result set is exhausted (empty array = done):
+
+```bash
+# Page 1 — repeat with ?page=2, ?page=3, ... until the response is an empty array []
+curl -s --max-time 15 \
+  "https://api.github.com/repos/{owner}/{repo}/security-advisories?per_page=100&page=1" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28"
+```
+
+For each advisory returned, capture:
+- `ghsa_id` (e.g. `GHSA-xxxx-xxxx-xxxx`)
+- `cve_id` (may be null)
+- `summary` (short description)
+- `severity` (`critical`, `high`, `medium`, `low`)
+- `published_at`
+- `html_url`
+- `vulnerabilities[].package.name` and `vulnerabilities[].vulnerable_version_range` if present
+
+**Continue fetching pages until the API returns an empty array `[]`.** Do not stop at page 1 — projects like Directus have 6+ pages of advisories.
+
+Once all pages are fetched, cross-reference each advisory against your findings:
+- Match on **vulnerability class** (e.g. both are SQL injection), **affected file or component** (e.g. same module name, route, or function), or **CVE ID** if both carry one
+- A match requires **at least two** of: same vuln class, same component/file area, similar attack vector — do not match on broad categories alone (e.g. "XSS" alone is not enough without a component match)
+
+For each finding that matches a prior advisory, add a note:
+`> **Previously disclosed** — [GHSA-xxxx-xxxx-xxxx](<html_url>) (<severity>, published <published_at>): <summary>`
+
+For each finding that matches a CVE already in your **CVE Findings** table, cross-link them.
+
+If the API returns a non-200 response or the repo has no published advisories, skip silently.
+
+### Step 4 — Report & cleanup
 
 Write `${{OUTPUT_DIR}}/sast_report_${{REPO_NAME}}.md` using the findings merged from the scanner + auditor, then clean up:
 

@@ -49,6 +49,7 @@ type Config struct {
 	AuditorAPIKey   string          `json:"auditor_api_key,omitempty"`
 	AuditorModel    string          `json:"auditor_model,omitempty"`
 	SkillsDir       string          `json:"skills_dir,omitempty"`
+	DebugLogging    bool            `json:"debug_logging,omitempty"`
 }
 
 func defaultConfig() Config {
