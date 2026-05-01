@@ -108,6 +108,13 @@ jobs:
             -o late-sast-linux-amd64 \
             ./cmd/late-sast
 
+      - name: Upload artifact (Linux)
+        if: matrix.os == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: late-sast-linux-amd64
+          path: late-sast-linux-amd64
+
       - name: Build late-sast (Windows)
         if: matrix.os == 'windows'
         shell: bash
@@ -117,3 +124,10 @@ jobs:
             -tags cbm_embedded \
             -o late-sast-windows-amd64.exe \
             ./cmd/late-sast
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: late-sast-windows-amd64
+          path: late-sast-windows-amd64.exe
