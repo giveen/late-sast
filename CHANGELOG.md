@@ -6,6 +6,13 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.7.1] — 2026-04-30
+
+### Fixed
+- **`finish_reason: "length"` false context abort** — the agent no longer treats a model hitting its per-turn generation budget (`n_predict`) as an unrecoverable context-window-full error. When llama.cpp returns `finish_reason: "length"`, the runner now calls `/props` to fetch the live `n_ctx` value and compares it against `total_tokens` (with a 5-token rounding margin). A genuine context overflow (prompt fills the window) still raises the hard error; hitting `n_predict` mid-output filters truncated tool calls and continues the run loop normally. Falls back to the content/tool-call heuristic for non-llama.cpp backends that don't expose a context size.
+
+---
+
 ## [v1.7.0] — 2026-04-30
 
 ### Added

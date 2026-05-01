@@ -232,7 +232,25 @@ func RunLoop(
 		}
 
 		if acc.FinishReason == "length" {
-			return "", fmt.Errorf("exceeds the available context size")
+			// Distinguish between hitting n_predict (output budget, recoverable) vs n_ctx
+			// (context window full, unrecoverable). Refresh the context size from the backend
+			// and compare against total tokens used. A 5-token margin accounts for rounding.
+			sess.Client().RefreshContextSize(ctx)
+			nCtx := sess.Client().ContextSize()
+			isContextFull := nCtx > 0 && acc.Usage.TotalTokens >= nCtx-5
+
+			// Either way, filter out any truncated (invalid JSON) tool calls.
+			var validCalls []client.ToolCall
+			for _, tc := range acc.ToolCalls {
+				if json.Valid([]byte(tc.Function.Arguments)) {
+					validCalls = append(validCalls, tc)
+				}
+			}
+			acc.ToolCalls = validCalls
+
+			if isContextFull || (len(validCalls) == 0 && acc.Content == "") {
+				return "", fmt.Errorf("exceeds the available context size")
+			}
 		}
 
 		// If stopped, the last tool call might be partially streamed and thus invalid JSON.
