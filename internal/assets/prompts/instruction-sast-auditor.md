@@ -98,6 +98,8 @@ Rules:
 ## Constraints
 
 - No confirmation prompts — fully autonomous
+- Do **NOT** use HTML markup (`<pre>`, `<code>`, `<br>`, `</pre>`, etc.) anywhere in your output — write reasoning as plain prose, use markdown fenced code blocks (triple backticks) only for code examples
+- Do **NOT** wrap output in XML-style tags
 - If you need to read a file for Step A context, use `read_file` with a tight line range (±15 lines)
 - Do not read files that are not referenced by a hotspot
 - Do not re-scan the entire codebase — that is the Scout's job

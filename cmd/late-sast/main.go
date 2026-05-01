@@ -2,6 +2,8 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"flag"
@@ -43,10 +45,15 @@ func main() {
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum turns per subagent")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token for Gemma 4 models")
 
+	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")
+	retestReq := flag.String("retest", "", "Path to a previous SAST report — retests all confirmed findings to check if they have been fixed")
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: late-sast [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "  late-sast https://github.com/owner/repo\n")
-		fmt.Fprintf(os.Stderr, "  late-sast --output ~/reports https://github.com/owner/repo\n\n")
+		fmt.Fprintf(os.Stderr, "  late-sast --output ~/reports https://github.com/owner/repo\n")
+		fmt.Fprintf(os.Stderr, "  late-sast --path /path/to/local/repo\n")
+		fmt.Fprintf(os.Stderr, "  late-sast --retest ./sast_report_myrepo.md\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -61,6 +68,45 @@ func main() {
 	target := *targetReq
 	if target == "" && flag.NArg() > 0 {
 		target = flag.Arg(0)
+	}
+
+	// --retest: mutually exclusive with --target, --path, and positional URL
+	retestPath := *retestReq
+	if retestPath != "" && (target != "" || *pathReq != "") {
+		fmt.Fprintf(os.Stderr, "Error: --retest cannot be combined with --target or --path\n")
+		os.Exit(1)
+	}
+	if retestPath != "" {
+		abs, err := filepath.Abs(retestPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving --retest path: %v\n", err)
+			os.Exit(1)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: --retest %q does not exist\n", abs)
+			os.Exit(1)
+		}
+		retestPath = abs
+	}
+
+	// --path: local repository path (mutually exclusive with a GitHub URL target)
+	localPath := *pathReq
+	if localPath != "" && target != "" {
+		fmt.Fprintf(os.Stderr, "Error: --path and a GitHub URL target are mutually exclusive\n")
+		os.Exit(1)
+	}
+	if localPath != "" {
+		abs, err := filepath.Abs(localPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving --path: %v\n", err)
+			os.Exit(1)
+		}
+		info, err := os.Stat(abs)
+		if err != nil || !info.IsDir() {
+			fmt.Fprintf(os.Stderr, "Error: --path %q does not exist or is not a directory\n", abs)
+			os.Exit(1)
+		}
+		localPath = abs
 	}
 
 	// Reap stale containers from any previous crashed run that share the "sast-" prefix.
@@ -85,13 +131,50 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: failed to extract SAST skill files: %v\n", err)
 	}
 
-	// Load SAST system prompt
-	content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast.md")
+	// Derive repo name early — retest mode may override from the report header.
+	repoName := "repo"
+	if localPath != "" {
+		if base := filepath.Base(localPath); base != "" && base != "." {
+			repoName = base
+		}
+	} else if target != "" {
+		if parts := strings.Split(strings.TrimRight(target, "/"), "/"); len(parts) > 0 {
+			if last := parts[len(parts)-1]; last != "" {
+				repoName = last
+			}
+		}
+	}
+
+	// Load SAST system prompt — retest mode uses a different prompt
+	promptFile := "prompts/instruction-sast.md"
+	if retestPath != "" {
+		promptFile = "prompts/instruction-sast-retest.md"
+	}
+	content, err := assets.PromptsFS.ReadFile(promptFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading SAST system prompt: %v\n", err)
 		os.Exit(1)
 	}
 	systemPrompt := string(content)
+
+	// In retest mode: extract the original target and repo name from the report header.
+	// This sets target/repoName so the placeholder substitution below works normally.
+	if retestPath != "" {
+		reportBytes, readErr := os.ReadFile(retestPath)
+		if readErr != nil {
+			fmt.Fprintf(os.Stderr, "Error reading retest report: %v\n", readErr)
+			os.Exit(1)
+		}
+		parsedTarget, parsedRepo := parseReportHeader(string(reportBytes))
+		if parsedTarget == "" {
+			fmt.Fprintf(os.Stderr, "Error: could not find a 'Target:' line in %s\n", retestPath)
+			os.Exit(1)
+		}
+		target = parsedTarget
+		if parsedRepo != "" {
+			repoName = parsedRepo
+		}
+	}
 
 	// Container name and workdir are unique per session — no parallel run collisions.
 	// All three placeholders are resolved via the standard ${{}} mechanism.
@@ -100,15 +183,6 @@ func main() {
 	workDir := "/tmp/" + containerName
 	networkName := containerName + "-net"
 	composeProject := containerName
-	// Derive repo name from the last path segment of the target URL (e.g. "llama-swap").
-	repoName := "repo"
-	if target != "" {
-		if parts := strings.Split(strings.TrimRight(target, "/"), "/"); len(parts) > 0 {
-			if last := parts[len(parts)-1]; last != "" {
-				repoName = last
-			}
-		}
-	}
 	// Resolve output directory: flag > cwd. Create it if it doesn't exist.
 	outputDir := *outputReq
 	if outputDir == "" {
@@ -137,12 +211,21 @@ func main() {
 
 	// Build initial audit message
 	var initialMessage string
-	if target != "" {
+	switch {
+	case retestPath != "":
+		initialMessage = fmt.Sprintf("Retest the confirmed and likely findings from the previous SAST report.\nPrevious report: %s\nTarget: %s", retestPath, target)
+	case localPath != "":
+		initialMessage = fmt.Sprintf("Perform a complete security audit of the local repository at: %s", localPath)
+	case target != "":
 		initialMessage = fmt.Sprintf("Perform a complete security audit of: %s", target)
 	}
 
+	reportLabel := fmt.Sprintf("sast_report_%s.md", repoName)
+	if retestPath != "" {
+		reportLabel = fmt.Sprintf("sast_retest_%s.md", repoName)
+	}
 	fmt.Println("Starting late-sast...")
-	fmt.Printf("[late-sast] Report will be written to: %s/sast_report_%s.md\n", outputDir, repoName)
+	fmt.Printf("[late-sast] Report will be written to: %s/%s\n", outputDir, reportLabel)
 
 	// Session setup (non-persistent for audit runs)
 	sessionsDir, err := session.SessionDir()
@@ -188,6 +271,7 @@ func main() {
 				}
 			}
 			removeAsRoot("/tmp/sast-skill")
+			removeAsRoot("/tmp/semgrep-skills")
 			removeAsRoot(workDir)
 			fmt.Printf("[late-sast] Workdir %s removed.\n", workDir)
 		default:
@@ -247,6 +331,17 @@ func main() {
 			Model:   resolvedSubagent.Model,
 		})
 		subagentClient.DiscoverBackend(context.Background())
+	}
+
+	resolvedAuditor := appconfig.ResolveAuditorSettings(appConfig, resolvedOpenAI)
+	auditorClient := subagentClient
+	if resolvedAuditor.Model != "" {
+		auditorClient = client.NewClient(client.Config{
+			BaseURL: resolvedAuditor.BaseURL,
+			APIKey:  resolvedAuditor.APIKey,
+			Model:   resolvedAuditor.Model,
+		})
+		auditorClient.DiscoverBackend(context.Background())
 	}
 
 	// Ensure codebase-memory-mcp is available, downloading if needed
@@ -318,6 +413,9 @@ func main() {
 	// before a single line of code is scanned.
 	ctxIdx := tool.NewContextIndex()
 	indexSASTReferences(ctxIdx, "/tmp/sast-skill")
+	if err := fetchAndIndexSemgrepSkills(ctxIdx, "/tmp/semgrep-skills"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: semgrep code-security skills unavailable (%v) — skipping\n", err)
+	}
 	sess.Registry.Register(tool.CtxIndexTool{Index: ctxIdx})
 	sess.Registry.Register(tool.CtxSearchTool{Index: ctxIdx})
 	sess.Registry.Register(tool.CtxFetchAndIndexTool{Index: ctxIdx})
@@ -368,8 +466,12 @@ func main() {
 
 	// Subagent support
 	runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
+		agentClient := subagentClient
+		if agentType == "auditor" {
+			agentClient = auditorClient
+		}
 		child, err := agent.NewSubagentOrchestrator(
-			subagentClient, goal, ctxFiles, agentType,
+			agentClient, goal, ctxFiles, agentType,
 			enabledTools, true, *gemmaThinkingReq,
 			*subagentMaxTurns, rootAgent, p,
 		)
@@ -521,6 +623,119 @@ func extractSASTSkill(destDir string) error {
 		}
 		return os.WriteFile(dest, data, 0644)
 	})
+}
+
+// fetchAndIndexSemgrepSkills downloads the semgrep/skills code-security zip
+// (if not already cached), extracts it to destDir, and indexes all rule
+// markdown files into the BM25 index. Non-fatal — caller logs the error.
+func fetchAndIndexSemgrepSkills(idx *tool.ContextIndex, destDir string) error {
+	const zipURL = "https://github.com/semgrep/skills/raw/main/skills/code-security.zip"
+	rulesDir := filepath.Join(destDir, "code-security", "rules")
+
+	// Already extracted from a previous run — just index.
+	if _, err := os.Stat(rulesDir); err == nil {
+		return indexRulesDir(idx, rulesDir)
+	}
+
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", destDir, err)
+	}
+
+	// Download
+	resp, err := http.Get(zipURL) //nolint:gosec // URL is a hardcoded constant
+	if err != nil {
+		return fmt.Errorf("download semgrep skills: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download semgrep skills: HTTP %d", resp.StatusCode)
+	}
+
+	// Read zip into memory (file is ~60 KB)
+	zipData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read semgrep skills zip: %w", err)
+	}
+
+	// Extract
+	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return fmt.Errorf("open semgrep skills zip: %w", err)
+	}
+	for _, f := range zr.File {
+		dest := filepath.Join(destDir, f.Name)
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(dest, 0755) //nolint:errcheck
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			continue
+		}
+		os.WriteFile(dest, data, 0644) //nolint:errcheck
+	}
+
+	fmt.Printf("[late-sast] Indexed %d semgrep code-security rules\n",
+		countMDFiles(rulesDir))
+	return indexRulesDir(idx, rulesDir)
+}
+
+func indexRulesDir(idx *tool.ContextIndex, rulesDir string) error {
+	entries, err := os.ReadDir(rulesDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(rulesDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		source := "semgrep/" + strings.TrimSuffix(e.Name(), ".md")
+		idx.IndexText(source, string(data))
+	}
+	return nil
+}
+
+// parseReportHeader extracts the Target URL and repo name from the header of a
+// SAST report generated by late-sast.  It looks for:
+//   - "Target: <url-or-path>"          → target
+//   - "# SAST Security Report — <name>" → repoName
+func parseReportHeader(content string) (target, repoName string) {
+	for _, line := range strings.SplitN(content, "\n", 20) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Target: ") {
+			target = strings.TrimSpace(strings.TrimPrefix(line, "Target: "))
+		}
+		if strings.HasPrefix(line, "# SAST Security Report — ") {
+			repoName = strings.TrimSpace(strings.TrimPrefix(line, "# SAST Security Report — "))
+		}
+		if target != "" && repoName != "" {
+			return
+		}
+	}
+	return
+}
+
+func countMDFiles(dir string) int {
+	entries, _ := os.ReadDir(dir)
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			n++
+		}
+	}
+	return n
 }
 
 // indexSASTReferences pre-loads the SAST vulnerability reference library into

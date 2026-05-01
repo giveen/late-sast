@@ -165,11 +165,11 @@ ctx_search(query="<keyword>")
 
 ### Step 1f — Semgrep structured SAST scan
 
-Run semgrep with the default ruleset for a structured, JSON-output SAST pass. Non-fatal — skip if unavailable.
+Run semgrep with curated security rulesets for a structured, JSON-output SAST pass. Non-fatal — skip if unavailable.
 ```bash
 docker exec ${{CONTAINER_NAME}} sh -c "
   command -v semgrep >/dev/null 2>&1 || { echo 'semgrep not available — skipping'; exit 0; }
-  semgrep --config=p/default --json --quiet /app 2>/dev/null \
+  semgrep --config=p/security-audit --config=p/owasp-top-ten --config=p/cwe-top-25 --config=p/trailofbits --json --quiet /app 2>/dev/null \
   | python3 -c '
 import json, sys
 r = json.load(sys.stdin)
