@@ -73,6 +73,7 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 	}
 
 	a.mainInput = NewInputPanel(func(text string) {
+		a.mainChat.AppendMessage("user", text)
 		a.mainInput.SetEnabled(false)
 		if err := rootAgent.Submit(text); err != nil {
 			a.mainInput.SetEnabled(true)
@@ -89,8 +90,10 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 	handleQuit := func() {
 		quitOnce.Do(func() {
 			fyne.Do(func() {
-				quitBtn.SetText("Stopping…")
-				quitBtn.Disable()
+				if quitBtn != nil {
+					quitBtn.SetText("Stopping…")
+					quitBtn.Disable()
+				}
 			})
 			rootAgent.Cancel()
 			go func() {

@@ -124,6 +124,21 @@ func (a *App) startEventLoop(
 
 				case "error":
 					// Keep tab open so the user can read the error.
+					if thinkingStreaming {
+						thinkingStreaming = false
+						fyne.Do(func() { panel.FinalizeThinking() })
+					}
+					if streaming {
+						streaming = false
+						fyne.Do(func() {
+							panel.FinalizeLastMessage()
+						})
+					}
+					if in := a.inputForOrchestrator(o); in != nil {
+						fyne.Do(func() {
+							in.SetEnabled(true)
+						})
+					}
 					if e.Error != nil {
 						msg := e.Error.Error()
 						fyne.Do(func() {

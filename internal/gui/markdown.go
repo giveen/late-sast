@@ -2,12 +2,15 @@ package gui
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
@@ -23,7 +26,8 @@ func parseMarkdown(src string) []widget.RichTextSegment {
 
 	source := []byte(src)
 	reader := text.NewReader(source)
-	doc := goldmark.DefaultParser().Parse(reader)
+	md := goldmark.New(goldmark.WithExtensions(extension.Table))
+	doc := md.Parser().Parse(reader)
 
 	w := &mdWalker{source: source}
 	ast.Walk(doc, w.walk) //nolint:errcheck
@@ -154,11 +158,19 @@ func (w *mdWalker) walk(n ast.Node, entering bool) (ast.WalkStatus, error) {
 			w.itemCounter++
 			indent := strings.Repeat("  ", w.listDepth-1)
 			if w.listOrdered {
-				w.addText(indent + "  ")
+				w.addText(fmt.Sprintf("%s%d. ", indent, w.itemCounter))
 			} else {
 				w.addText(indent + "• ")
 			}
 		}
+
+	case *extast.Table:
+		if entering {
+			w.addText("\n")
+			w.addText(renderTable(node, w.source))
+			w.addText("\n")
+		}
+		return ast.WalkSkipChildren, nil
 
 	case *ast.Paragraph:
 		if !entering {
@@ -195,4 +207,111 @@ func (w *mdWalker) walk(n ast.Node, entering bool) (ast.WalkStatus, error) {
 	}
 
 	return ast.WalkContinue, nil
+}
+
+func renderTable(tbl *extast.Table, source []byte) string {
+	rows := make([][]string, 0)
+	headerSeen := false
+
+	for c := tbl.FirstChild(); c != nil; c = c.NextSibling() {
+		switch n := c.(type) {
+		case *extast.TableHeader:
+			headerSeen = true
+			for r := n.FirstChild(); r != nil; r = r.NextSibling() {
+				if row, ok := r.(*extast.TableRow); ok {
+					rows = append(rows, extractTableRowCells(row, source))
+				}
+			}
+		case *extast.TableRow:
+			rows = append(rows, extractTableRowCells(n, source))
+		}
+	}
+
+	if len(rows) == 0 {
+		return ""
+	}
+
+	maxCols := 0
+	for _, r := range rows {
+		if len(r) > maxCols {
+			maxCols = len(r)
+		}
+	}
+	if maxCols == 0 {
+		return ""
+	}
+
+	for i := range rows {
+		for len(rows[i]) < maxCols {
+			rows[i] = append(rows[i], "")
+		}
+	}
+
+	var out strings.Builder
+	writeRow := func(cells []string) {
+		out.WriteString("| ")
+		for i, cell := range cells {
+			if i > 0 {
+				out.WriteString(" | ")
+			}
+			out.WriteString(strings.TrimSpace(cell))
+		}
+		out.WriteString(" |\n")
+	}
+
+	writeRow(rows[0])
+	if headerSeen {
+		out.WriteString("| ")
+		for i := 0; i < maxCols; i++ {
+			if i > 0 {
+				out.WriteString(" | ")
+			}
+			out.WriteString("---")
+		}
+		out.WriteString(" |\n")
+	}
+
+	start := 0
+	if headerSeen {
+		start = 1
+	}
+	for i := start; i < len(rows); i++ {
+		writeRow(rows[i])
+	}
+
+	return strings.TrimRight(out.String(), "\n")
+}
+
+func extractTableRowCells(row *extast.TableRow, source []byte) []string {
+	cells := make([]string, 0)
+	for c := row.FirstChild(); c != nil; c = c.NextSibling() {
+		if cell, ok := c.(*extast.TableCell); ok {
+			cells = append(cells, nodePlainText(cell, source))
+		}
+	}
+	return cells
+}
+
+func nodePlainText(n ast.Node, source []byte) string {
+	var b strings.Builder
+	var walkFn func(ast.Node)
+	walkFn = func(cur ast.Node) {
+		switch t := cur.(type) {
+		case *ast.Text:
+			b.Write(t.Segment.Value(source))
+			if t.HardLineBreak() || t.SoftLineBreak() {
+				b.WriteString(" ")
+			}
+		case *ast.CodeSpan:
+			for c := t.FirstChild(); c != nil; c = c.NextSibling() {
+				walkFn(c)
+			}
+		default:
+			for c := cur.FirstChild(); c != nil; c = c.NextSibling() {
+				walkFn(c)
+			}
+		}
+	}
+	walkFn(n)
+	return strings.TrimSpace(b.String())
 }

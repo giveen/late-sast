@@ -51,7 +51,16 @@ func (a *App) RunSAST(
 		if initialMsg != "" {
 			go func() {
 				time.Sleep(300 * time.Millisecond)
-				rootAgent.Submit(initialMsg) //nolint:errcheck
+				fyne.Do(func() {
+					a.mainChat.AppendMessage("user", initialMsg)
+					a.mainInput.SetEnabled(false)
+				})
+				if err := rootAgent.Submit(initialMsg); err != nil {
+					fyne.Do(func() {
+						a.mainInput.SetEnabled(true)
+						a.mainChat.AppendMessage("error", "⚠ "+err.Error())
+					})
+				}
 			}()
 		}
 	}
