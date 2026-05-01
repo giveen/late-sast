@@ -6,6 +6,14 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.7.2.1] — 2026-04-30
+
+### Fixed
+- **Makefile `VERSION` was stale** — `make install-sast` was injecting `1.2.1` via `-ldflags` regardless of `internal/common/version.go`. `VERSION` in the Makefile is now kept in sync with the Go constant.
+- **GitHub Actions release workflow not triggering on tag push** — the workflow previously used `release: types: [created]`, which only fires when a Release object is created through the GitHub UI/API, not when a git tag is pushed directly. Changed trigger to `push: tags: ['v*']` so CI builds binaries automatically for every version tag.
+
+---
+
 ## [v1.7.2] — 2026-04-30
 
 ### Added
