@@ -6,6 +6,21 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.7.0] — 2026-04-30
+
+### Added
+- **`--retest <report>` flag** — re-verify a previous `sast_report_*.md` after a developer claims fixes. Parses the original report header (repo, target URL, findings) and re-runs live exploitation for each finding. Outputs `sast_retest_<repo>.md` with updated statuses: `FIXED`, `STILL PRESENT`, `CANNOT VERIFY`.
+- **`--path <dir>` flag** — scan a local repository without cloning from GitHub. The directory is mounted into the container as-is; no network clone step.
+- **Auditor `max_tokens: 8192`** — VulnLLM-R-7B auditor session now requests `max_tokens: 8192` to prevent mid-JSON truncation on verbose hotspot verdicts.
+- **`MaxTokens` field in `ChatCompletionRequest`** — API request struct now carries `max_tokens` so any session can cap generation budget at the request level.
+- **HTML tag stripping in streaming tail renderer** — `htmlTagRe` now applied to the live-streaming tail path in addition to the already-cleaned completed-chunk path. Prevents `</pre></li></ol>` bleed from model training data appearing in the TUI.
+- **`instruction-sast-retest.md`** — new system prompt for the retest workflow.
+
+### Changed
+- README and quickstart updated with three-model pipeline docs, VulnLLM-R-7B auditor section, retest workflow, `--path` and `--retest` flag documentation, `LATE_AUDITOR_MODEL` / `LATE_AUDITOR_BASE_URL` env vars, llama-swap config snippet.
+
+---
+
 ## [v1.6.1] — 2026-04-30
 
 ### Fixed
