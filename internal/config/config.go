@@ -45,6 +45,8 @@ type Config struct {
 	SubagentBaseURL string          `json:"subagent_base_url,omitempty"`
 	SubagentAPIKey  string          `json:"subagent_api_key,omitempty"`
 	SubagentModel   string          `json:"subagent_model,omitempty"`
+	AuditorBaseURL  string          `json:"auditor_base_url,omitempty"`
+	AuditorAPIKey   string          `json:"auditor_api_key,omitempty"`
 	AuditorModel    string          `json:"auditor_model,omitempty"`
 	SkillsDir       string          `json:"skills_dir,omitempty"`
 }
@@ -164,6 +166,12 @@ func ResolveAuditorSettingsWithEnv(cfg *Config, openAI OpenAISettings, lookup En
 		}
 		if cfg.SubagentAPIKey != "" {
 			resolved.APIKey = cfg.SubagentAPIKey
+		}
+		if cfg.AuditorBaseURL != "" {
+			resolved.BaseURL = cfg.AuditorBaseURL
+		}
+		if cfg.AuditorAPIKey != "" {
+			resolved.APIKey = cfg.AuditorAPIKey
 		}
 		resolved.Model = cfg.AuditorModel
 	}

@@ -19,6 +19,7 @@ import (
 	"late/internal/assets"
 	"late/internal/client"
 	appconfig "late/internal/config"
+	"late/internal/gui"
 	"late/internal/mcp"
 	"late/internal/session"
 	"late/internal/tool"
@@ -41,6 +42,7 @@ func main() {
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
 	versionReq := flag.Bool("version", false, "Show version")
+	useTUIReq := flag.Bool("tui", false, "Use terminal UI instead of the graphical interface")
 	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Unsupported: Execute all tools without supervision. Do not use this, bad things will happen. You have been warned.")
 
 	flag.Usage = func() {
@@ -132,8 +134,6 @@ func main() {
 	if *appendSystemPromptReq != "" {
 		systemPrompt = systemPrompt + *appendSystemPromptReq
 	}
-
-	fmt.Println("Starting late TUI...")
 
 	// Define history path with timestamp-based session ID
 	sessionsDir, err := session.SessionDir()
@@ -236,47 +236,13 @@ func main() {
 		sess.Registry.Register(t)
 	}
 
-	// Initialize common renderer
-	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(tui.LateTheme),
-		glamour.WithWordWrap(80),
-		glamour.WithPreservedNewLines(),
-	)
-
-	// Create root orchestrator
-	// We'll add middlewares later once the program is started
+	// Create root orchestrator — middlewares wired below per UI mode.
 	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
 
-	model := tui.NewModel(rootAgent, renderer)
-	p := tea.NewProgram(model)
-
-	// Wire TUI integration
-	go func() {
-		// Set messenger first
-		p.Send(tui.SetMessengerMsg{Messenger: p})
-
-		// Create context with InputProvider
-		ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
-		if *unsupervisedReq {
-			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
-		}
-		rootAgent.SetContext(ctx)
-
-		// Set middlewares (e.g. TUI confirmation)
-		rootAgent.SetMiddlewares([]common.ToolMiddleware{
-			tui.TUIConfirmMiddleware(p, sess.Registry),
-		})
-
-		// Start forwarding events from the root agent to the TUI
-		ForwardOrchestratorEvents(p, rootAgent)
-	}()
-
-	if *enableSubagentsReq {
-		runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-			// Route to the appropriate model client based on agent role:
-			//   auditor  → security-specialist model (e.g. VulnLLM-R-7B)
-			//   coder    → code-specialist model (e.g. Qwen3-Coder-27B)
-			//   others   → subagent model (same as coder by default)
+	// makeRunner builds a SubagentRunner that uses the given middleware factory
+	// for each spawned child orchestrator.
+	makeRunner := func(mwFactory agent.MiddlewareFactory) tool.SubagentRunner {
+		return func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
 			var agentClient *client.Client
 			switch agentType {
 			case "auditor":
@@ -284,27 +250,81 @@ func main() {
 			default:
 				agentClient = subagentClient
 			}
-
-			child, err := agent.NewSubagentOrchestrator(agentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
+			child, err := agent.NewSubagentOrchestrator(
+				agentClient, goal, ctxFiles, agentType,
+				enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns,
+				rootAgent, mwFactory,
+			)
 			if err != nil {
 				return "", err
 			}
-
 			res, err := child.Execute("")
 			if err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("The subagent successfully completed its task. Final result:\n\n%s", res), nil
 		}
-
-		sess.Registry.Register(tool.SpawnSubagentTool{
-			Runner: runner,
-		})
 	}
 
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("Unspecified error: %v", err)
-		os.Exit(1)
+	if *useTUIReq {
+		// ── TUI path ──────────────────────────────────────────────────────────
+		renderer, _ := glamour.NewTermRenderer(
+			glamour.WithStylesFromJSONBytes(tui.LateTheme),
+			glamour.WithWordWrap(80),
+			glamour.WithPreservedNewLines(),
+		)
+
+		model := tui.NewModel(rootAgent, renderer)
+		p := tea.NewProgram(model)
+
+		go func() {
+			p.Send(tui.SetMessengerMsg{Messenger: p})
+
+			ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
+			if *unsupervisedReq {
+				ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
+			}
+			rootAgent.SetContext(ctx)
+			rootAgent.SetMiddlewares([]common.ToolMiddleware{
+				tui.TUIConfirmMiddleware(p, sess.Registry),
+			})
+			ForwardOrchestratorEvents(p, rootAgent)
+		}()
+
+		if *enableSubagentsReq {
+			sess.Registry.Register(tool.SpawnSubagentTool{
+				Runner: makeRunner(func(reg *common.ToolRegistry) []common.ToolMiddleware {
+					return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
+				}),
+			})
+		}
+
+		if _, err := p.Run(); err != nil {
+			fmt.Printf("Unspecified error: %v", err)
+			os.Exit(1)
+		}
+	} else {
+		// ── GUI path ───────────────────────────────────────────────────────────
+		guiApp := gui.NewApp()
+
+		baseCtx := context.Background()
+		if *unsupervisedReq {
+			baseCtx = context.WithValue(baseCtx, common.SkipConfirmationKey, true)
+		}
+		rootAgent.SetContext(baseCtx)
+		rootAgent.SetMiddlewares([]common.ToolMiddleware{
+			guiApp.ConfirmMiddleware(sess.Registry, *unsupervisedReq),
+		})
+
+		if *enableSubagentsReq {
+			sess.Registry.Register(tool.SpawnSubagentTool{
+				Runner: makeRunner(func(reg *common.ToolRegistry) []common.ToolMiddleware {
+					return []common.ToolMiddleware{guiApp.ConfirmMiddleware(reg, *unsupervisedReq)}
+				}),
+			})
+		}
+
+		guiApp.Run(rootAgent, history, sess, *unsupervisedReq)
 	}
 }
 

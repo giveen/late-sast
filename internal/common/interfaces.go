@@ -55,8 +55,9 @@ func (e ContentEvent) OrchestratorID() string { return e.ID }
 
 // ChildAddedEvent is sent when a new subagent is spawned.
 type ChildAddedEvent struct {
-	ParentID string
-	Child    Orchestrator
+	ParentID  string
+	Child     Orchestrator
+	AgentType string // e.g. "scanner", "coder", "auditor"
 }
 
 func (e ChildAddedEvent) OrchestratorID() string { return e.ParentID }
@@ -94,10 +95,10 @@ type InputProvider interface {
 type contextKey string
 
 const (
-	InputProviderKey  contextKey = "input_provider"
-	OrchestratorIDKey contextKey = "orchestrator_id"
+	InputProviderKey    contextKey = "input_provider"
+	OrchestratorIDKey   contextKey = "orchestrator_id"
 	SkipConfirmationKey contextKey = "skip_confirmation"
-	ToolApprovalKey    contextKey = "tool_approval"
+	ToolApprovalKey     contextKey = "tool_approval"
 )
 
 // GetInputProvider returns the InputProvider from the context.

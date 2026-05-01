@@ -9,9 +9,12 @@ import (
 	"late/internal/executor"
 	"late/internal/orchestrator"
 	"late/internal/session"
-	"late/internal/tui"
 	"os"
 )
+
+// MiddlewareFactory creates middlewares bound to a specific tool registry.
+// Used to wire confirm-middleware (TUI or GUI) to the child's own registry.
+type MiddlewareFactory func(registry *common.ToolRegistry) []common.ToolMiddleware
 
 // NewSubagentOrchestrator creates a new BaseOrchestrator for a subagent.
 func NewSubagentOrchestrator(
@@ -24,7 +27,7 @@ func NewSubagentOrchestrator(
 	gemmaThinking bool,
 	maxTurns int,
 	parent common.Orchestrator,
-	messenger tui.Messenger,
+	middlewareFactory MiddlewareFactory,
 ) (common.Orchestrator, error) {
 	// 1. Determine System Prompt
 	systemPrompt := ""
@@ -135,17 +138,15 @@ func NewSubagentOrchestrator(
 	id := fmt.Sprintf("subagent-%d", len(parent.Children()))
 	mws := parent.Middlewares()
 
-	if messenger != nil {
-		mws = []common.ToolMiddleware{
-			tui.TUIConfirmMiddleware(messenger, sess.Registry),
-		}
+	if middlewareFactory != nil {
+		mws = middlewareFactory(sess.Registry)
 	}
 
 	child := orchestrator.NewBaseOrchestrator(id, sess, mws, maxTurns)
 	child.SetContext(parent.Context())
 
 	if p, ok := parent.(*orchestrator.BaseOrchestrator); ok {
-		p.AddChild(child)
+		p.AddChild(child, agentType)
 	}
 
 	return child, nil

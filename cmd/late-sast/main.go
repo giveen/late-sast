@@ -24,8 +24,8 @@ import (
 	"late/internal/assets"
 	"late/internal/assets/sast"
 	"late/internal/client"
-	appconfig "late/internal/config"
 	"late/internal/common"
+	appconfig "late/internal/config"
 	"late/internal/mcp"
 	"late/internal/orchestrator"
 	"late/internal/pathutil"
@@ -271,7 +271,6 @@ func main() {
 				}
 			}
 			removeAsRoot("/tmp/sast-skill")
-			removeAsRoot("/tmp/semgrep-skills")
 			removeAsRoot(workDir)
 			fmt.Printf("[late-sast] Workdir %s removed.\n", workDir)
 		default:
@@ -413,7 +412,13 @@ func main() {
 	// before a single line of code is scanned.
 	ctxIdx := tool.NewContextIndex()
 	indexSASTReferences(ctxIdx, "/tmp/sast-skill")
-	if err := fetchAndIndexSemgrepSkills(ctxIdx, "/tmp/semgrep-skills"); err != nil {
+	semgrepCacheDir := func() string {
+		if d, err := pathutil.LateSASTCacheDir(); err == nil {
+			return filepath.Join(d, "semgrep-skills")
+		}
+		return "/tmp/semgrep-skills" // fallback if UserCacheDir unavailable
+	}()
+	if err := fetchAndIndexSemgrepSkills(context.Background(), ctxIdx, semgrepCacheDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: semgrep code-security skills unavailable (%v) — skipping\n", err)
 	}
 	sess.Registry.Register(tool.CtxIndexTool{Index: ctxIdx})
@@ -473,7 +478,10 @@ func main() {
 		child, err := agent.NewSubagentOrchestrator(
 			agentClient, goal, ctxFiles, agentType,
 			enabledTools, true, *gemmaThinkingReq,
-			*subagentMaxTurns, rootAgent, p,
+			*subagentMaxTurns, rootAgent,
+			func(reg *common.ToolRegistry) []common.ToolMiddleware {
+				return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
+			},
 		)
 		if err != nil {
 			return "", err
@@ -626,9 +634,9 @@ func extractSASTSkill(destDir string) error {
 }
 
 // fetchAndIndexSemgrepSkills downloads the semgrep/skills code-security zip
-// (if not already cached), extracts it to destDir, and indexes all rule
-// markdown files into the BM25 index. Non-fatal — caller logs the error.
-func fetchAndIndexSemgrepSkills(idx *tool.ContextIndex, destDir string) error {
+// (if not already cached at the persistent cache dir), extracts it, and indexes
+// all rule markdown files into the BM25 index. Non-fatal — caller logs the error.
+func fetchAndIndexSemgrepSkills(ctx context.Context, idx *tool.ContextIndex, destDir string) error {
 	const zipURL = "https://github.com/semgrep/skills/raw/main/skills/code-security.zip"
 	rulesDir := filepath.Join(destDir, "code-security", "rules")
 
@@ -641,8 +649,15 @@ func fetchAndIndexSemgrepSkills(idx *tool.ContextIndex, destDir string) error {
 		return fmt.Errorf("mkdir %s: %w", destDir, err)
 	}
 
-	// Download
-	resp, err := http.Get(zipURL) //nolint:gosec // URL is a hardcoded constant
+	// Download with a bounded timeout so startup never hangs indefinitely.
+	dlCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, zipURL, nil)
+	if err != nil {
+		return fmt.Errorf("build semgrep skills request: %w", err)
+	}
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download semgrep skills: %w", err)
 	}
@@ -657,13 +672,26 @@ func fetchAndIndexSemgrepSkills(idx *tool.ContextIndex, destDir string) error {
 		return fmt.Errorf("read semgrep skills zip: %w", err)
 	}
 
-	// Extract
+	// Extract — guard against Zip Slip by verifying every entry stays inside destDir.
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		return fmt.Errorf("open semgrep skills zip: %w", err)
 	}
+	absDestDir, err := filepath.Abs(destDir)
+	if err != nil {
+		return fmt.Errorf("resolve destDir: %w", err)
+	}
 	for _, f := range zr.File {
-		dest := filepath.Join(destDir, f.Name)
+		// Reject absolute paths and clean the name before joining.
+		name := filepath.Clean(f.Name)
+		if filepath.IsAbs(name) {
+			continue
+		}
+		dest := filepath.Join(absDestDir, name)
+		// Ensure the resolved path is still inside destDir.
+		if !strings.HasPrefix(dest+string(filepath.Separator), absDestDir+string(filepath.Separator)) {
+			continue
+		}
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(dest, 0755) //nolint:errcheck
 			continue

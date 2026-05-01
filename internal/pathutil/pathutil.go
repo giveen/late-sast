@@ -57,6 +57,17 @@ func LateProjectSkillsDir() string {
 	return filepath.Join(".late", "skills")
 }
 
+// LateSASTCacheDir returns the cache directory for late-sast
+// (~/.cache/late-sast on Linux/macOS, %LocalAppData%\late-sast\cache on Windows).
+// Files here persist across runs and are safe to delete manually.
+func LateSASTCacheDir() (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cacheDir, "late-sast"), nil
+}
+
 // LateSASTConfigDir returns the config directory for late-sast.
 // It prefers ~/.config/late-sast/ when that directory already contains a
 // config.json (i.e. the user has explicitly set it up), and falls back to
