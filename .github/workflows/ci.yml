@@ -36,3 +36,84 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  build-binaries:
+    name: Build binaries (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Fyne system dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxxf86vm-dev
+
+      - name: Install MinGW (Windows)
+        if: matrix.os == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      - name: Fetch codebase-memory-mcp (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          mkdir -p cmd/late-sast/embedded
+          curl -fsSL \
+            "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-linux-amd64.tar.gz" \
+            | tar -xzO "codebase-memory-mcp" > cmd/late-sast/embedded/codebase-memory-mcp
+          chmod +x cmd/late-sast/embedded/codebase-memory-mcp
+
+      - name: Fetch codebase-memory-mcp (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          mkdir -p cmd/late-sast/embedded
+          curl -fsSL \
+            "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-windows-amd64.zip" \
+            -o /tmp/cbm.zip
+          unzip -p /tmp/cbm.zip codebase-memory-mcp.exe > cmd/late-sast/embedded/codebase-memory-mcp
+
+      - name: Build late-sast (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          go build \
+            -ldflags "-X late/internal/common.Version=ci-${{ github.sha }}" \
+            -tags cbm_embedded \
+            -o late-sast-linux-amd64 \
+            ./cmd/late-sast
+
+      - name: Build late-sast (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          go build \
+            -ldflags "-X late/internal/common.Version=ci-${{ github.sha }} -H windowsgui" \
+            -tags cbm_embedded \
+            -o late-sast-windows-amd64.exe \
+            ./cmd/late-sast

@@ -120,7 +120,7 @@ func showConfirmDialog(win fyne.Window, tc client.ToolCall, resultCh chan<- stri
 }
 
 func formatCallString(tc client.ToolCall) string {
-	return "Allow **" + tc.Function.Name + "** to execute?"
+	return "Allow " + tc.Function.Name + " to execute?"
 }
 
 // applyChoice processes the user's confirmation choice (mirrors tui logic).

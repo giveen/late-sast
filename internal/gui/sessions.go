@@ -14,7 +14,11 @@ import (
 // with the chosen session's history path.
 func (a *App) ShowSessionBrowser(onLoad func(histPath string)) {
 	metas, err := session.ListSessions()
-	if err != nil || len(metas) == 0 {
+	if err != nil {
+		dialog.ShowError(err, a.window)
+		return
+	}
+	if len(metas) == 0 {
 		dialog.ShowInformation("Sessions", "No saved sessions found.", a.window)
 		return
 	}

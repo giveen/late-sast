@@ -58,7 +58,7 @@ func LateProjectSkillsDir() string {
 }
 
 // LateSASTCacheDir returns the cache directory for late-sast
-// (~/.cache/late-sast on Linux/macOS, %LocalAppData%\late-sast\cache on Windows).
+// (~/.cache/late-sast on Linux/macOS, %LocalAppData%\late-sast on Windows).
 // Files here persist across runs and are safe to delete manually.
 func LateSASTCacheDir() (string, error) {
 	cacheDir, err := os.UserCacheDir()

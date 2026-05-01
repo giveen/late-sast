@@ -71,6 +71,14 @@ func main() {
 		return
 	}
 
+	if !*useTUIReq {
+		// Fyne's locale parser rejects the "C" pseudo-locale.
+		// Normalise to a well-formed BCP-47 tag before Fyne initialises.
+		if lc := os.Getenv("LANG"); lc == "" || lc == "C" || lc == "POSIX" {
+			os.Setenv("LANG", "en_US.UTF-8")
+		}
+	}
+
 	var loadedHistoryPath string
 	if flag.NArg() > 0 && flag.Arg(0) == "session" {
 		path, _, shouldExit := handleSessionCommand(flag.Args()[1:])

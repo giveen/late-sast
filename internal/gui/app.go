@@ -63,9 +63,14 @@ func (a *App) SetConfigDir(dir string) { a.configDir = dir }
 
 // ConfirmMiddleware returns a ToolMiddleware that uses Fyne dialogs for
 // tool-call confirmation. Safe to call before Run() — the window field
-// is always populated by the time tool calls occur.
+// is resolved lazily when a tool call executes.
 func (a *App) ConfirmMiddleware(reg *common.ToolRegistry, unsupervised bool) common.ToolMiddleware {
-	return GUIConfirmMiddleware(a.window, reg, unsupervised)
+	return func(next common.ToolRunner) common.ToolRunner {
+		return func(ctx context.Context, tc client.ToolCall) (string, error) {
+			mw := GUIConfirmMiddleware(a.window, reg, unsupervised)
+			return mw(next)(ctx, tc)
+		}
+	}
 }
 
 // buildMainLayout constructs the chat/input/tab widgets for rootAgent and

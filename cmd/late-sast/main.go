@@ -78,13 +78,9 @@ func main() {
 	// and child processes (docker) all write to the same log file.
 	if !*useTUIReq {
 		if cacheDir, err := pathutil.LateSASTCacheDir(); err == nil {
-			os.MkdirAll(cacheDir, 0755) //nolint:errcheck
+			os.MkdirAll(cacheDir, 0700) //nolint:errcheck
 			logPath := filepath.Join(cacheDir, "late-sast.log")
-			if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
-				syscall.Dup2(int(lf.Fd()), 1) //nolint:errcheck
-				syscall.Dup2(int(lf.Fd()), 2) //nolint:errcheck
-				lf.Close()
-			}
+			_ = redirectStdoutStderrToFile(logPath)
 		}
 	}
 
