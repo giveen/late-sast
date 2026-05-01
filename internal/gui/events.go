@@ -14,40 +14,85 @@ import (
 //   - panel       — the ChatPanel belonging to this orchestrator's tab
 //   - tabItem     — nil for the root/main tab (never closed)
 //   - agentLabel  — human-readable phase label (empty for root)
+//   - onUsage     — optional callback to receive (usedTokens, maxTokens); nil to skip
 func (a *App) startEventLoop(
 	o common.Orchestrator,
 	panel *ChatPanel,
 	tabItem *container.TabItem,
 	agentLabel string,
+	onUsage func(used, max int),
 ) {
 	go func() {
 		var acc string
 		streaming := false
+		thinkingStreaming := false
 
 		for event := range o.Events() {
 			switch e := event.(type) {
 
 			case common.ContentEvent:
-				if !streaming {
-					// First chunk: add an empty assistant bubble to fill.
-					streaming = true
-					acc = ""
-					fyne.Do(func() {
-						panel.AppendMessage("assistant", "")
-					})
+				// onEndTurn emits a ContentEvent with empty content/reasoning but
+				// carries final usage accounting. Update the usage bar and skip
+				// the message update to avoid clearing the last bubble.
+				if e.Content == "" && e.ReasoningContent == "" {
+					if e.Usage.PromptTokens > 0 && onUsage != nil {
+						used, max := e.Usage.PromptTokens, o.MaxTokens()
+						fyne.Do(func() { onUsage(used, max) })
+					}
+					continue
 				}
-				acc = e.Content
-				fyne.Do(func() {
-					panel.UpdateLastMessage(acc)
-				})
+
+				// Reasoning / thinking content — streams before the response.
+				if e.ReasoningContent != "" {
+					if !thinkingStreaming {
+						thinkingStreaming = true
+						fyne.Do(func() { panel.StartThinking() })
+					}
+					rc := e.ReasoningContent
+					fyne.Do(func() { panel.UpdateThinking(rc) })
+				}
+
+				// Response content — collapse thinking box when it first arrives.
+				if e.Content != "" {
+					if thinkingStreaming {
+						thinkingStreaming = false
+						fyne.Do(func() { panel.FinalizeThinking() })
+					}
+					if !streaming {
+						streaming = true
+						acc = ""
+						fyne.Do(func() {
+							panel.AppendMessage("assistant", "")
+						})
+					}
+					acc = e.Content
+					content := acc // local copy — fyne.Do is async; avoid closure data-race
+					fyne.Do(func() {
+						panel.UpdateLastMessage(content)
+					})
+					if e.Usage.PromptTokens > 0 && onUsage != nil {
+						used, max := e.Usage.PromptTokens, o.MaxTokens()
+						fyne.Do(func() { onUsage(used, max) })
+					}
+				}
 
 			case common.StatusEvent:
 				switch e.Status {
 				case "thinking":
+					// Collapse the thinking box between tool calls;
+					// StartThinking will reopen/reuse the same accordion on next chunk.
+					if thinkingStreaming {
+						thinkingStreaming = false
+						fyne.Do(func() { panel.FinalizeThinking() })
+					}
 					streaming = false
 					acc = ""
 
 				case "idle":
+					if thinkingStreaming {
+						thinkingStreaming = false
+						fyne.Do(func() { panel.FinalizeThinking() })
+					}
 					if streaming {
 						streaming = false
 						fyne.Do(func() {
@@ -61,6 +106,9 @@ func (a *App) startEventLoop(
 					}
 
 				case "closed":
+					if thinkingStreaming {
+						fyne.Do(func() { panel.FinalizeThinking() })
+					}
 					if streaming {
 						fyne.Do(func() {
 							panel.FinalizeLastMessage()
@@ -113,9 +161,9 @@ func (a *App) inputForOrchestrator(o common.Orchestrator) *InputPanel {
 }
 
 // makeTabContent builds the content widget for a subagent tab:
-// a chat panel + a "Stop" toolbar at the top.
-func makeTabContent(panel *ChatPanel, stopFn func()) fyne.CanvasObject {
+// a chat panel, a "Stop" button on the left, and a context-usage label on the right.
+func makeTabContent(panel *ChatPanel, stopFn func(), usageLabel *widget.Label) fyne.CanvasObject {
 	stopBtn := widget.NewButton("■ Stop", stopFn)
-	header := container.NewHBox(stopBtn)
+	header := container.NewBorder(nil, nil, stopBtn, usageLabel, nil)
 	return container.NewBorder(header, nil, nil, nil, panel)
 }

@@ -31,13 +31,16 @@ type App struct {
 	tabs    *container.AppTabs
 	mainTab *container.TabItem
 
-	mainChat  *ChatPanel
-	mainInput *InputPanel
+	mainChat   *ChatPanel
+	mainInput  *InputPanel
+	usageLabel *widget.Label // shows "Context: N / M (X%)"
 
 	mu            sync.Mutex
 	phaseCounter  map[string]int // label → open count
 	tabsByOrcID   map[string]*container.TabItem
 	panelsByOrcID map[string]*ChatPanel
+
+	onQuit func() // optional: called before Fyne quits (e.g. docker cleanup)
 }
 
 // NewApp constructs the App struct (does not start Fyne yet).
@@ -49,6 +52,10 @@ func NewApp() *App {
 	}
 }
 
+// SetOnQuit registers a callback to be invoked (in a background goroutine)
+// before the Fyne app exits. Use it for cleanup tasks like stopping containers.
+func (a *App) SetOnQuit(fn func()) { a.onQuit = fn }
+
 // ConfirmMiddleware returns a ToolMiddleware that uses Fyne dialogs for
 // tool-call confirmation. Safe to call before Run() — the window field
 // is always populated by the time tool calls occur.
@@ -56,29 +63,15 @@ func (a *App) ConfirmMiddleware(reg *common.ToolRegistry, unsupervised bool) com
 	return GUIConfirmMiddleware(a.window, reg, unsupervised)
 }
 
-// Run wires up Fyne, renders the main window, and starts the event loop.
-// This call blocks until the window is closed.
-func (a *App) Run(
-	rootAgent common.Orchestrator,
-	hist []client.ChatMessage,
-	sess *session.Session,
-	unsupervised bool,
-) {
-	a.fyneApp = app.New()
-	a.fyneApp.Settings().SetTheme(&lateTheme{})
-
-	a.window = a.fyneApp.NewWindow("Late")
-	a.window.Resize(fyne.NewSize(1150, 750))
-
-	// --- Main chat panel ---
+// buildMainLayout constructs the chat/input/tab widgets for rootAgent and
+// starts the event loop. It does NOT call Show or Run — the caller does that.
+// Must be called from the Fyne main goroutine (or before ShowAndRun).
+func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatMessage) {
 	a.mainChat = NewChatPanel()
-
-	// Replay existing history.
 	for _, msg := range hist {
 		a.mainChat.AppendMessage(msg.Role, messageText(msg))
 	}
 
-	// --- Input panel ---
 	a.mainInput = NewInputPanel(func(text string) {
 		a.mainInput.SetEnabled(false)
 		if err := rootAgent.Submit(text); err != nil {
@@ -86,13 +79,45 @@ func (a *App) Run(
 		}
 	})
 
-	// --- Status label ---
 	statusLabel := widget.NewLabel("● Ready")
+	a.usageLabel = widget.NewLabel("Context: –")
 
-	// --- Main tab ---
+	// handleQuit cancels the agent, runs cleanup, then closes the window.
+	// sync.Once ensures at most one execution even if button + OS close race.
+	var quitOnce sync.Once
+	var quitBtn *widget.Button
+	handleQuit := func() {
+		quitOnce.Do(func() {
+			fyne.Do(func() {
+				quitBtn.SetText("Stopping…")
+				quitBtn.Disable()
+			})
+			rootAgent.Cancel()
+			go func() {
+				if a.onQuit != nil {
+					a.onQuit()
+				}
+				// Closing the window via fyne.Do ensures we're on the Fyne main
+				// goroutine. By this point rootAgent.Cancel() has stopped the
+				// run loop so event-loop goroutines are idle — they won't call
+				// fyne.Do after drained=true, which eliminates the thread warning.
+				fyne.Do(func() { a.window.Close() })
+			}()
+		})
+	}
+
+	// Intercept the OS close button so the same cleanup path is used.
+	a.window.SetCloseIntercept(handleQuit)
+
+	quitBtn = widget.NewButton("⏹ Stop & Quit", handleQuit)
+
+	bottomBar := container.NewVBox(
+		a.mainInput,
+		container.NewBorder(nil, nil, statusLabel, a.usageLabel, nil),
+	)
 	mainContent := container.NewBorder(
-		nil,
-		container.NewVBox(a.mainInput, statusLabel),
+		container.NewHBox(quitBtn),
+		bottomBar,
 		nil, nil,
 		a.mainChat,
 	)
@@ -100,10 +125,17 @@ func (a *App) Run(
 	a.tabs = container.NewAppTabs(a.mainTab)
 	a.tabs.SetTabLocation(container.TabLocationTop)
 
-	// --- Root event loop ---
-	a.startEventLoop(rootAgent, a.mainChat, nil, "")
+	a.startEventLoop(rootAgent, a.mainChat, nil, "", func(used, max int) {
+		var text string
+		if max > 0 {
+			pct := float64(used) / float64(max) * 100
+			text = fmt.Sprintf("Context: %d\u202f/\u202f%d  (%.0f%%)", used, max, pct)
+		} else {
+			text = fmt.Sprintf("Context: %d tokens", used)
+		}
+		a.usageLabel.SetText(text)
+	})
 
-	// Wire InputProvider into root agent's context.
 	provider := newGUIInputProvider(a.window)
 	ctx := rootAgent.Context()
 	if ctx == nil {
@@ -115,7 +147,23 @@ func (a *App) Run(
 	if cs, ok := rootAgent.(contextSetter); ok {
 		cs.SetContext(ctx)
 	}
+}
 
+// Run wires up Fyne, renders the main window, and starts the event loop.
+// This call blocks until the window is closed.
+func (a *App) Run(
+	rootAgent common.Orchestrator,
+	hist []client.ChatMessage,
+	sess *session.Session,
+	unsupervised bool,
+) {
+	a.fyneApp = app.NewWithID("io.late")
+	a.fyneApp.Settings().SetTheme(&lateTheme{})
+	a.window = a.fyneApp.NewWindow("Late")
+	a.window.SetIcon(appIcon)
+	a.window.Resize(fyne.NewSize(1150, 750))
+
+	a.buildMainLayout(rootAgent, hist)
 	a.window.SetContent(a.tabs)
 	a.window.ShowAndRun()
 }
@@ -126,11 +174,12 @@ func (a *App) openSubagentTab(child common.Orchestrator, agentType string) {
 	label := a.phaseLabel(agentType)
 
 	panel := NewChatPanel()
+	subUsage := widget.NewLabel("–")
 
 	stopFn := func() {
 		child.Cancel()
 	}
-	content := makeTabContent(panel, stopFn)
+	content := makeTabContent(panel, stopFn, subUsage)
 
 	tabItem := container.NewTabItem(label, content)
 
@@ -144,7 +193,13 @@ func (a *App) openSubagentTab(child common.Orchestrator, agentType string) {
 	a.tabs.Refresh()
 
 	// Start event loop for the child.
-	a.startEventLoop(child, panel, tabItem, label)
+	a.startEventLoop(child, panel, tabItem, label, func(used, max int) {
+		if max > 0 {
+			subUsage.SetText(fmt.Sprintf("%d\u202f/\u202f%d", used, max))
+		} else {
+			subUsage.SetText(fmt.Sprintf("%d tok", used))
+		}
+	})
 }
 
 // closeSubagentTab removes a subagent tab after showing a toast.

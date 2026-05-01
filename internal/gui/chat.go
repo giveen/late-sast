@@ -16,13 +16,21 @@ type messageBubble struct {
 	rich    *widget.RichText
 }
 
+// thinkBubble is a collapsible accordion that streams reasoning content.
+type thinkBubble struct {
+	accordion *widget.Accordion
+	item      *widget.AccordionItem
+	rich      *widget.RichText
+}
+
 // ChatPanel is a scrollable list of conversation bubbles.
 type ChatPanel struct {
 	widget.BaseWidget
 
-	scroll   *container.Scroll
-	vbox     *fyne.Container
-	messages []*messageBubble
+	scroll    *container.Scroll
+	vbox      *fyne.Container
+	messages  []*messageBubble
+	lastThink *thinkBubble // currently active (or most recent) thinking bubble
 }
 
 // NewChatPanel constructs an empty ChatPanel.
@@ -74,6 +82,70 @@ func (p *ChatPanel) FinalizeLastMessage() {
 	last := p.messages[len(p.messages)-1]
 	last.rich.Segments = makeSegments(last.content, false)
 	last.rich.Refresh()
+}
+
+// StartThinking adds (or reopens) the single "Thinking…" accordion.
+// Subsequent calls reuse the existing accordion rather than creating a new one.
+// Call from the Fyne main goroutine.
+func (p *ChatPanel) StartThinking() {
+	if p.lastThink != nil {
+		// Reuse: clear content ready for the next reasoning chunk.
+		// Do NOT reopen — let the user decide whether to expand it.
+		p.lastThink.item.Title = "Thinking…"
+		p.lastThink.rich.Segments = []widget.RichTextSegment{
+			&widget.TextSegment{Style: widget.RichTextStyleParagraph, Text: ""},
+		}
+		p.lastThink.accordion.Refresh()
+		return
+	}
+
+	rich := widget.NewRichText(&widget.TextSegment{
+		Style: widget.RichTextStyleParagraph,
+		Text:  "",
+	})
+	rich.Wrapping = fyne.TextWrapWord
+
+	item := widget.NewAccordionItem("Thinking…", rich)
+	acc := widget.NewAccordion(item)
+	// Collapsed by default — user can expand to read reasoning.
+
+	// Dim purple left accent to visually separate from response bubbles.
+	accent := canvas.NewRectangle(color.NRGBA{R: 0x6C, G: 0x3D, B: 0x80, A: 0xFF})
+	accent.SetMinSize(fyne.NewSize(3, 0))
+	wrapped := container.NewBorder(nil, nil, accent, nil, acc)
+
+	p.lastThink = &thinkBubble{accordion: acc, item: item, rich: rich}
+	p.vbox.Add(wrapped)
+	p.scroll.ScrollToBottom()
+	p.vbox.Refresh()
+}
+
+// UpdateThinking streams new accumulated reasoning into the open thinking bubble.
+// Call from the Fyne main goroutine.
+func (p *ChatPanel) UpdateThinking(content string) {
+	if p.lastThink == nil {
+		return
+	}
+	p.lastThink.rich.Segments = []widget.RichTextSegment{
+		&widget.TextSegment{
+			Style: widget.RichTextStyleParagraph,
+			Text:  content,
+		},
+	}
+	p.lastThink.rich.Refresh()
+	p.scroll.ScrollToBottom()
+}
+
+// FinalizeThinking collapses the thinking accordion when reasoning is complete.
+// Call from the Fyne main goroutine.
+func (p *ChatPanel) FinalizeThinking() {
+	if p.lastThink == nil {
+		return
+	}
+	p.lastThink.item.Title = "Thoughts"
+	p.lastThink.accordion.Close(0)
+	p.lastThink.accordion.Refresh()
+	// Keep lastThink reference — user can still expand to read it.
 }
 
 // makeSegments converts content to RichText segments.

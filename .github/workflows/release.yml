@@ -10,20 +10,31 @@ permissions:
 
 jobs:
   build-and-release:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
+          # Linux/amd64 — native runner, X11/GL headers via apt
           - os: linux
             arch: amd64
+            runner: ubuntu-latest
+          # Linux/arm64 — native ARM64 runner (GitHub-hosted)
           - os: linux
             arch: arm64
+            runner: ubuntu-24.04-arm
+          # macOS/amd64 — Intel runner
           - os: darwin
             arch: amd64
+            runner: macos-13
+          # macOS/arm64 — Apple Silicon runner
           - os: darwin
             arch: arm64
+            runner: macos-latest
+          # Windows/amd64 — native runner with MSYS2/MinGW for CGO
           - os: windows
             arch: amd64
+            runner: windows-latest
+
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -32,35 +43,73 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache: true
 
-      - name: Fetch codebase-memory-mcp for embedding
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
+      # ── Linux: install Fyne X11/GL system dependencies ──────────────────────
+      - name: Install Fyne system dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxxf86vm-dev
+
+      # ── Windows: ensure a MinGW gcc is on PATH (required by CGO/Fyne) ───────
+      - name: Install MinGW (Windows)
+        if: matrix.os == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      # ── Fetch codebase-memory-mcp for embedding ──────────────────────────────
+      - name: Fetch codebase-memory-mcp (Unix)
+        if: matrix.os != 'windows'
         run: |
           mkdir -p cmd/late-sast/embedded
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            curl -fsSL "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-windows-amd64.zip" \
-              -o /tmp/cbm.zip
-            unzip -p /tmp/cbm.zip codebase-memory-mcp.exe > cmd/late-sast/embedded/codebase-memory-mcp
-          else
-            curl -fsSL "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
-              | tar -xzO "codebase-memory-mcp" > cmd/late-sast/embedded/codebase-memory-mcp
-          fi
+          curl -fsSL \
+            "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
+            | tar -xzO "codebase-memory-mcp" > cmd/late-sast/embedded/codebase-memory-mcp
           chmod +x cmd/late-sast/embedded/codebase-memory-mcp
 
-      - name: Build Binary
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
+      - name: Fetch codebase-memory-mcp (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
         run: |
-          EXT=""
-          if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
-          go build -ldflags "-X late/internal/common.Version=${{ github.ref_name }}" \
-            -tags cbm_embedded \
-            -o late-sast-${{ matrix.os }}-${{ matrix.arch }}${EXT} ./cmd/late-sast
+          mkdir -p cmd/late-sast/embedded
+          curl -fsSL \
+            "https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-windows-amd64.zip" \
+            -o /tmp/cbm.zip
+          unzip -p /tmp/cbm.zip codebase-memory-mcp.exe > cmd/late-sast/embedded/codebase-memory-mcp
 
-      - name: Upload Release Asset
+      # ── Build ────────────────────────────────────────────────────────────────
+      - name: Build (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          go build \
+            -ldflags "-X late/internal/common.Version=${{ github.ref_name }}" \
+            -tags cbm_embedded \
+            -o late-sast-${{ matrix.os }}-${{ matrix.arch }} \
+            ./cmd/late-sast
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          go build \
+            -ldflags "-X late/internal/common.Version=${{ github.ref_name }} -H windowsgui" \
+            -tags cbm_embedded \
+            -o late-sast-windows-amd64.exe \
+            ./cmd/late-sast
+
+      # ── Upload to GitHub Release ─────────────────────────────────────────────
+      - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
           files: late-sast-${{ matrix.os }}-${{ matrix.arch }}*
