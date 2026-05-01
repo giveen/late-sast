@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -11,6 +12,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
+
+// htmlTagRe strips HTML formatting tags that LLMs sometimes emit (e.g. <pre>, </pre>, <code>).
+// It targets only well-formed HTML element tags, not bare angle brackets in code.
+var htmlTagRe = regexp.MustCompile(`</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?>|</>`)
 
 func (m Model) View() tea.View {
 	if m.Width == 0 || m.Height == 0 {
@@ -260,6 +265,8 @@ func (m *Model) updateViewport() {
 			if tail != "" {
 				// Trim leading newlines from tail to prevent "jumping" when a new paragraph starts
 				t := strings.TrimLeft(tail, "\n")
+				// Strip HTML tags that models sometimes emit (e.g. </pre></li></ol>)
+				t = htmlTagRe.ReplaceAllString(t, "")
 				if t != "" {
 					// Pulsing Caret for streaming effect
 					ms := float64(time.Now().UnixNano()) / 1e6
@@ -446,6 +453,9 @@ func (m *Model) truncateWithEllipsis(s string, w int) string {
 }
 
 func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
+	// Strip HTML formatting tags that models occasionally emit (e.g. <pre>, </pre>).
+	// Do this before glamour so goldmark never sees raw HTML blocks.
+	content = htmlTagRe.ReplaceAllString(content, "")
 	// Use new renderer to avoid background color issues
 	md, _ := m.GetRenderer(innerWidth).Render(content)
 	//md = strings.TrimRight(md, "\n")

@@ -121,6 +121,24 @@ Every finding goes through a Judge step before it reaches the report:
 
 > **Scope note:** `late-sast` scans unauthenticated attack surface only — it does not log in to the application. Vulnerabilities that exist exclusively behind authenticated routes will be flagged as **NEEDS CONTEXT** rather than **CONFIRMED** or **LIKELY**. Post-auth vulnerabilities (IDOR, privilege escalation, auth bypass) require a session token to verify live; the static taint analysis still runs for them.
 
+### Retest Mode
+
+After a developer claims they've fixed the reported vulnerabilities, rerun the scan against the previous report to verify:
+
+```bash
+late-sast --retest ./sast_report_myrepo.md
+```
+
+`late-sast` re-reads the report, re-clones the repository at HEAD, and re-verifies each finding — without running a full scan from scratch. Each finding is re-classified as **FIXED**, **STILL PRESENT**, or **CANNOT VERIFY**, and a new `sast_retest_<repo>.md` report is written to the current directory.
+
+### Scan a Local Repository
+
+```bash
+late-sast --path /path/to/local/repo
+```
+
+Skips the clone step — the local directory is mounted into the Docker container directly. Useful for auditing work-in-progress code before pushing.
+
 ### Vulnerability Coverage
 
 `late-sast` covers all 34 vulnerability classes from the [llm-sast-scanner](https://github.com/SunWeb3Sec/llm-sast-scanner) reference library (MIT License, © SunWeb3Sec), including:
@@ -133,10 +151,12 @@ SQL Injection · XSS · SSRF · RCE · Path Traversal / LFI · IDOR · Authentic
 
 ```bash
 make build-sast    # produces ./bin/late-sast
-make install-sast  # installs to ~/.local/bin/late-sast
+make install-sast  # builds and installs to ~/.local/bin/late-sast
 ```
 
 Requires Docker to be installed and running. No other dependencies.
+
+> **Note:** `make install-sast` moves the binary to `~/.local/bin/` — use `make build-sast` if you want to keep it in `./bin/` for local testing.
 
 ### Clean Execution Guarantee
 
@@ -151,12 +171,21 @@ Every run is fully isolated and self-cleaning:
 ## 🛠️ Advanced Features
 
 ### Hybrid Model Routing
-Use a large reasoning model as the orchestrator and a faster dense model for the subagent workers — reducing cost without sacrificing depth:
+Use a large reasoning model as the orchestrator, a security-specialized model as the auditor, and a faster dense model for the fixer subagent:
 ```bash
-export LATE_SUBAGENT_MODEL="your-fast-model"
+export OPENAI_MODEL="qwen3.6-35b-a3b"              # orchestrator/scout
+export LATE_SUBAGENT_MODEL="qwen3.6-27b-coder"     # fixer subagent
 export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080"  # optional
 export LATE_SUBAGENT_API_KEY="your-other-key"          # optional
 ```
+
+For taint analysis, `late-sast` uses a dedicated **auditor** model. Configure it separately:
+```bash
+export LATE_AUDITOR_MODEL="VulnLLM-R-7B"           # security-specialized 7B
+export LATE_AUDITOR_BASE_URL="http://localhost:8080" # optional
+export LATE_AUDITOR_API_KEY="..."                   # optional
+```
+See the [Quickstart Guide](docs/quickstart.md) for recommended model configurations.
 
 ### Multi-Container Support
 `late-sast` detects and starts compose-based applications (postgres, redis, etc.) automatically. It patches the compose file to join the scan network, then spins up any required sidecars (MySQL, MongoDB, RabbitMQ, Elasticsearch) if the app needs them.

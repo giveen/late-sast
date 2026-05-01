@@ -81,12 +81,23 @@ func NewSubagentOrchestrator(
 	// Subagents should not persist their history to the sessions directory
 	sess := session.New(c, "", []client.ChatMessage{}, systemPrompt, true)
 
+	// Auditor is a small 7B model — give it extra generation budget so it can
+	// complete all hotspot verdicts without truncating mid-JSON.
+	if agentType == "auditor" {
+		sess.SetMaxTokens(8192)
+	}
 	// Inherit all tools from parent (including MCP tools)
 	if parent != nil && parent.Registry() != nil {
 		for _, t := range parent.Registry().All() {
 			// Skip spawn_subagent and write_implementation_plan to prevent recursion/confusion
 			name := t.Name()
 			if name == "spawn_subagent" || name == "write_implementation_plan" {
+				continue
+			}
+			// The auditor is a small 7B model — giving it 28+ tools causes context
+			// collapse. Restrict it to read_file only; it does not need bash or
+			// graph tools to perform taint-chain analysis.
+			if agentType == "auditor" && name != "read_file" {
 				continue
 			}
 			sess.Registry.Register(t)

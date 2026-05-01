@@ -16,13 +16,14 @@ When the user provides a GitHub URL, run the following three steps **without pau
 
 ### Step 1 — Setup (spawn setup subagent)
 
-Spawn a setup subagent to clone, index, build, and launch the target:
+Spawn a setup subagent to prepare, index, build, and launch the target:
 
 ```
 spawn_subagent(
   agent_type: "setup",
-  goal: "Clone, index, build, and launch the target application.
-GitHub URL: <url from user>
+  goal: "Prepare, index, build, and launch the target application.
+GitHub URL: <url from user>   ← omit this line if a local path was provided
+Local path: <local path>      ← omit this line if a GitHub URL was provided
 Container: ${{CONTAINER_NAME}}
 Work dir: ${{WORKDIR}}
 Repo path: ${{WORKDIR}}/repo

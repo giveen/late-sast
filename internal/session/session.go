@@ -19,6 +19,7 @@ type Session struct {
 	History      []client.ChatMessage
 	systemPrompt string
 	useTools     bool
+	maxTokens    int
 	Registry     *tool.Registry
 }
 
@@ -31,6 +32,12 @@ func New(c *client.Client, historyPath string, history []client.ChatMessage, sys
 		useTools:     useTools,
 		Registry:     tool.NewRegistry(),
 	}
+}
+
+// SetMaxTokens sets the max_tokens for generation on this session.
+// Zero means use the server default.
+func (s *Session) SetMaxTokens(n int) {
+	s.maxTokens = n
 }
 
 // ExecuteTool executes a tool call and returns the response as a string.
@@ -128,6 +135,7 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 
 	req := client.ChatCompletionRequest{
 		Messages:  messages,
+		MaxTokens: s.maxTokens,
 		ExtraBody: extraBody,
 	}
 
