@@ -16,7 +16,11 @@ curl -s "https://raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md" 2>/dev
 ```
 (Derive `<owner>/<repo>` from the GitHub URL.)
 
-**Scan the README output for a quick-install command:**
+**Scan the README output for a quick-install command — two passes:**
+
+---
+
+#### Pass A — Package-manager one-liners
 
 | Language | Recognised patterns | Example |
 |----------|--------------------|---------| 
@@ -26,7 +30,7 @@ curl -s "https://raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md" 2>/dev
 | Rust | `cargo install <name>` | `cargo install ripgrep` |
 | Ruby | `gem install <name>` | `gem install rails` |
 
-**If a quick-install command is found:**
+**If a Pass A command is found:**
 1. Create the workdir and spin up a minimal container with the relevant toolchain:
    - Go → `golang:1.23`
    - Python → `python:3.11-slim`
@@ -38,9 +42,91 @@ curl -s "https://raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md" 2>/dev
      -v ${{WORKDIR}}:/workdir -w /workdir <image> tail -f /dev/null
    docker exec ${{CONTAINER_NAME}} sh -c "<quick-install-command>"
    ```
-3. After install, set `${{WORKDIR}}/repo` to the directory where the source lives (or an empty dir if binary-only). Skip Steps 1–4 below entirely and jump directly to **Step 5** (bootstrap tools). Set `notes: installed via quick-install` in the summary.
+3. Skip Steps 1–4 entirely and jump to **Step 5**. Set `notes: installed via quick-install: <command>` in the summary.
 
-**If no quick-install command is found**, proceed with Step 1 below.
+---
+
+#### Pass B — Binary release assets (.deb / .AppImage / .snap / .flatpak)
+
+If Pass A found nothing, check whether the README mentions `.deb`, `.AppImage`, `.snap`, `.flatpak`, or links to a GitHub Releases page. These projects ship pre-built binaries rather than source installs.
+
+**Detect release assets from the GitHub API:**
+```bash
+# Fetch the latest release metadata
+curl -s "https://api.github.com/repos/<owner>/<repo>/releases/latest" > /tmp/release.json
+
+# List available Linux asset filenames
+python3 -c "
+import json, sys
+data = json.load(open('/tmp/release.json'))
+assets = [a['name'] for a in data.get('assets', [])]
+print('\n'.join(assets))
+"
+```
+
+**Choose the best asset for the container (preference order):**
+1. `.deb` matching `amd64` or `x86_64` (or `arm64` on ARM hosts) — cleanest install, resolves dependencies
+2. `.AppImage` matching `x86_64` / `amd64` — portable, no install needed
+3. `.snap` — try `snap install --dangerous`
+4. `.flatpak` — last resort, needs `flatpak` runtime
+
+**Download and install the chosen asset:**
+
+*For a `.deb` file:*
+```bash
+# Start a Debian/Ubuntu base container
+docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
+  -v ${{WORKDIR}}:/workdir -w /workdir ubuntu:22.04 tail -f /dev/null
+
+# Get the download URL from the release JSON
+ASSET_URL=$(python3 -c "
+import json
+data = json.load(open('/tmp/release.json'))
+for a in data['assets']:
+    if a['name'].endswith('.deb') and ('amd64' in a['name'] or 'x86_64' in a['name']):
+        print(a['browser_download_url']); break
+")
+
+# Download into the workdir (host-visible) then install inside the container
+curl -L -o ${{WORKDIR}}/app.deb "$ASSET_URL"
+docker exec ${{CONTAINER_NAME}} sh -c "
+  apt-get update -qq 2>/dev/null
+  apt-get install -y -qq /workdir/app.deb 2>/dev/null || \
+  (dpkg -i /workdir/app.deb 2>/dev/null; apt-get install -f -y -qq 2>/dev/null)
+"
+```
+
+*For an `.AppImage` file:*
+```bash
+# Start a minimal Debian container (AppImages need glibc; alpine will NOT work)
+docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
+  -v ${{WORKDIR}}:/workdir -w /workdir debian:bookworm-slim tail -f /dev/null
+
+ASSET_URL=$(python3 -c "
+import json
+data = json.load(open('/tmp/release.json'))
+for a in data['assets']:
+    if '.AppImage' in a['name'] and ('x86_64' in a['name'] or 'amd64' in a['name']):
+        print(a['browser_download_url']); break
+")
+
+curl -L -o ${{WORKDIR}}/app.AppImage "$ASSET_URL"
+chmod +x ${{WORKDIR}}/app.AppImage
+
+# Extract the AppImage so it can run without FUSE (most containers lack /dev/fuse)
+docker exec ${{CONTAINER_NAME}} sh -c "
+  apt-get update -qq && apt-get install -y -qq libfuse2 2>/dev/null || true
+  cd /workdir && ./app.AppImage --appimage-extract 2>/dev/null || true
+  # squashfs-root/ now contains the extracted app
+  ln -sf /workdir/squashfs-root /workdir/app
+"
+```
+
+After either install, create an empty `${{WORKDIR}}/repo` dir for the indexer, copy or symlink the installed files into it, then skip Steps 1–4 and jump to **Step 5**. Set `notes: installed via release asset: <filename>` in the summary.
+
+---
+
+**If neither Pass A nor Pass B apply**, proceed with Step 1 below.
 
 ### Step 1 — Prepare workspace & obtain source code
 
