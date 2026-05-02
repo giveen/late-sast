@@ -6,6 +6,30 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.8.2] — 2026-05-02
+
+### Added
+- **Setup agent: Step 0 — smart install detection** (`instruction-sast-setup.md`):
+  - Before cloning, the setup agent now fetches the project README and attempts two quick-install passes.
+  - **Pass A — package-manager one-liners**: recognises `go install …@latest`, `pip install`, `pipx install`, `npm install -g`, `cargo install`, `gem install`. When found, spins up a minimal toolchain container (`golang:1.23`, `python:3.11-slim`, `node:20-slim`, `rust:1.80-slim`) and runs the command directly, skipping clone and build entirely. For projects like Fabric this cuts ~35 turn shell loops down to a single `go install` call.
+  - **Pass B — GitHub release binary assets**: if no one-liner is found, checks the README for `.deb` / `.AppImage` / `.snap` / `.flatpak` mentions or a releases page link, then queries `api.github.com/repos/<owner>/<repo>/releases/latest` to discover downloadable assets. Preference order: `.deb` (amd64) → `.AppImage` (x86_64) → `.snap` → `.flatpak`. For `.deb` files starts `ubuntu:22.04` and runs `dpkg -i` + `apt-get install -f`. For `.AppImage` files starts `debian:bookworm-slim` and uses `--appimage-extract` to unpack without FUSE. Covers projects like `open-webui/desktop` that ship pre-built binaries only.
+- **`spawn_subagent` empty-output detection** (`internal/tool/subagent.go`): when a runner returns `("", nil)` (e.g. model hit `finish_reason=stop` with empty content and no tool calls), instead of forwarding a misleading `"Subagent completed. Result:\n\n"` to the orchestrator, a descriptive string is now returned — `"subagent '<type>' completed but returned empty output — possible context window overflow or unexpected termination"` — so the orchestrator can distinguish stall from "no findings".
+- **pipx preferred over `pip --break-system-packages`** (`instruction-sast-setup.md` Step 5):
+  - `pipx` is now included in the `apt-get` and `apk` package lists during Step 5a bootstrap.
+  - Step 5c installs semgrep and checksec via `pipx install` first (isolated venv per tool, no PEP 668 `externally-managed-environment` conflict). Falls back to `pip install --break-system-packages` only if pipx itself could not be installed. `PIPX_BIN_DIR=/usr/local/bin` is exported so installed binaries land on PATH without needing `pipx ensurepath`.
+
+### Fixed
+- **Empty model response not detected as error** (`internal/executor/executor.go`): when the model returned `finish_reason=""` with empty content and no tool calls, the executor silently returned `("", nil)`. This is now detected and returned as an explicit error: `"model returned empty response on turn N (possible context window overflow or stream failure)"`.
+- **Error subagent tabs left open** (`internal/gui/events.go`): the `"error"` event case previously kept the subagent tab open ("so the user can read the error") but the error is already visible in the main tab as the `spawn_subagent` tool result. Error tabs now close automatically and fire a system notification, same as successful subagent completion.
+- **Tool result debug log accuracy** — `LogDebugToolResult` is now called after error-wrapping so the debug log records the final error string seen by the orchestrator rather than the raw pre-wrap message.
+- **`--subagent-max-turns` default** lowered from 500 → 150 to cap runaway subagents and reduce context pressure.
+
+### Changed
+- **History compaction gated on context pressure** (`internal/session/session.go`): `compactHistoryForContext` now only runs when `lastTokenCount / contextSize ≥ 0.75` (75% threshold). When the context window size is unknown (backend does not report it), compaction still runs as before on every save. Token count is populated after each turn via `SetLastTokenCount`.
+- **GUI Thoughts scroll behaviour** (`internal/gui/chat.go`): `UpdateThinking` no longer calls `ScrollToBottom()` when the Thoughts accordion is open, preventing it from hijacking the user's scroll position while they are reading the chain-of-thought stream. Auto-scroll still fires when the accordion is collapsed.
+
+---
+
 ## [v1.8.1] — 2026-05-01
 
 ### Added
