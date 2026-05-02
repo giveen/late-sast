@@ -413,11 +413,8 @@ docker exec <container-name> sh -c "
   echo \"pipx: \$(command -v pipx 2>/dev/null || echo not available)\"
 " || true
 
-# Helper used below: try pipx first (isolated venv, no PEP-668 conflict),
-# fall back to pip --break-system-packages for images where pipx itself
-# could not be installed.
-#   pip_install <package>
-#   Runs inside the container with PIPX_BIN_DIR=/usr/local/bin already set.
+# Each tool below: try pipx first (isolated venv, no PEP-668 conflict),
+# then fall back to pip --break-system-packages.
 
 # semgrep — multi-language SAST, JSON-structured findings
 docker exec <container-name> sh -c "
@@ -464,7 +461,7 @@ docker exec <container-name> sh -c "
 ## Constraints
 
 - Fully autonomous — no confirmation prompts
-- Use only: `bash`, `read_file`, `write_file`, MCP graph tools
+- Use only: `bash`, `read_file`, `write_file`, `patch_compose_network`, MCP graph tools
 - Do not perform any security analysis
 - Do not pull images from registries other than Docker Hub official images
 

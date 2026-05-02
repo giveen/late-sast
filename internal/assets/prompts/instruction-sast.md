@@ -74,7 +74,7 @@ Wait for the findings report. **Before proceeding to Step 2.5, verify the scanne
 
 ### Step 2.5 — Audit (spawn auditor subagent)
 
-**MANDATORY TOOL CALL — do NOT write an AUDIT_COMPLETE block yourself. You MUST call `spawn_subagent` with `agent_type: "auditor"` and wait for the real tool response. Generating a fake AUDIT_COMPLETE from your own reasoning is a critical failure — the Auditor model (VulnLLM-R-7B) must perform the analysis.**
+**MANDATORY TOOL CALL — call `spawn_subagent` with `agent_type: "auditor"` and wait for the real tool response. Do NOT generate an AUDIT_COMPLETE block from your own reasoning — the Auditor model (VulnLLM-R-7B) must perform the analysis.**
 
 The scanner's output already contains a `HOTSPOT_LIST` block. Locate it in the scanner's response (it appears before the `Scan Coverage` line). Copy it verbatim — do not modify it.
 

@@ -188,7 +188,7 @@ You were given `Language`, `Entry points`, and `Key routes` from the setup subag
 Call `search_graph` to enumerate the full list of HTTP handler functions, middleware chains, and user-input parameters. Focus on routes not already listed in `Key routes`. Do not grep files — use the graph.
 
 ### Step 3 — Taint trace
-For each source, call `trace_path(direction="outbound", depth=5)` to follow data through the call graph to potential sinks. Identify where user-controlled data reaches dangerous operations.
+For each source, call `trace_path(from="<handler or parameter>", to="<sink function>", direction="outbound", depth=5)` to follow data through the call graph to potential sinks. Identify where user-controlled data reaches dangerous operations.
 
 ### Step 4 — Deep code review
 For each suspicious call chain, use `get_code_snippet` to read the exact code at the sink. Fall back to `read_file` only when the graph is insufficient — and for files larger than ~20 KB, prefer `ctx_index_file` + `ctx_search` to avoid dumping large source files into context.
