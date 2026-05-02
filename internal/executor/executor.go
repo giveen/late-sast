@@ -404,6 +404,13 @@ func RunLoop(
 			acc.ToolCalls = filtered
 		}
 
+		// Report token usage to session so compaction can gate on context pressure.
+		if acc.Usage.TotalTokens > 0 {
+			sess.SetLastTokenCount(acc.Usage.TotalTokens)
+		} else if acc.Usage.PromptTokens > 0 {
+			sess.SetLastTokenCount(acc.Usage.PromptTokens)
+		}
+
 		// AddAssistantMessageWithTools returns only the calls saved to history
 		// (filtering any with malformed JSON). We execute exactly those calls so
 		// every tool result message has a matching assistant tool_call entry.

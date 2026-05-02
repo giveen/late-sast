@@ -36,15 +36,16 @@ const (
 
 // Session manages the chat state and interacts with the LLM client.
 type Session struct {
-	client       *client.Client
-	HistoryPath  string
-	History      []client.ChatMessage
-	systemPrompt string
-	useTools     bool
-	maxTokens    int
-	extraBody    map[string]any
-	Registry     *tool.Registry
-	debugLogger  *debug.Logger
+	client          *client.Client
+	HistoryPath     string
+	History         []client.ChatMessage
+	systemPrompt    string
+	useTools        bool
+	maxTokens       int
+	extraBody       map[string]any
+	Registry        *tool.Registry
+	debugLogger     *debug.Logger
+	lastTokenCount  int // most recent reported prompt/total token usage
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {
@@ -445,7 +446,19 @@ func (s *Session) saveAndNotify() error {
 		return nil
 	}
 	collapseConsumedToolOutputs(s.History)
-	compactHistoryForContext(s.History)
+	// Only run expensive per-message compaction when the context window is at
+	// or above 75 % capacity. This avoids premature truncation of useful history
+	// on models with large context windows (e.g. 128k+).
+	nCtx := s.client.ContextSize()
+	if nCtx > 0 && s.lastTokenCount > 0 {
+		if float64(s.lastTokenCount)/float64(nCtx) >= 0.75 {
+			compactHistoryForContext(s.History)
+		}
+	} else {
+		// Context size unknown (non-llama.cpp backend or first turn) — compact
+		// conservatively to avoid unbounded growth.
+		compactHistoryForContext(s.History)
+	}
 	if s.HistoryPath == "" {
 		return nil // Skip saving if no path provided (e.g., subagents)
 	}
@@ -461,6 +474,15 @@ func (s *Session) Client() *client.Client {
 
 func (s *Session) IsLlamaCPP() bool {
 	return s.client.IsLlamaCPP()
+}
+
+// SetLastTokenCount records the most recent token usage reported by the LLM.
+// Called by the executor after each streaming turn so saveAndNotify can gate
+// history compaction on actual context pressure.
+func (s *Session) SetLastTokenCount(n int) {
+	if n > 0 {
+		s.lastTokenCount = n
+	}
 }
 
 func compactHistoryForContext(history []client.ChatMessage) {
