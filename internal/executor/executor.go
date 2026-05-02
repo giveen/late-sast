@@ -176,14 +176,21 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 			}
 		}
 
-		result, err := runner(turnCtx, tc)
-		if err != nil {
-			if turnCtx.Err() == context.DeadlineExceeded {
+		toolStart := time.Now()
+		// spawn_subagent manages its own timeout internally; use the parent context
+		// so the per-turn deadline doesn't kill a long-running subagent early.
+		callCtx := turnCtx
+		if tc.Function.Name == "spawn_subagent" {
+			callCtx = ctx
+		}
+		result, runErr := runner(callCtx, tc)
+		if runErr != nil {
+			if callCtx.Err() == context.DeadlineExceeded {
 				stats.TimedOut++
 			} else {
 				stats.Failures++
 			}
-			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, err)
+			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, runErr)
 		} else {
 			if strings.Contains(result, "requires explicit approval") || strings.Contains(result, "Tool execution cancelled by user") {
 				stats.Blocked++
@@ -192,6 +199,8 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 				stats.Failures++
 			}
 		}
+		// Log the final result (after error-wrapping) so the debug log matches what the LLM receives.
+		sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, runErr, time.Since(toolStart))
 		if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
 			return stats, err
 		}
@@ -384,18 +393,22 @@ func RunLoop(
 		// If stopped, the last tool call might be partially streamed and thus invalid JSON.
 		// We shouldn't save corrupted tool calls to the session history.
 		if ctx.Err() != nil {
-			var validCalls []client.ToolCall
+			var filtered []client.ToolCall
 			for _, tc := range acc.ToolCalls {
 				// A simple check: if the arguments are valid JSON, keeping it is probably safe.
 				// Otherwise, it was cut off mid-stream.
 				if json.Valid([]byte(tc.Function.Arguments)) {
-					validCalls = append(validCalls, tc)
+					filtered = append(filtered, tc)
 				}
 			}
-			acc.ToolCalls = validCalls
+			acc.ToolCalls = filtered
 		}
 
-		if err := sess.AddAssistantMessageWithTools(sanitizeContent(acc.Content), acc.Reasoning, acc.ToolCalls); err != nil {
+		// AddAssistantMessageWithTools returns only the calls saved to history
+		// (filtering any with malformed JSON). We execute exactly those calls so
+		// every tool result message has a matching assistant tool_call entry.
+		validCalls, err := sess.AddAssistantMessageWithTools(sanitizeContent(acc.Content), acc.Reasoning, acc.ToolCalls)
+		if err != nil {
 			return "", fmt.Errorf("failed to save history: %w", err)
 		}
 
@@ -403,7 +416,7 @@ func RunLoop(
 			onEndTurn()
 		}
 
-		if len(acc.ToolCalls) == 0 {
+		if len(validCalls) == 0 {
 			sess.LogTurnSummary(debug.TurnSummary{
 				TurnIndex:          i + 1,
 				FinishReason:       acc.FinishReason,
@@ -415,11 +428,11 @@ func RunLoop(
 			return acc.Content, nil
 		}
 
-		if len(acc.ToolCalls) > maxToolCallsPerTurn {
-			return "", fmt.Errorf("tool call budget exceeded for turn %d: %d > %d", i+1, len(acc.ToolCalls), maxToolCallsPerTurn)
+		if len(validCalls) > maxToolCallsPerTurn {
+			return "", fmt.Errorf("tool call budget exceeded for turn %d: %d > %d", i+1, len(validCalls), maxToolCallsPerTurn)
 		}
 
-		toolSig := toolCallSignature(acc.ToolCalls)
+		toolSig := toolCallSignature(validCalls)
 		if toolSig != "" && toolSig == previousToolSig {
 			duplicateToolTurns++
 		} else {
@@ -440,7 +453,7 @@ func RunLoop(
 		default:
 		}
 
-		stats, err := ExecuteToolCallsWithStats(ctx, sess, acc.ToolCalls, middlewares)
+		stats, err := ExecuteToolCallsWithStats(ctx, sess, validCalls, middlewares)
 		if err != nil {
 			return "", err
 		}
@@ -456,7 +469,7 @@ func RunLoop(
 		sess.LogTurnSummary(debug.TurnSummary{
 			TurnIndex:          i + 1,
 			FinishReason:       acc.FinishReason,
-			ToolCalls:          len(acc.ToolCalls),
+			ToolCalls:          len(validCalls),
 			DuplicateToolTurns: duplicateToolTurns,
 			ContentChars:       len(acc.Content),
 			ReasoningChars:     len(acc.Reasoning),

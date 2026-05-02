@@ -19,12 +19,19 @@ import (
 var shellExitCodeRe = regexp.MustCompile(`^Command failed with exit code\s+(-?\d+)`)
 
 const (
-	historyRecentWindow               = 8
-	historyToolContentMaxCharsRecent  = 4000
-	historyToolContentMaxCharsOlder   = 1200
-	historyReasoningMaxCharsRecent    = 1200
-	historyReasoningMaxCharsOlder     = 0
-	historyCompactionMarkerOverhead   = 64
+	historyRecentWindow              = 8
+	historyToolContentMaxCharsRecent = 4000
+	historyToolContentMaxCharsOlder  = 1200
+	historyReasoningMaxCharsRecent   = 1200
+	historyReasoningMaxCharsOlder    = 0
+	historyCompactionMarkerOverhead  = 64
+
+	// Consumed tool output compaction: once a tool result has been seen and
+	// reasoned about by a subsequent assistant turn, replace the raw content
+	// with a short structured summary to reduce context window cost.
+	historyConsumedExcerptOK      = 300 // chars for successful outputs
+	historyConsumedExcerptFailure = 800 // chars for failures / errors / timeouts
+	consumedPrefix                = "[consumed]"
 )
 
 // Session manages the chat state and interacts with the LLM client.
@@ -74,8 +81,6 @@ func (s *Session) SetDebugLogger(logger *debug.Logger) {
 
 // ExecuteTool executes a tool call and returns the response as a string.
 func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, error) {
-	started := time.Now()
-
 	// Log tool call if debug logging is enabled
 	if s.debugLogger != nil && s.debugLogger.Enabled() {
 		s.debugLogger.LogToolCall(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
@@ -86,15 +91,18 @@ func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, 
 	if t == nil {
 		return "", fmt.Errorf("tool not found: %s", tc.Function.Name)
 	}
-	result, err := t.Execute(ctx, json.RawMessage(tc.Function.Arguments))
+	return t.Execute(ctx, json.RawMessage(tc.Function.Arguments))
+}
 
-	// Log tool result if debug logging is enabled
-	if s.debugLogger != nil && s.debugLogger.Enabled() {
-		meta := classifyToolResult(tc.Function.Name, result, err, time.Since(started))
-		s.debugLogger.LogToolResultWithMeta(tc.Function.Name, tc.ID, result, &meta)
+// LogDebugToolResult logs the final result string that was stored in history for a tool call.
+// This should be called by the executor after any error-wrapping so the logged value matches
+// what the LLM actually receives.
+func (s *Session) LogDebugToolResult(name, id, finalResult string, origErr error, duration time.Duration) {
+	if s.debugLogger == nil || !s.debugLogger.Enabled() {
+		return
 	}
-
-	return result, err
+	meta := classifyToolResult(name, finalResult, origErr, duration)
+	s.debugLogger.LogToolResultWithMeta(name, id, finalResult, &meta)
 }
 
 func classifyToolResult(toolName, result string, execErr error, duration time.Duration) debug.ToolResultMeta {
@@ -174,7 +182,9 @@ func (s *Session) AddToolResultMessage(toolCallID, content string) error {
 }
 
 // AddAssistantMessageWithTools adds an assistant message with tool calls.
-func (s *Session) AddAssistantMessageWithTools(content string, reasoning string, toolCalls []client.ToolCall) error {
+// It filters out calls with invalid JSON arguments and returns the valid subset
+// so the executor only runs calls that are actually recorded in history.
+func (s *Session) AddAssistantMessageWithTools(content string, reasoning string, toolCalls []client.ToolCall) ([]client.ToolCall, error) {
 	// Filter out tool calls with invalid JSON arguments and log them
 	var validCalls []client.ToolCall
 	for _, tc := range toolCalls {
@@ -199,7 +209,7 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 		ReasoningContent: reasoning,
 		ToolCalls:        validCalls,
 	})
-	return s.saveAndNotify()
+	return validCalls, s.saveAndNotify()
 }
 
 func (s *Session) GetToolDefinitions() []client.ToolDefinition {
@@ -434,6 +444,7 @@ func (s *Session) saveAndNotify() error {
 	if len(s.History) == 0 {
 		return nil
 	}
+	collapseConsumedToolOutputs(s.History)
 	compactHistoryForContext(s.History)
 	if s.HistoryPath == "" {
 		return nil // Skip saving if no path provided (e.g., subagents)
@@ -478,6 +489,122 @@ func compactHistoryForContext(history []client.ChatMessage) {
 			}
 			history[i].ReasoningContent = compactHistoryText(history[i].ReasoningContent, limit)
 		}
+	}
+}
+
+// buildToolNameMap returns a map from ToolCallID → function name by scanning
+// all assistant tool_calls in history.
+func buildToolNameMap(history []client.ChatMessage) map[string]string {
+	m := make(map[string]string, len(history))
+	for _, msg := range history {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" {
+				m[tc.ID] = tc.Function.Name
+			}
+		}
+	}
+	return m
+}
+
+// consumedToolOutputStatus classifies a stored tool output string into a
+// status label (ok / failed / timeout / cancelled / blocked / error) without
+// needing the original execution error value.
+func consumedToolOutputStatus(content string) string {
+	if strings.HasPrefix(content, "Command timed out after") {
+		return "timeout"
+	}
+	if strings.HasPrefix(content, "Command cancelled") {
+		return "cancelled"
+	}
+	if strings.HasPrefix(content, "Error executing command:") {
+		return "error"
+	}
+	if strings.Contains(content, "requires explicit approval") ||
+		strings.Contains(content, "Tool execution cancelled by user") {
+		return "blocked"
+	}
+	if shellExitCodeRe.MatchString(content) {
+		return "failed"
+	}
+	return "ok"
+}
+
+// buildConsumedSummary replaces raw tool content with a compact structured
+// summary. Successful outputs are excerpted to ~300 chars; failures and errors
+// get up to ~800 chars so that error detail is not lost.
+func buildConsumedSummary(toolName, content string) string {
+	status := consumedToolOutputStatus(content)
+	origLen := len(content)
+	excerptLen := historyConsumedExcerptOK
+	if status != "ok" {
+		excerptLen = historyConsumedExcerptFailure
+	}
+	excerpt := content
+	if len(excerpt) > excerptLen {
+		excerpt = excerpt[:excerptLen]
+		// Trim to a clean line boundary when one exists in the latter half.
+		if nl := strings.LastIndex(excerpt, "\n"); nl > excerptLen/2 {
+			excerpt = excerpt[:nl]
+		}
+	}
+	header := fmt.Sprintf("%s %s: %s, %d chars", consumedPrefix, toolName, status, origLen)
+	if strings.TrimSpace(excerpt) == "" {
+		return header
+	}
+	return header + "\n" + strings.TrimRight(excerpt, "\n")
+}
+
+// collapseConsumedToolOutputs replaces older, consumed tool result messages
+// with compact structured summaries. A tool message is "consumed" when a
+// subsequent assistant message exists, meaning the model has already seen and
+// reasoned about the output. Recent messages (within historyRecentWindow) are
+// left untouched so live context is preserved at full fidelity.
+func collapseConsumedToolOutputs(history []client.ChatMessage) {
+	if len(history) < 3 {
+		return
+	}
+	recentStart := len(history) - historyRecentWindow
+	if recentStart < 0 {
+		recentStart = 0
+	}
+
+	// Build a per-index flag: hasAssistantAfter[i] is true when there is at
+	// least one assistant message at any j > i.
+	hasAssistantAfter := make([]bool, len(history))
+	foundAssistant := false
+	for i := len(history) - 1; i >= 0; i-- {
+		hasAssistantAfter[i] = foundAssistant
+		if history[i].Role == "assistant" {
+			foundAssistant = true
+		}
+	}
+
+	toolNames := buildToolNameMap(history)
+
+	for i := range history {
+		if history[i].Role != "tool" {
+			continue
+		}
+		// Leave the recent window intact.
+		if i >= recentStart {
+			continue
+		}
+		// Only collapse once the output has been "consumed" by a later turn.
+		if !hasAssistantAfter[i] {
+			continue
+		}
+		// Never re-compact an already-summarised message.
+		if strings.HasPrefix(history[i].Content, consumedPrefix) {
+			continue
+		}
+		toolName := toolNames[history[i].ToolCallID]
+		if toolName == "" {
+			toolName = "tool"
+		}
+		history[i].Content = buildConsumedSummary(toolName, history[i].Content)
 	}
 }
 

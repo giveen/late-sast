@@ -191,6 +191,25 @@ docker run --rm -v /tmp:/tmp alpine rm -rf ${{WORKDIR}} /tmp/sast-skill
 
 ## Output Format
 
+Each finding section uses this structure. **The `Reproduce` block is mandatory for every finding — copy it verbatim from the scanner's `Reproduce` block.** Do not paraphrase, omit, or replace with pseudocode. For UNREACHABLE findings where the app was not running, prefix the command with `# App was not running — verify manually after startup`.
+
+```markdown
+### <Vulnerability Class> — <location> (CWE-NNN)
+- **Location:** `file:line` — function/handler
+- **Auditor Verdict:** CONFIRMED | LIKELY | NOT_CONFIRMED
+- **Taint Path:** `source → sink` or N/A
+- **Severity:** CRITICAL | HIGH | MEDIUM | LOW
+- **Exploit Status:** EXPLOITED | BLOCKED | UNREACHABLE
+- **Impact:** <one sentence>
+- **Reproduce:**
+  ```bash
+  # Copy-paste to verify — real container name, port, endpoint, payload
+  <exact docker exec / curl / wget command from scanner>
+  # Expected: <response or indicator of successful exploitation>
+  ```
+- **Fix:** <remediation>
+```
+
 ```markdown
 # SAST Security Report — <repo-name>
 Date: <date>
