@@ -16,6 +16,30 @@ type Logger struct {
 	enabled  bool
 }
 
+// ToolResultMeta captures structured execution metadata for a tool result.
+type ToolResultMeta struct {
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Classification string `json:"classification,omitempty"`
+	ExitCode       *int   `json:"exit_code,omitempty"`
+	OutputBytes    int    `json:"output_bytes,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
+}
+
+// TurnSummary captures high-level turn metrics for workflow analysis.
+type TurnSummary struct {
+	TurnIndex          int    `json:"turn_index"`
+	FinishReason       string `json:"finish_reason,omitempty"`
+	ToolCalls          int    `json:"tool_calls"`
+	DuplicateToolTurns int    `json:"duplicate_tool_turns,omitempty"`
+	ContentChars       int    `json:"content_chars,omitempty"`
+	ReasoningChars     int    `json:"reasoning_chars,omitempty"`
+	ToolExecDurationMS int64  `json:"tool_exec_duration_ms,omitempty"`
+	ToolFailures       int    `json:"tool_failures,omitempty"`
+	ToolBlocked        int    `json:"tool_blocked,omitempty"`
+	ToolTimedOut       int    `json:"tool_timed_out,omitempty"`
+}
+
 // New creates a new debug logger. If outputDir is empty, logging is disabled.
 func New(outputDir string) *Logger {
 	l := &Logger{
@@ -81,13 +105,37 @@ func (l *Logger) LogToolCall(toolName string, arguments json.RawMessage) {
 
 // LogToolResult logs a tool execution result.
 func (l *Logger) LogToolResult(toolName, toolCallID, result string) {
+	l.LogToolResultWithMeta(toolName, toolCallID, result, nil)
+}
+
+// LogToolResultWithMeta logs a tool execution result with structured metadata.
+func (l *Logger) LogToolResultWithMeta(toolName, toolCallID, result string, meta *ToolResultMeta) {
 	if !l.enabled {
 		return
 	}
-	l.logEntry("TOOL_RESULT", map[string]interface{}{
+	entry := map[string]interface{}{
 		"tool":         toolName,
 		"tool_call_id": toolCallID,
 		"result":       result,
+	}
+	if meta != nil {
+		entry["meta"] = meta
+	}
+	l.logEntry("TOOL_RESULT", map[string]interface{}{
+		"tool":         entry["tool"],
+		"tool_call_id": entry["tool_call_id"],
+		"result":       entry["result"],
+		"meta":         entry["meta"],
+	})
+}
+
+// LogTurnSummary logs per-turn metrics to support workflow and performance analysis.
+func (l *Logger) LogTurnSummary(summary TurnSummary) {
+	if !l.enabled {
+		return
+	}
+	l.logEntry("TURN_SUMMARY", map[string]interface{}{
+		"summary": summary,
 	})
 }
 

@@ -207,6 +207,35 @@ func TestExecuteToolCalls_NoMiddlewareFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExecuteToolCallsWithStats_NoMiddlewareCountsBlocked(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+	sess := session.New(c, histPath, nil, "", true)
+
+	RegisterTools(sess.Registry, map[string]bool{"bash": true}, false)
+	toolCalls := []client.ToolCall{{ID: "tc_1", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"echo hi"}`}}}
+
+	stats, err := ExecuteToolCallsWithStats(context.Background(), sess, toolCalls, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Total != 1 || stats.Blocked != 1 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestToolCallSignature_Stable(t *testing.T) {
+	calls := []client.ToolCall{
+		{Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}},
+		{Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"ls"}`}},
+	}
+	left := toolCallSignature(calls)
+	right := toolCallSignature(calls)
+	if left == "" || left != right {
+		t.Fatalf("expected stable non-empty signature, got left=%q right=%q", left, right)
+	}
+}
+
 // TestConsumeStream verifies ConsumeStream drains a channel correctly
 func TestConsumeStream(t *testing.T) {
 	outCh := make(chan common.StreamResult, 3)

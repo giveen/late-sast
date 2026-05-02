@@ -3,13 +3,19 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 )
 
 type SubagentRunner func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error)
 
 type SpawnSubagentTool struct {
-	Runner SubagentRunner
+	Runner            SubagentRunner
+	DefaultTimeout    time.Duration
+	TimeoutByAgent    map[string]time.Duration
+	HeartbeatInterval time.Duration
+	Heartbeat         func(agentType, goal string, elapsed time.Duration)
 }
 
 func (t SpawnSubagentTool) Name() string { return "spawn_subagent" }
@@ -51,7 +57,86 @@ func (t SpawnSubagentTool) Execute(ctx context.Context, args json.RawMessage) (s
 		return "", fmt.Errorf("failed to parse arguments: %v", err)
 	}
 
-	return t.Runner(ctx, params.Goal, params.CtxFiles, params.AgentType)
+	timeout := t.resolveTimeout(params.AgentType)
+	runCtx := ctx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	heartbeatEvery := t.resolveHeartbeatInterval()
+	start := time.Now()
+
+	type subagentResult struct {
+		output string
+		err    error
+	}
+	resultCh := make(chan subagentResult, 1)
+	go func() {
+		out, err := t.Runner(runCtx, params.Goal, params.CtxFiles, params.AgentType)
+		resultCh <- subagentResult{output: out, err: err}
+	}()
+
+	var ticker *time.Ticker
+	if heartbeatEvery > 0 {
+		ticker = time.NewTicker(heartbeatEvery)
+		defer ticker.Stop()
+	}
+
+	for {
+		select {
+		case res := <-resultCh:
+			if t.Heartbeat != nil {
+				t.Heartbeat(params.AgentType, params.Goal, time.Since(start))
+			}
+			return res.output, res.err
+		case <-runCtx.Done():
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				return "", fmt.Errorf("subagent '%s' timed out after %s", params.AgentType, timeout)
+			}
+			return "", runCtx.Err()
+		case <-tickerC(ticker):
+			if t.Heartbeat != nil {
+				t.Heartbeat(params.AgentType, params.Goal, time.Since(start))
+			}
+		}
+	}
+
+}
+
+func tickerC(t *time.Ticker) <-chan time.Time {
+	if t == nil {
+		return nil
+	}
+	return t.C
+}
+
+func (t SpawnSubagentTool) resolveTimeout(agentType string) time.Duration {
+	if len(t.TimeoutByAgent) > 0 {
+		if d, ok := t.TimeoutByAgent[agentType]; ok {
+			return d
+		}
+	}
+	if t.DefaultTimeout > 0 {
+		return t.DefaultTimeout
+	}
+
+	switch agentType {
+	case "auditor":
+		return 20 * time.Minute
+	case "scanner", "binary-scanner", "setup":
+		return 15 * time.Minute
+	default:
+		return 10 * time.Minute
+	}
+}
+
+func (t SpawnSubagentTool) resolveHeartbeatInterval() time.Duration {
+	if t.HeartbeatInterval > 0 {
+		return t.HeartbeatInterval
+	}
+	return 30 * time.Second
 }
 
 func (t SpawnSubagentTool) RequiresConfirmation(args json.RawMessage) bool { return false }

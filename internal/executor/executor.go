@@ -2,10 +2,13 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/debug"
 	"late/internal/pathutil"
 	"late/internal/session"
 	"late/internal/skill"
@@ -13,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // --- Stream Accumulator ---
@@ -110,10 +114,34 @@ func (a *StreamAccumulator) Reset() {
 
 // --- Tool Execution ---
 
-// ExecuteToolCalls runs a slice of tool calls against the session.
-// It uses the provided middlewares to wrap the base tool execution.
-// Results are added to the session history.
-func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []client.ToolCall, middlewares []common.ToolMiddleware) error {
+const (
+	maxToolCallsPerTurn     = 24
+	maxDuplicateToolTurns   = 2
+	maxToolExecutionPerTurn = 5 * time.Minute
+)
+
+// ToolExecutionStats captures aggregate tool outcomes for a single turn.
+type ToolExecutionStats struct {
+	Total      int
+	Failures   int
+	Blocked    int
+	TimedOut   int
+	DurationMS int64
+}
+
+// ExecuteToolCallsWithStats runs a slice of tool calls and returns execution stats.
+func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolCalls []client.ToolCall, middlewares []common.ToolMiddleware) (ToolExecutionStats, error) {
+	stats := ToolExecutionStats{}
+
+	turnCtx := ctx
+	if maxToolExecutionPerTurn > 0 {
+		var cancel context.CancelFunc
+		turnCtx, cancel = context.WithTimeout(ctx, maxToolExecutionPerTurn)
+		defer cancel()
+	}
+
+	started := time.Now()
+
 	// Base execution logic
 	baseRunner := func(ctx context.Context, tc client.ToolCall) (string, error) {
 		t := sess.Registry.Get(tc.Function.Name)
@@ -130,6 +158,8 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 	}
 
 	for _, tc := range toolCalls {
+		stats.Total++
+
 		// Fail-closed: if no confirmation middleware is provided, do not
 		// execute shell commands (they must be explicitly approved by a
 		// middleware such as the TUI confirm middleware).
@@ -137,23 +167,45 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 			if t := sess.Registry.Get(tc.Function.Name); t != nil {
 				if _, ok := t.(*tool.ShellTool); ok {
 					result := "shell command requires explicit approval before execution"
+					stats.Blocked++
 					if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
-						return err
+						return stats, err
 					}
 					continue
 				}
 			}
 		}
 
-		result, err := runner(ctx, tc)
+		result, err := runner(turnCtx, tc)
 		if err != nil {
+			if turnCtx.Err() == context.DeadlineExceeded {
+				stats.TimedOut++
+			} else {
+				stats.Failures++
+			}
 			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, err)
+		} else {
+			if strings.Contains(result, "requires explicit approval") || strings.Contains(result, "Tool execution cancelled by user") {
+				stats.Blocked++
+			}
+			if strings.HasPrefix(result, "Command failed with exit code") || strings.HasPrefix(result, "Error executing command:") {
+				stats.Failures++
+			}
 		}
 		if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
-			return err
+			return stats, err
 		}
 	}
-	return nil
+
+	stats.DurationMS = time.Since(started).Milliseconds()
+	return stats, nil
+}
+
+// ExecuteToolCalls runs a slice of tool calls against the session.
+// Results are added to the session history.
+func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []client.ToolCall, middlewares []common.ToolMiddleware) error {
+	_, err := ExecuteToolCallsWithStats(ctx, sess, toolCalls, middlewares)
+	return err
 }
 
 // --- Tool Registration ---
@@ -293,6 +345,8 @@ func RunLoop(
 	middlewares []common.ToolMiddleware,
 ) (string, error) {
 	var lastContent string
+	var previousToolSig string
+	duplicateToolTurns := 0
 
 	for i := 0; maxTurns <= 0 || i < maxTurns; i++ {
 		if onStartTurn != nil {
@@ -350,7 +404,31 @@ func RunLoop(
 		}
 
 		if len(acc.ToolCalls) == 0 {
+			sess.LogTurnSummary(debug.TurnSummary{
+				TurnIndex:          i + 1,
+				FinishReason:       acc.FinishReason,
+				ToolCalls:          0,
+				DuplicateToolTurns: duplicateToolTurns,
+				ContentChars:       len(acc.Content),
+				ReasoningChars:     len(acc.Reasoning),
+			})
 			return acc.Content, nil
+		}
+
+		if len(acc.ToolCalls) > maxToolCallsPerTurn {
+			return "", fmt.Errorf("tool call budget exceeded for turn %d: %d > %d", i+1, len(acc.ToolCalls), maxToolCallsPerTurn)
+		}
+
+		toolSig := toolCallSignature(acc.ToolCalls)
+		if toolSig != "" && toolSig == previousToolSig {
+			duplicateToolTurns++
+		} else {
+			duplicateToolTurns = 0
+		}
+		previousToolSig = toolSig
+
+		if duplicateToolTurns >= maxDuplicateToolTurns {
+			return "", fmt.Errorf("repeated identical tool-call plan detected for %d consecutive turns", duplicateToolTurns+1)
 		}
 
 		lastContent = acc.Content
@@ -362,9 +440,31 @@ func RunLoop(
 		default:
 		}
 
-		if err := ExecuteToolCalls(ctx, sess, acc.ToolCalls, middlewares); err != nil {
+		stats, err := ExecuteToolCallsWithStats(ctx, sess, acc.ToolCalls, middlewares)
+		if err != nil {
 			return "", err
 		}
+
+		// If the previous turn had failures or timeouts, reset the duplicate counter.
+		// This allows legitimate retries after a subagent timeout or tool failure
+		// without triggering the duplicate-loop blocker. Only count as duplicate
+		// if the plan repeats AFTER a successful turn.
+		if stats.Failures > 0 || stats.TimedOut > 0 {
+			duplicateToolTurns = 0
+		}
+
+		sess.LogTurnSummary(debug.TurnSummary{
+			TurnIndex:          i + 1,
+			FinishReason:       acc.FinishReason,
+			ToolCalls:          len(acc.ToolCalls),
+			DuplicateToolTurns: duplicateToolTurns,
+			ContentChars:       len(acc.Content),
+			ReasoningChars:     len(acc.Reasoning),
+			ToolExecDurationMS: stats.DurationMS,
+			ToolFailures:       stats.Failures,
+			ToolBlocked:        stats.Blocked,
+			ToolTimedOut:       stats.TimedOut,
+		})
 
 		// Also check after tool execution in case user requested stop during a long tool
 		select {
@@ -375,4 +475,18 @@ func RunLoop(
 	}
 
 	return lastContent + "\n\n(Terminated due to max turns limit)", nil
+}
+
+func toolCallSignature(calls []client.ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, tc := range calls {
+		h.Write([]byte(tc.Function.Name))
+		h.Write([]byte("\x00"))
+		h.Write([]byte(tc.Function.Arguments))
+		h.Write([]byte("\x00"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

@@ -3,14 +3,28 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/debug"
 	"late/internal/tool"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+)
+
+var shellExitCodeRe = regexp.MustCompile(`^Command failed with exit code\s+(-?\d+)`)
+
+const (
+	historyRecentWindow               = 8
+	historyToolContentMaxCharsRecent  = 4000
+	historyToolContentMaxCharsOlder   = 1200
+	historyReasoningMaxCharsRecent    = 1200
+	historyReasoningMaxCharsOlder     = 0
+	historyCompactionMarkerOverhead   = 64
 )
 
 // Session manages the chat state and interacts with the LLM client.
@@ -60,6 +74,8 @@ func (s *Session) SetDebugLogger(logger *debug.Logger) {
 
 // ExecuteTool executes a tool call and returns the response as a string.
 func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, error) {
+	started := time.Now()
+
 	// Log tool call if debug logging is enabled
 	if s.debugLogger != nil && s.debugLogger.Enabled() {
 		s.debugLogger.LogToolCall(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
@@ -74,10 +90,77 @@ func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, 
 
 	// Log tool result if debug logging is enabled
 	if s.debugLogger != nil && s.debugLogger.Enabled() {
-		s.debugLogger.LogToolResult(tc.Function.Name, tc.ID, result)
+		meta := classifyToolResult(tc.Function.Name, result, err, time.Since(started))
+		s.debugLogger.LogToolResultWithMeta(tc.Function.Name, tc.ID, result, &meta)
 	}
 
 	return result, err
+}
+
+func classifyToolResult(toolName, result string, execErr error, duration time.Duration) debug.ToolResultMeta {
+	meta := debug.ToolResultMeta{
+		DurationMS:  duration.Milliseconds(),
+		Status:      "success",
+		OutputBytes: len(result),
+	}
+
+	if errors.Is(execErr, context.DeadlineExceeded) {
+		meta.Status = "timeout"
+		meta.Classification = "tool_timeout"
+		return meta
+	}
+	if errors.Is(execErr, context.Canceled) {
+		meta.Status = "cancelled"
+		meta.Classification = "tool_cancelled"
+		return meta
+	}
+	if execErr != nil {
+		meta.Status = "failed"
+		meta.Classification = "tool_error"
+		return meta
+	}
+
+	if strings.Contains(result, "requires explicit approval") || strings.Contains(result, "Tool execution cancelled by user") {
+		meta.Status = "blocked"
+		meta.Classification = "policy_blocked"
+		return meta
+	}
+
+	if toolName == "bash" {
+		if strings.HasPrefix(result, "Command timed out after") {
+			meta.Status = "timeout"
+			meta.Classification = "shell_timeout"
+			return meta
+		}
+		if strings.HasPrefix(result, "Command cancelled") {
+			meta.Status = "cancelled"
+			meta.Classification = "shell_cancelled"
+			return meta
+		}
+		if matches := shellExitCodeRe.FindStringSubmatch(result); len(matches) == 2 {
+			meta.Status = "failed"
+			meta.Classification = "shell_exit_nonzero"
+			if code, err := strconv.Atoi(matches[1]); err == nil {
+				meta.ExitCode = &code
+			}
+			return meta
+		}
+		if strings.HasPrefix(result, "Error executing command:") {
+			meta.Status = "failed"
+			meta.Classification = "shell_runtime_error"
+			return meta
+		}
+	}
+
+	meta.Classification = "ok"
+	return meta
+}
+
+// LogTurnSummary emits a turn-level summary event when debug logging is enabled.
+func (s *Session) LogTurnSummary(summary debug.TurnSummary) {
+	if s.debugLogger != nil && s.debugLogger.Enabled() {
+		s.debugLogger.LogTurnSummary(summary)
+	}
 }
 
 // AddToolResultMessage adds a tool response message to history.
@@ -92,11 +175,29 @@ func (s *Session) AddToolResultMessage(toolCallID, content string) error {
 
 // AddAssistantMessageWithTools adds an assistant message with tool calls.
 func (s *Session) AddAssistantMessageWithTools(content string, reasoning string, toolCalls []client.ToolCall) error {
+	// Filter out tool calls with invalid JSON arguments and log them
+	var validCalls []client.ToolCall
+	for _, tc := range toolCalls {
+		// Validate that arguments are parseable JSON
+		if !json.Valid([]byte(tc.Function.Arguments)) {
+			if s.debugLogger != nil && s.debugLogger.Enabled() {
+				preview := tc.Function.Arguments
+				if len(preview) > 100 {
+					preview = preview[:100] + "..."
+				}
+				s.debugLogger.LogEvent("MALFORMED_TOOL_CALL", fmt.Sprintf("Skipping tool call %q: invalid JSON arguments", tc.Function.Name),
+					map[string]interface{}{"tool": tc.Function.Name, "arguments_preview": preview})
+			}
+			continue
+		}
+		validCalls = append(validCalls, tc)
+	}
+
 	s.History = append(s.History, client.ChatMessage{
 		Role:             "assistant",
 		Content:          content,
 		ReasoningContent: reasoning,
-		ToolCalls:        toolCalls,
+		ToolCalls:        validCalls,
 	})
 	return s.saveAndNotify()
 }
@@ -192,11 +293,11 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 			toolNames = append(toolNames, t.Function.Name)
 		}
 		s.debugLogger.LogEvent("LLM_REQUEST", "Sending request to LLM", map[string]interface{}{
-			"model":      s.client.Model(),
-			"base_url":   s.client.BaseURL(),
+			"model":       s.client.Model(),
+			"base_url":    s.client.BaseURL(),
 			"history_len": len(s.History),
-			"tools":      toolNames,
-			"max_tokens": s.maxTokens,
+			"tools":       toolNames,
+			"max_tokens":  s.maxTokens,
 		})
 	}
 
@@ -333,6 +434,7 @@ func (s *Session) saveAndNotify() error {
 	if len(s.History) == 0 {
 		return nil
 	}
+	compactHistoryForContext(s.History)
 	if s.HistoryPath == "" {
 		return nil // Skip saving if no path provided (e.g., subagents)
 	}
@@ -348,4 +450,64 @@ func (s *Session) Client() *client.Client {
 
 func (s *Session) IsLlamaCPP() bool {
 	return s.client.IsLlamaCPP()
+}
+
+func compactHistoryForContext(history []client.ChatMessage) {
+	if len(history) == 0 {
+		return
+	}
+
+	recentStart := len(history) - historyRecentWindow
+	if recentStart < 0 {
+		recentStart = 0
+	}
+
+	for i := range history {
+		isRecent := i >= recentStart
+		switch history[i].Role {
+		case "tool":
+			limit := historyToolContentMaxCharsOlder
+			if isRecent {
+				limit = historyToolContentMaxCharsRecent
+			}
+			history[i].Content = compactHistoryText(history[i].Content, limit)
+		case "assistant":
+			limit := historyReasoningMaxCharsOlder
+			if isRecent {
+				limit = historyReasoningMaxCharsRecent
+			}
+			history[i].ReasoningContent = compactHistoryText(history[i].ReasoningContent, limit)
+		}
+	}
+}
+
+func compactHistoryText(text string, maxChars int) string {
+	if maxChars <= 0 {
+		return ""
+	}
+	if len(text) <= maxChars {
+		return text
+	}
+
+	marker := fmt.Sprintf("\n... (history compacted, omitted %d chars)\n", len(text)-maxChars)
+	available := maxChars - len(marker)
+	if available <= 16 {
+		if len(marker) > maxChars {
+			return marker[:maxChars]
+		}
+		return marker
+	}
+
+	head := (available * 2) / 3
+	tail := available - head
+	if tail < 16 {
+		tail = 16
+		head = available - tail
+	}
+	if head < 16 {
+		head = 16
+		tail = available - head
+	}
+
+	return text[:head] + marker + text[len(text)-tail:]
 }

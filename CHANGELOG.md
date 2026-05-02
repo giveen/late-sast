@@ -6,6 +6,66 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.8.1] — 2026-05-01
+
+### Added
+- **Structured execution telemetry** in debug logs:
+  - `TOOL_RESULT` now supports structured metadata (`duration_ms`, `status`, `classification`, `exit_code`, `output_bytes`, `truncated`).
+  - New `TURN_SUMMARY` event captures per-turn workflow stats (tool count, failures, blocked/timeouts, duplicate tool-turn detection, token/content sizing).
+- **Subagent timeout + heartbeat controls** in `spawn_subagent`:
+  - Default/per-agent timeout policies (`coder`, `scanner`, `binary-scanner`, `auditor`, `setup`).
+  - Periodic heartbeat callback support for long-running child agents.
+  - `late-sast` emits `SUBAGENT_HEARTBEAT` debug events while subagents are running.
+- **Workflow/CI Make targets**:
+  - `quick-test`, `test-race`, `coverage`, `fmt`, `fmt-check`, `vet`, `lint`, `ci`.
+- **New tests** for the above systems:
+  - `internal/debug/logger_test.go` for structured log schema.
+  - Executor loop/stats tests for blocked counting and signature stability.
+  - Subagent timeout/heartbeat tests.
+  - CVE cache/retry behavior tests.
+
+### Fixed
+- **GUI context tracking reliability**:
+  - Context usage now updates even when backend usage chunks omit token fields (fallback to in-session token estimation).
+  - Main tab now initializes context usage immediately instead of staying at `Context: –` until first usage payload.
+  - Subagent tabs now also initialize context usage immediately.
+- **Subagent context visibility**:
+  - Subagent tabs now display explicit context usage in the same style as the main tab (`Context: used / max (pct%)`).
+- **Shell failure typing**:
+  - Timeout and cancellation results are now emitted as explicit shell outcomes (not only generic command errors), improving classification fidelity.
+- **Duplicate tool-call blocker over-aggressive on retries**:
+  - The duplicate detection now resets when a turn had tool failures or timeouts, allowing legitimate retries after subagent timeouts without triggering the blocker.
+  - Only counts as a duplicate loop if the same plan repeats AFTER a successful turn.
+- **Malformed JSON tool call arguments**:
+  - Tool calls with invalid JSON arguments are now filtered out gracefully with debug logging instead of failing the entire stream.
+  - Prevents "unexpected end of input" errors from crashing the executor when the LLM generates truncated or incomplete JSON.
+- **HTTP 500 JSON parse errors from persisted history**:
+  - Outgoing chat requests are now sanitised before sending: tool_call entries with invalid JSON arguments are stripped from all `assistant` messages in the request payload.
+  - When the backend still returns an HTTP 500 "failed to parse tool call arguments as JSON" error (e.g. from corrupted persisted history), the client now performs one automatic retry with all tool definitions and tool_calls removed, allowing the turn to complete as a plain text response rather than hard-failing.
+  - End-to-end regression test added using an `httptest` mock server.
+- **Stale shell working directory**:
+  - The shell tool no longer crashes with `chdir <path>: no such file or directory` when a requested `cwd` was a temporary directory that has since been cleaned up (common between SAST scan phases).
+  - Falls back silently to the current process working directory and continues execution.
+
+### Changed
+- **Session history compaction**:
+  - Older assistant messages no longer accumulate full chain-of-thought reasoning in persisted history: reasoning is stripped from messages beyond the most recent turn to reduce context window cost on long scans.
+  - Tool result messages are compacted: messages beyond the most recent 10 turns are truncated to 1 200 characters (head + tail preserved); more recent tool results are capped at 4 000 characters.
+  - The most recent reasoning block is capped at 1 200 characters.
+  - Compaction runs automatically in `saveAndNotify` before each persistence write, with no manual intervention required.
+- **Executor control loop hardening**:
+  - Added per-turn tool-call budget guardrails.
+  - Added repeated-identical-tool-plan detection to prevent loop churn.
+  - Added per-turn tool-execution time budget.
+  - Tool execution now aggregates per-turn stats for logging/observability.
+- **CVE lookup tooling**:
+  - CVE API calls are now context-aware and retry transient failures with backoff.
+  - Added in-memory TTL response cache to reduce duplicate network latency during scans.
+- **Project hygiene**:
+  - `docs/gui_porting_plan.md` is now untracked and ignored (`.gitignore`) to keep local planning notes out of release diffs.
+
+---
+
 ## [v1.8.0] — 2026-05-01
 
 ### Added
@@ -34,6 +94,7 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 - **`NewSubagentOrchestrator`** — the `tui.Messenger` parameter replaced with a generic `agent.MiddlewareFactory` function type, eliminating the circular `agent → tui` import and allowing the GUI to inject its own confirmation middleware without forking the agent package.
 
 ---
+
 
 ## [v1.7.2.2] — 2026-04-30
 
@@ -66,7 +127,6 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 ### Fixed
 - **`finish_reason: "length"` false context abort** — the agent no longer treats a model hitting its per-turn generation budget (`n_predict`) as an unrecoverable context-window-full error. When llama.cpp returns `finish_reason: "length"`, the runner now calls `/props` to fetch the live `n_ctx` value and compares it against `total_tokens` (with a 5-token rounding margin). A genuine context overflow (prompt fills the window) still raises the hard error; hitting `n_predict` mid-output filters truncated tool calls and continues the run loop normally. Falls back to the content/tool-call heuristic for non-llama.cpp backends that don't expose a context size.
 
----
 
 ## [v1.7.0] — 2026-04-30
 

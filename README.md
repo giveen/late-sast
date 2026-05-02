@@ -86,6 +86,23 @@ make install-sast # installs to ~/.local/bin/late-sast
 
 > `make build-sast` automatically fetches the `codebase-memory-mcp` binary for your platform and bakes it into the `late-sast` binary — no separate install step needed.
 
+### Development Targets
+
+For developers, the Makefile includes a complete CI/test suite:
+
+```bash
+make quick-test    # Run unit tests locally (fast, no race detection)
+make test-race     # Run all tests with -race flag (detects data races)
+make coverage      # Generate test coverage report (outputs ./coverage/index.html)
+make fmt           # Auto-format all Go code with gofmt
+make fmt-check     # Check formatting without modifying files (CI gate)
+make vet           # Run go vet static analysis
+make lint          # Run golangci-lint (requires installation)
+make ci            # Run all CI gates: fmt-check → vet → lint → test-race → coverage
+```
+
+The `ci` target is what runs in GitHub Actions and is useful for local pre-commit validation.
+
 ## 🔍 late-sast: Autonomous Security Auditor
 
 `late-sast` is the primary addition in this fork. It turns Late's agent engine into a fully autonomous SAST (Static Application Security Testing) tool. Point it at any public GitHub repository and it will clone, build, run, attack, and report — without any manual steps.
@@ -193,6 +210,8 @@ See the [Quickstart Guide](docs/quickstart.md) for recommended model configurati
 ### Live CVE Enrichment
 Dependency files (`package.json`, `requirements.txt`, `go.mod`, `pom.xml`, `Gemfile`) are scanned by Trivy for lockfile CVEs, then enriched via the built-in CVE tools (querying [cve.circl.lu](https://cve.circl.lu/)) for live CVSS scores and NVD links. No external tooling required.
 
+> **v1.8.1+ Improvements:** CVE API responses are now cached for 24 hours to reduce latency during repeated scans against the same dependencies. Transient API failures (429/503 errors) are automatically retried with exponential backoff, making the scan more resilient to temporary network issues.
+
 ### Library Documentation Lookup
 When a CVE or vulnerable dependency is found, the scanner can resolve authoritative remediation documentation without leaving the context window. Three native Go tools implement the [ProContext](https://github.com/procontexthq/procontext) documentation protocol:
 
@@ -221,6 +240,14 @@ Prevent runaway scans with `--timeout`:
 ```bash
 late-sast --timeout 45m https://github.com/owner/repo
 ```
+
+> **v1.8.1+ Improvements:** Individual subagents now have intelligent timeout policies to prevent hanging:
+> - **Auditor** (taint analysis): 20 minutes
+> - **Scanner** (static analysis): 15 minutes
+> - **Binary Scanner** / **Setup**: 15 minutes
+> - **Coder** (exploitation/fixer): 10 minutes
+>
+> These defaults are overridable via environment variables if you need to customize per-agent timeouts. Long-running subagents emit heartbeat signals every 30 seconds to help operators monitor progress in long scans.
 
 ### MCP Server Integration
 Any MCP server configured in `~/.config/late-sast/mcp_config.json` is automatically connected and its tools are available to the agent during the scan.

@@ -15,6 +15,22 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+func formatContextUsage(used, max int) string {
+	if max > 0 {
+		pct := float64(used) / float64(max) * 100
+		return fmt.Sprintf("Context: %d\u202f/\u202f%d  (%.0f%%)", used, max, pct)
+	}
+	return fmt.Sprintf("Context: %d tokens", used)
+}
+
+func formatSubagentContextUsage(used, max int) string {
+	if max > 0 {
+		pct := float64(used) / float64(max) * 100
+		return fmt.Sprintf("Context: %d\u202f/\u202f%d (%.0f%%)", used, max, pct)
+	}
+	return fmt.Sprintf("Context: %d tokens", used)
+}
+
 // phaseLabels maps agentType → human-readable tab label.
 var phaseLabels = map[string]string{
 	"setup":          "Making Docker",
@@ -143,15 +159,13 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 	a.tabs.SetTabLocation(container.TabLocationTop)
 
 	a.startEventLoop(rootAgent, a.mainChat, nil, "", func(used, max int) {
-		var text string
-		if max > 0 {
-			pct := float64(used) / float64(max) * 100
-			text = fmt.Sprintf("Context: %d\u202f/\u202f%d  (%.0f%%)", used, max, pct)
-		} else {
-			text = fmt.Sprintf("Context: %d tokens", used)
-		}
-		a.usageLabel.SetText(text)
+		a.usageLabel.SetText(formatContextUsage(used, max))
 	})
+
+	// Show an immediate baseline instead of the placeholder while waiting for
+	// the first stream usage payload.
+	initialUsed := common.CalculateHistoryTokens(rootAgent.History(), rootAgent.SystemPrompt(), rootAgent.ToolDefinitions())
+	a.usageLabel.SetText(formatContextUsage(initialUsed, rootAgent.MaxTokens()))
 
 	provider := newGUIInputProvider(a.window)
 	ctx := rootAgent.Context()
@@ -191,7 +205,7 @@ func (a *App) openSubagentTab(child common.Orchestrator, agentType string) {
 	label := a.phaseLabel(agentType)
 
 	panel := NewChatPanel()
-	subUsage := widget.NewLabel("–")
+	subUsage := widget.NewLabel("Context: –")
 
 	stopFn := func() {
 		child.Cancel()
@@ -211,12 +225,11 @@ func (a *App) openSubagentTab(child common.Orchestrator, agentType string) {
 
 	// Start event loop for the child.
 	a.startEventLoop(child, panel, tabItem, label, func(used, max int) {
-		if max > 0 {
-			subUsage.SetText(fmt.Sprintf("%d\u202f/\u202f%d", used, max))
-		} else {
-			subUsage.SetText(fmt.Sprintf("%d tok", used))
-		}
+		subUsage.SetText(formatSubagentContextUsage(used, max))
 	})
+
+	initialUsed := common.CalculateHistoryTokens(child.History(), child.SystemPrompt(), child.ToolDefinitions())
+	subUsage.SetText(formatSubagentContextUsage(initialUsed, child.MaxTokens()))
 }
 
 // closeSubagentTab removes a subagent tab after showing a toast.

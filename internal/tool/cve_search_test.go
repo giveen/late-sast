@@ -16,12 +16,64 @@ func setupCVETestServer(t *testing.T, handler http.HandlerFunc) (cleanup func())
 	srv := httptest.NewServer(handler)
 	origBase := cveBaseURL
 	origClient := cveHTTPClient
+	origCache := cveCache
 	cveBaseURL = srv.URL + "/"
 	cveHTTPClient = srv.Client()
+	cveCacheMu.Lock()
+	cveCache = make(map[string]cveCacheEntry)
+	cveCacheMu.Unlock()
 	return func() {
 		cveBaseURL = origBase
 		cveHTTPClient = origClient
+		cveCacheMu.Lock()
+		cveCache = origCache
+		cveCacheMu.Unlock()
 		srv.Close()
+	}
+}
+
+func TestCVEGet_RetrysOnServerError(t *testing.T) {
+	attempts := 0
+	cleanup := setupCVETestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	defer cleanup()
+
+	res, err := cveGet(context.Background(), "cve/CVE-2021-44228")
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got error: %v", err)
+	}
+	if !strings.Contains(res, `"ok":true`) {
+		t.Fatalf("unexpected response: %s", res)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestCVEGet_UsesCache(t *testing.T) {
+	hits := 0
+	cleanup := setupCVETestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"cached":true}`))
+	})
+	defer cleanup()
+
+	for i := 0; i < 2; i++ {
+		if _, err := cveGet(context.Background(), "last/5"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	if hits != 1 {
+		t.Fatalf("expected one upstream hit due to cache, got %d", hits)
 	}
 }
 

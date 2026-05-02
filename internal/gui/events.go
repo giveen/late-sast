@@ -26,6 +26,31 @@ func (a *App) startEventLoop(
 		var acc string
 		streaming := false
 		thinkingStreaming := false
+		cachedHistoryLen := -1
+		cachedHistoryTokens := 0
+
+		updateUsage := func(e common.ContentEvent) {
+			if onUsage == nil {
+				return
+			}
+
+			used := 0
+			if e.Usage.TotalTokens > 0 {
+				used = e.Usage.TotalTokens
+			} else if e.Usage.PromptTokens > 0 {
+				used = e.Usage.PromptTokens
+			} else {
+				history := o.History()
+				if len(history) != cachedHistoryLen {
+					cachedHistoryTokens = common.CalculateHistoryTokens(history, o.SystemPrompt(), o.ToolDefinitions())
+					cachedHistoryLen = len(history)
+				}
+				used = cachedHistoryTokens + common.EstimateEventTokens(e)
+			}
+
+			max := o.MaxTokens()
+			fyne.Do(func() { onUsage(used, max) })
+		}
 
 		for event := range o.Events() {
 			switch e := event.(type) {
@@ -35,10 +60,7 @@ func (a *App) startEventLoop(
 				// carries final usage accounting. Update the usage bar and skip
 				// the message update to avoid clearing the last bubble.
 				if e.Content == "" && e.ReasoningContent == "" {
-					if e.Usage.PromptTokens > 0 && onUsage != nil {
-						used, max := e.Usage.PromptTokens, o.MaxTokens()
-						fyne.Do(func() { onUsage(used, max) })
-					}
+					updateUsage(e)
 					continue
 				}
 
@@ -70,10 +92,10 @@ func (a *App) startEventLoop(
 					fyne.Do(func() {
 						panel.UpdateLastMessage(content)
 					})
-					if e.Usage.PromptTokens > 0 && onUsage != nil {
-						used, max := e.Usage.PromptTokens, o.MaxTokens()
-						fyne.Do(func() { onUsage(used, max) })
-					}
+					updateUsage(e)
+				} else {
+					// Even without content deltas, keep usage indicator current.
+					updateUsage(e)
 				}
 
 			case common.StatusEvent:

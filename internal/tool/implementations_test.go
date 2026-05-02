@@ -321,6 +321,31 @@ func TestBashTool_DefaultCWD(t *testing.T) {
 	}
 }
 
+func TestBashTool_MissingCWD_FallsBackToCurrentDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix pwd/path test skipped on Windows")
+	}
+
+	tool := ShellTool{}
+	missingDir := filepath.Join("internal", "tool", "_deleted_cwd_for_test")
+	_ = os.RemoveAll(missingDir)
+
+	params := json.RawMessage(fmt.Sprintf(`{"command": "pwd", "cwd": "%s"}`, missingDir))
+	out, err := tool.Execute(approvedContext(), params)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	currentDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	if !strings.Contains(out, currentDir) {
+		t.Errorf("Execute() output = %q, want to contain current directory %q", out, currentDir)
+	}
+}
+
 func TestBashTool_CallString(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix CallString prefix tested on Windows via TestPSShellTool_CallString in implementations_cmd_test.go")

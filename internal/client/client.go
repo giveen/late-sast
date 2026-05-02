@@ -55,46 +55,64 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		_ = c.DiscoverBackend(ctx)
 	}
 
+	// Guard against malformed tool-call arguments in persisted history.
+	// Some backends reject the entire request with HTTP 500 when any prior
+	// assistant tool_call contains invalid JSON arguments.
+	req.Messages = sanitizeMessagesForRequest(req.Messages)
+
 	if req.Model == "" && c.cfg.Model != "" {
 		req.Model = c.cfg.Model
 	}
 
-	body, err := c.marshalFlattened(req)
-	if err != nil {
-		return nil, err
-	}
+	attemptReq := req
+	retriedWithoutTools := false
+	for {
+		body, err := c.marshalFlattened(attemptReq)
+		if err != nil {
+			return nil, err
+		}
 
-	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+		url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
 
-	if c.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
+		if c.cfg.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, c.formatError(resp)
-	}
+		if resp.StatusCode != http.StatusOK {
+			reqErr := c.formatError(resp)
+			resp.Body.Close()
+			if !retriedWithoutTools && shouldRetryWithoutTools(reqErr, attemptReq) {
+				retriedWithoutTools = true
+				attemptReq = disableToolsForRetry(attemptReq)
+				continue
+			}
+			return nil, reqErr
+		}
 
-	var chatResp ChatCompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, err
+		var chatResp ChatCompletionResponse
+		err = json.NewDecoder(resp.Body).Decode(&chatResp)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		return &chatResp, nil
 	}
-	return &chatResp, nil
 }
 
 // ChatCompletionStream streams responses from the OpenAI-compatible endpoint.
 func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionRequest) (<-chan ChatCompletionChunk, <-chan error) {
 	req.Stream = true
+	req.Messages = sanitizeMessagesForRequest(req.Messages)
 	out := make(chan ChatCompletionChunk)
 	errCh := make(chan error, 1)
 
@@ -110,61 +128,140 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			req.Model = c.cfg.Model
 		}
 
-		body, err := c.marshalFlattened(req)
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
-		if err != nil {
-			errCh <- err
-			return
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "text/event-stream")
-
-		if c.cfg.APIKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-		}
-
-		resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			errCh <- c.formatError(resp)
-			return
-		}
-
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				break
-			}
-
-			var chunk ChatCompletionChunk
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue
-			}
-			select {
-			case out <- chunk:
-			case <-ctx.Done():
+		attemptReq := req
+		retriedWithoutTools := false
+		for {
+			body, err := c.marshalFlattened(attemptReq)
+			if err != nil {
+				errCh <- err
 				return
 			}
+
+			url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
+			httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+			if err != nil {
+				errCh <- err
+				return
+			}
+			httpReq.Header.Set("Content-Type", "application/json")
+			httpReq.Header.Set("Accept", "text/event-stream")
+
+			if c.cfg.APIKey != "" {
+				httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+			}
+
+			resp, err := c.httpClient.Do(httpReq)
+			if err != nil {
+				errCh <- err
+				return
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				reqErr := c.formatError(resp)
+				resp.Body.Close()
+				if !retriedWithoutTools && shouldRetryWithoutTools(reqErr, attemptReq) {
+					retriedWithoutTools = true
+					attemptReq = disableToolsForRetry(attemptReq)
+					continue
+				}
+				errCh <- reqErr
+				return
+			}
+
+			scanner := bufio.NewScanner(resp.Body)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				data := strings.TrimPrefix(line, "data: ")
+				if data == "[DONE]" {
+					break
+				}
+
+				var chunk ChatCompletionChunk
+				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+					continue
+				}
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+					resp.Body.Close()
+					return
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				resp.Body.Close()
+				errCh <- err
+				return
+			}
+			resp.Body.Close()
+			return
 		}
 	}()
 
 	return out, errCh
+}
+
+func sanitizeMessagesForRequest(messages []ChatMessage) []ChatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	sanitized := make([]ChatMessage, 0, len(messages))
+	for _, msg := range messages {
+		next := msg
+		if len(msg.ToolCalls) > 0 {
+			valid := make([]ToolCall, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				if json.Valid([]byte(tc.Function.Arguments)) {
+					valid = append(valid, tc)
+				}
+			}
+			next.ToolCalls = valid
+		}
+		sanitized = append(sanitized, next)
+	}
+
+	return sanitized
+}
+
+func shouldRetryWithoutTools(err error, req ChatCompletionRequest) bool {
+	if err == nil {
+		return false
+	}
+	if len(req.Tools) == 0 && req.ToolChoice == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "api error (500)") {
+		return false
+	}
+	if strings.Contains(msg, "failed to parse tool call arguments as json") {
+		return true
+	}
+	if strings.Contains(msg, "json.exception.parse_error.101") {
+		return true
+	}
+
+	return false
+}
+
+func disableToolsForRetry(req ChatCompletionRequest) ChatCompletionRequest {
+	req.Tools = nil
+	req.ToolChoice = nil
+
+	if len(req.Messages) > 0 {
+		stripped := make([]ChatMessage, len(req.Messages))
+		copy(stripped, req.Messages)
+		for i := range stripped {
+			stripped[i].ToolCalls = nil
+		}
+		req.Messages = stripped
+	}
+
+	return req
 }
 
 // Completion sends a raw prompt to llama.cpp (used for Impersonation fallback).

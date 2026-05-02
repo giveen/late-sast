@@ -308,6 +308,8 @@ func main() {
 				Runner: makeRunner(func(reg *common.ToolRegistry) []common.ToolMiddleware {
 					return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
 				}),
+				DefaultTimeout:    15 * time.Minute,
+				HeartbeatInterval: 30 * time.Second,
 			})
 		}
 
@@ -333,6 +335,8 @@ func main() {
 				Runner: makeRunner(func(reg *common.ToolRegistry) []common.ToolMiddleware {
 					return []common.ToolMiddleware{guiApp.ConfirmMiddleware(reg, *unsupervisedReq)}
 				}),
+				DefaultTimeout:    15 * time.Minute,
+				HeartbeatInterval: 30 * time.Second,
 			})
 		}
 

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json" // used for hash generation
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -328,6 +329,17 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		if !t.SkipSafePath && !IsSafePath(params.Cwd) {
 			return "", fmt.Errorf("cwd '%s' is outside the allowed directory", params.Cwd)
 		}
+		if _, err := os.Stat(params.Cwd); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				cwd, cwdErr := os.Getwd()
+				if cwdErr != nil {
+					return "", fmt.Errorf("failed to get current working directory: %w", cwdErr)
+				}
+				params.Cwd = cwd
+			} else {
+				return "", fmt.Errorf("failed to access cwd '%s': %w", params.Cwd, err)
+			}
+		}
 	} else {
 		// Default to current directory
 		cwd, err := os.Getwd()
@@ -378,6 +390,12 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if err != nil {
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Sprintf("Command timed out after %s\n%s", t.Timeout, finalOutput), nil
+		}
+		if errors.Is(execCtx.Err(), context.Canceled) {
+			return fmt.Sprintf("Command cancelled\n%s", finalOutput), nil
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Sprintf("Command failed with exit code %d\n%s", exitErr.ExitCode(), finalOutput), nil
 		}

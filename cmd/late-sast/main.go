@@ -545,6 +545,17 @@ func main() {
 				}
 				return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 			},
+			DefaultTimeout:    20 * time.Minute,
+			HeartbeatInterval: 30 * time.Second,
+			Heartbeat: func(agentType, goal string, elapsed time.Duration) {
+				if debugLog != nil && debugLog.Enabled() {
+					debugLog.LogEvent("SUBAGENT_HEARTBEAT", "Subagent is still running", map[string]interface{}{
+						"agent_type":   agentType,
+						"elapsed_ms":   elapsed.Milliseconds(),
+						"goal_preview": truncateForLog(goal, 120),
+					})
+				}
+			},
 		})
 
 		if _, err := p.Run(); err != nil {
@@ -592,6 +603,17 @@ func main() {
 						return "", err
 					}
 					return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
+				},
+				DefaultTimeout:    20 * time.Minute,
+				HeartbeatInterval: 30 * time.Second,
+				Heartbeat: func(agentType, goal string, elapsed time.Duration) {
+					if debugLog != nil && debugLog.Enabled() {
+						debugLog.LogEvent("SUBAGENT_HEARTBEAT", "Subagent is still running", map[string]interface{}{
+							"agent_type":   agentType,
+							"elapsed_ms":   elapsed.Milliseconds(),
+							"goal_preview": truncateForLog(goal, 120),
+						})
+					}
 				},
 			})
 
@@ -865,6 +887,16 @@ func countMDFiles(dir string) int {
 		}
 	}
 	return n
+}
+
+func truncateForLog(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 // indexSASTReferences pre-loads the SAST vulnerability reference library into

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── SASTBashAnalyzer ──────────────────────────────────────────────────────────
@@ -124,7 +125,7 @@ func TestSpawnSubagentTool_Execute_InvalidJSON(t *testing.T) {
 func TestSpawnSubagentTool_Execute_NoCtxFiles(t *testing.T) {
 	tool := SpawnSubagentTool{
 		Runner: func(_ context.Context, _ string, ctxFiles []string, _ string) (string, error) {
-			if ctxFiles != nil && len(ctxFiles) != 0 {
+			if len(ctxFiles) != 0 {
 				t.Errorf("expected nil/empty ctxFiles, got %v", ctxFiles)
 			}
 			return "ok", nil
@@ -218,5 +219,48 @@ func TestSpawnSubagentTool_Execute_AuditorAgentType(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("runner was never called")
+	}
+}
+
+func TestSpawnSubagentTool_Execute_Timeout(t *testing.T) {
+	tool := SpawnSubagentTool{
+		DefaultTimeout: 25 * time.Millisecond,
+		Runner: func(ctx context.Context, _ string, _ []string, _ string) (string, error) {
+			select {
+			case <-time.After(100 * time.Millisecond):
+				return "done", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		},
+	}
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"goal":"wait","agent_type":"scanner"}`))
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout message, got: %v", err)
+	}
+}
+
+func TestSpawnSubagentTool_Execute_Heartbeat(t *testing.T) {
+	heartbeats := 0
+	tool := SpawnSubagentTool{
+		DefaultTimeout:    250 * time.Millisecond,
+		HeartbeatInterval: 10 * time.Millisecond,
+		Heartbeat: func(_ string, _ string, _ time.Duration) {
+			heartbeats++
+		},
+		Runner: func(_ context.Context, _ string, _ []string, _ string) (string, error) {
+			time.Sleep(35 * time.Millisecond)
+			return "ok", nil
+		},
+	}
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"goal":"heartbeat","agent_type":"coder"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if heartbeats == 0 {
+		t.Fatal("expected at least one heartbeat callback")
 	}
 }

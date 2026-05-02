@@ -1,4 +1,4 @@
-.PHONY: build build-late fetch-cbm test clean install install-late run help
+.PHONY: build build-late fetch-cbm test quick-test test-race coverage fmt fmt-check vet lint ci clean install install-late run help
 
 # Project variables — late-sast is the primary binary
 BINARY_NAME=late-sast
@@ -39,6 +39,48 @@ build-late: ## Build the late (general assistant) binary
 test: ## Run tests for the entire project
 	@echo "Running tests..."
 	@go test -v -race ./...
+
+quick-test: ## Run fast unit tests (short mode, no race)
+	@echo "Running quick tests..."
+	@go test -short ./...
+
+test-race: ## Run tests with race detector
+	@echo "Running race tests..."
+	@go test -race ./...
+
+coverage: ## Generate coverage profile and summary
+	@echo "Running coverage..."
+	@go test -coverprofile=coverage.out ./...
+	@go tool cover -func=coverage.out | tail -n 1
+
+fmt: ## Format Go source files
+	@echo "Formatting Go files..."
+	@gofmt -w $$(find . -name '*.go' -not -path './bin/*')
+
+fmt-check: ## Verify Go files are formatted
+	@echo "Checking formatting..."
+	@unformatted=$$(gofmt -l $$(find . -name '*.go' -not -path './bin/*')); \
+	if [ -n "$$unformatted" ]; then \
+		echo "Unformatted files:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
+
+vet: ## Run go vet on all packages
+	@echo "Running go vet..."
+	@go vet ./...
+
+lint: ## Run golangci-lint when available, fallback to go vet
+	@echo "Running lint..."
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not found, falling back to go vet"; \
+		go vet ./...; \
+	fi
+
+ci: fmt-check vet lint test-race ## CI quality gate: format, static checks, lint, and race tests
+	@echo "CI checks passed"
 
 clean: ## Remove build artifacts
 	@echo "Cleaning..."
