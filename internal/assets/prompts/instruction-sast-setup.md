@@ -257,7 +257,7 @@ docker exec <container-name> sh -c "
       curl wget bash procps git jq \
       build-essential gcc g++ make \
       default-jdk-headless \
-      python3 python3-pip python3-venv \
+      python3 python3-pip python3-venv pipx \
       nodejs npm \
       2>/dev/null || true
   elif command -v apk >/dev/null 2>&1; then
@@ -265,7 +265,7 @@ docker exec <container-name> sh -c "
       curl wget bash procps git jq \
       build-base gcc g++ make \
       openjdk17-jre-headless \
-      python3 py3-pip \
+      python3 py3-pip pipx \
       nodejs npm \
       2>/dev/null || true
   elif command -v yum >/dev/null 2>&1; then
@@ -315,14 +315,38 @@ docker exec <container-name> sh -c "
 ### Step 5c — Static analysis tools
 
 ```bash
+# Ensure pipx is available and configured to install into /usr/local/bin so
+# tools are on PATH without needing 'pipx ensurepath'. Fall back to pip if
+# pipx is unavailable (older base images).
+docker exec <container-name> sh -c "
+  if ! command -v pipx >/dev/null 2>&1; then
+    python3 -m pip install --quiet --break-system-packages pipx 2>/dev/null || \
+    python3 -m pip install --quiet pipx 2>/dev/null || true
+  fi
+  export PIPX_BIN_DIR=/usr/local/bin
+  echo \"pipx: \$(command -v pipx 2>/dev/null || echo not available)\"
+" || true
+
+# Helper used below: try pipx first (isolated venv, no PEP-668 conflict),
+# fall back to pip --break-system-packages for images where pipx itself
+# could not be installed.
+#   pip_install <package>
+#   Runs inside the container with PIPX_BIN_DIR=/usr/local/bin already set.
+
 # semgrep — multi-language SAST, JSON-structured findings
 docker exec <container-name> sh -c "
-  pip install --quiet semgrep 2>/dev/null || python3 -m pip install --quiet semgrep 2>/dev/null || true
+  export PIPX_BIN_DIR=/usr/local/bin
+  pipx install semgrep 2>/dev/null || \
+  pip install --quiet --break-system-packages semgrep 2>/dev/null || \
+  python3 -m pip install --quiet --break-system-packages semgrep 2>/dev/null || true
 " || true
 
 # checksec — binary hardening flags (NX / stack canary / PIE / RELRO)
 docker exec <container-name> sh -c "
-  pip install --quiet checksec 2>/dev/null || python3 -m pip install --quiet checksec 2>/dev/null || true
+  export PIPX_BIN_DIR=/usr/local/bin
+  pipx install checksec 2>/dev/null || \
+  pip install --quiet --break-system-packages checksec 2>/dev/null || \
+  python3 -m pip install --quiet --break-system-packages checksec 2>/dev/null || true
 " || true
 
 # gosec — Go-specific security scanner (only when Go is present)
