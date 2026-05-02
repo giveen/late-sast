@@ -151,19 +151,16 @@ git clone --depth=1 <github-url> ${{WORKDIR}}/repo
 If `git clone` fails, retry once with `--depth=50`. If it fails again, exit with `notes: clone failed` in the summary.
 
 ### Step 2 — Index the repository
-Discover the structure and index key source files:
-```bash
-find ${{WORKDIR}}/repo -maxdepth 4 \
-  \( -name "*.go" -o -name "*.ts" -o -name "*.js" -o -name "*.py" -o -name "*.rb" -o -name "*.java" -o -name "*.rs" \) \
-  -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" \
-  -not -name "*.test.*" -not -name "*.spec.*" \
-  | sort | head -60
 ```
-Use `ctx_index_file` on the 10–20 most relevant source files (entry points, main modules, HTTP handlers, auth, data-access layers). Index **individual files only** — never pass a directory path to `ctx_index_file`.
+index_repository(repo_path="${{WORKDIR}}/repo", mode="full")
+```
+Wait for completion, then:
+```
+get_architecture(project="${{WORKDIR}}/repo")
+```
+Note: primary language, HTTP entry points, key routes. This data goes in your summary.
 
-After indexing, use `ctx_search` to retrieve the indexed content and note: primary language, HTTP entry points, key routes. This data goes in your summary.
-
-**Monorepo check:** If the find output shows very few files or no clear entry point, check whether the repo is a monorepo:
+**Monorepo check:** If `get_architecture` returns zero or very few entry points, check whether the repo is a monorepo:
 ```bash
 find ${{WORKDIR}}/repo -maxdepth 3 \( -name "go.mod" -o -name "package.json" -o -name "requirements.txt" -o -name "pom.xml" \) \
   | grep -v node_modules | head -20

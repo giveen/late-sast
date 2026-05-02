@@ -286,11 +286,15 @@ func main() {
 		auditorClient.DiscoverBackend(context.Background())
 	}
 
-	// Ensure codebase-memory-mcp is available, downloading if needed
+	// Ensure codebase-memory-mcp is available, downloading if needed.
+	// Capture the path so we can auto-inject it into the MCP config below.
+	var cbmBinPath string
 	if cbmPath, cbmErr := ensureCBM(); cbmErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: codebase-memory-mcp unavailable (%v) — graph intelligence disabled\n", cbmErr)
 	} else {
-		// Add its directory to PATH so the MCP config can find it by name
+		cbmBinPath = cbmPath
+		// Add its directory to PATH so any user-configured MCP entry that
+		// references "codebase-memory-mcp" by name can resolve it.
 		cbmDir := filepath.Dir(cbmPath)
 		if cur := os.Getenv("PATH"); !strings.Contains(cur, cbmDir) {
 			os.Setenv("PATH", cbmDir+string(os.PathListSeparator)+cur)
@@ -305,7 +309,22 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load MCP config: %v\n", err)
 	}
-	if mcpConfig != nil && len(mcpConfig.McpServers) > 0 {
+	if mcpConfig == nil {
+		mcpConfig = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
+	}
+	// Auto-inject codebase-memory-mcp when ensureCBM succeeded and the user
+	// has not explicitly configured it. This wires up the 14 graph tools
+	// (index_repository, get_architecture, search_graph, …) automatically
+	// without requiring any manual mcp_config.json edits.
+	if cbmBinPath != "" {
+		if _, exists := mcpConfig.McpServers["codebase-memory-mcp"]; !exists {
+			mcpConfig.McpServers["codebase-memory-mcp"] = mcp.MCPServer{
+				Command: cbmBinPath,
+				Args:    []string{},
+			}
+		}
+	}
+	if len(mcpConfig.McpServers) > 0 {
 		fmt.Println("Connecting to MCP servers...")
 		if err := mcpClient.ConnectFromConfig(context.Background(), mcpConfig); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: MCP connection error: %v\n", err)
