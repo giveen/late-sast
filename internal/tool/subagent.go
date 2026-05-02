@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -89,6 +90,13 @@ func (t SpawnSubagentTool) Execute(ctx context.Context, args json.RawMessage) (s
 		case res := <-resultCh:
 			if t.Heartbeat != nil {
 				t.Heartbeat(params.AgentType, params.Goal, time.Since(start))
+			}
+			// If the runner returned no error but also no output, the subagent
+			// stalled (context overflow, unexpected stop, etc.). Return a
+			// descriptive string so the orchestrator can see what happened and
+			// avoid treating silence as "no findings".
+			if res.err == nil && strings.TrimSpace(res.output) == "" {
+				return fmt.Sprintf("subagent '%s' completed but returned empty output — possible context window overflow or unexpected termination", params.AgentType), nil
 			}
 			return res.output, res.err
 		case <-runCtx.Done():

@@ -145,7 +145,6 @@ func (a *App) startEventLoop(
 					return
 
 				case "error":
-					// Keep tab open so the user can read the error.
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -161,16 +160,21 @@ func (a *App) startEventLoop(
 							in.SetEnabled(true)
 						})
 					}
-					if e.Error != nil {
-						msg := e.Error.Error()
-						fyne.Do(func() {
-							panel.AppendMessage("error", "⚠ "+msg)
-						})
-						if tabItem != nil {
-							fyne.Do(func() {
-								a.sendNotification("Error in "+agentLabel, msg)
-							})
+					// Close the subagent tab — the error is already surfaced in the
+					// main tab as the spawn_subagent tool result, so the orphan tab
+					// just clutters the UI. Show a notification instead.
+					if tabItem != nil {
+						var msg string
+						if e.Error != nil {
+							msg = e.Error.Error()
 						}
+						label := agentLabel
+						fyne.Do(func() {
+							if msg != "" {
+								a.sendNotification("Error in "+label, msg)
+							}
+							a.closeSubagentTab(tabItem, o, label)
+						})
 					}
 				}
 

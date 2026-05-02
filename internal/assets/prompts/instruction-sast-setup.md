@@ -6,6 +6,42 @@ You will be given: either a GitHub URL **or** a Local path (never both), plus co
 
 ## Setup Workflow
 
+### Step 0 — Check for a quick-install path (GitHub URL only)
+
+**Run this step only when a GitHub URL was provided.** Many projects publish a one-line install command in their README that is faster than cloning and building from source. Check before cloning:
+
+```bash
+mkdir -p ${{WORKDIR}}
+curl -s "https://raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md" 2>/dev/null | head -200
+```
+(Derive `<owner>/<repo>` from the GitHub URL.)
+
+**Scan the README output for a quick-install command:**
+
+| Language | Recognised patterns | Example |
+|----------|--------------------|---------| 
+| Go | `go install <module>/cmd/<name>@latest` | `go install github.com/danielmiessler/fabric/cmd/fabric@latest` |
+| Python | `pip install <name>` or `pipx install <name>` | `pip install mycli` |
+| Node.js | `npm install -g <name>` or `npx <name>` | `npm install -g @scope/tool` |
+| Rust | `cargo install <name>` | `cargo install ripgrep` |
+| Ruby | `gem install <name>` | `gem install rails` |
+
+**If a quick-install command is found:**
+1. Create the workdir and spin up a minimal container with the relevant toolchain:
+   - Go → `golang:1.23`
+   - Python → `python:3.11-slim`
+   - Node.js → `node:20-slim`
+   - Rust → `rust:1.80-slim`
+2. Run the install command inside the container:
+   ```bash
+   docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
+     -v ${{WORKDIR}}:/workdir -w /workdir <image> tail -f /dev/null
+   docker exec ${{CONTAINER_NAME}} sh -c "<quick-install-command>"
+   ```
+3. After install, set `${{WORKDIR}}/repo` to the directory where the source lives (or an empty dir if binary-only). Skip Steps 1–4 below entirely and jump directly to **Step 5** (bootstrap tools). Set `notes: installed via quick-install` in the summary.
+
+**If no quick-install command is found**, proceed with Step 1 below.
+
 ### Step 1 — Prepare workspace & obtain source code
 
 ```bash
