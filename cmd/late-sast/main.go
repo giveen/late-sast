@@ -50,7 +50,7 @@ func main() {
 	outputReq := flag.String("output", "", "Directory to write the SAST report (default: current directory)")
 	timeoutReq := flag.Duration("timeout", 0, "Wall-clock scan timeout (e.g. 90m, 2h). 0 = no limit")
 	versionReq := flag.Bool("version", false, "Show version")
-	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum turns per subagent")
+	subagentMaxTurns := flag.Int("subagent-max-turns", 150, "Maximum turns per subagent")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token for Gemma 4 models")
 
 	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")

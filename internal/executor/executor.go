@@ -417,6 +417,18 @@ func RunLoop(
 		}
 
 		if len(validCalls) == 0 {
+			// Detect model stall: empty finish reason with no content means the model
+			// hit context limits or crashed mid-stream without a proper stop signal.
+			// Return an error so the caller can surface it rather than silently
+			// treating a stalled response as "no findings".
+			if acc.FinishReason == "" && acc.Content == "" {
+				sess.LogTurnSummary(debug.TurnSummary{
+					TurnIndex:      i + 1,
+					FinishReason:   "empty",
+					ReasoningChars: len(acc.Reasoning),
+				})
+				return "", fmt.Errorf("model returned empty response on turn %d (possible context window overflow or stream failure)", i+1)
+			}
 			sess.LogTurnSummary(debug.TurnSummary{
 				TurnIndex:          i + 1,
 				FinishReason:       acc.FinishReason,
