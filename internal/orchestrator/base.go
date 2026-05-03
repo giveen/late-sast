@@ -116,11 +116,11 @@ func (o *BaseOrchestrator) Submit(text string) error {
 // onGPUReleased closures that drive the per-turn status events.
 //
 // When a coordinator is present:
-//   - onStartTurn  → "queued"  (agent is waiting for the GPU)
+//   - onStartTurn   → "queued"   (agent is waiting for the GPU)
 //   - onGPUAcquired → "thinking" (agent now holds the GPU and is streaming)
 //   - onGPUReleased → "working"  (agent released the GPU and is running tools)
 //
-// Without a coordinator the legacy behaviour is preserved:
+// Without a coordinator the legacy behavior is preserved:
 //   - onStartTurn  → "thinking"  (no queuing concept)
 //   - onGPUAcquired / onGPUReleased → nil (never called)
 func (o *BaseOrchestrator) buildRunLoopCallbacks(ctx context.Context) (

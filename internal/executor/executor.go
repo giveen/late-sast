@@ -365,7 +365,9 @@ func RunLoop(
 		}
 
 		if coordinator != nil {
-			coordinator.AcquireGPULock()
+			if err := coordinator.AcquireGPULock(ctx); err != nil {
+				return "", err
+			}
 			if onGPUAcquired != nil {
 				onGPUAcquired()
 			}
