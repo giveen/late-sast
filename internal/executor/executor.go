@@ -378,9 +378,9 @@ func RunLoop(
 
 		if coordinator != nil {
 			coordinator.ReleaseGPULock()
-			if onGPUReleased != nil {
-				onGPUReleased()
-			}
+			// onGPUReleased ("working") is deferred to just before tool execution
+			// so the status only appears when the agent is actually running tools,
+			// not on stream errors or turns that end without tool calls.
 		}
 
 		if err != nil {
@@ -466,6 +466,12 @@ func RunLoop(
 		case <-ctx.Done():
 			return lastContent + "\n\n(Stopped by user)", nil
 		default:
+		}
+
+		// Emit "working" now: the GPU lock was already released, and the agent is
+		// actually about to run tool calls (not just finishing a no-tool turn).
+		if onGPUReleased != nil {
+			onGPUReleased()
 		}
 
 		stats, err := ExecuteToolCallsWithStats(ctx, sess, acc.ToolCalls, middlewares)

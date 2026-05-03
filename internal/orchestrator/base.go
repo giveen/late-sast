@@ -173,7 +173,13 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		return "", err
 	}
 
-	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+	// Emit the correct initial status: "queued" when a coordinator is present
+	// (the first turn will immediately queue for the GPU), "thinking" otherwise.
+	if o.Coordinator() != nil {
+		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
+	} else {
+		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+	}
 	defer func() {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}()
