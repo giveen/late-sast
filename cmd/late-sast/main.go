@@ -1083,13 +1083,13 @@ func fetchComplexityMeta(ctx context.Context, mcpCli *mcp.Client, repoPath strin
 			TotalNodes int `json:"total_nodes"`
 			TotalEdges int `json:"total_edges"`
 		} `json:"stats"`
-		TotalFiles int `json:"total_files"`
-		TotalNodes int `json:"total_nodes"`
-		TotalEdges int `json:"total_edges"`
-		FileCount  int `json:"file_count"`
-		NodeCount  int `json:"node_count"`
-		EdgeCount  int `json:"edge_count"`
-		RouteCount int `json:"route_count"`
+		TotalFiles int      `json:"total_files"`
+		TotalNodes int      `json:"total_nodes"`
+		TotalEdges int      `json:"total_edges"`
+		FileCount  int      `json:"file_count"`
+		NodeCount  int      `json:"node_count"`
+		EdgeCount  int      `json:"edge_count"`
+		RouteCount int      `json:"route_count"`
 		Hotspots   []string `json:"hotspots"`
 		Clusters   []struct {
 			ID    string   `json:"id"`

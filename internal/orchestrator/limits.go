@@ -90,4 +90,3 @@ func CalculateTimeout(meta ComplexityMeta, maxTimeoutCeiling time.Duration) time
 	}
 	return t
 }
-

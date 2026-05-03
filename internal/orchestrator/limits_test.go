@@ -26,7 +26,7 @@ func TestCalculateTurns_LanguageMultiplierCpp(t *testing.T) {
 	// C++ multiplier 1.5x: base 100 → 150
 	meta := ComplexityMeta{RouteCount: 10, HotspotCount: 4, PrimaryLanguage: "c++"}
 	base := 50 + (5 * 10) + (10 * 4) // 140
-	want := int(float64(base) * 1.5)  // 210
+	want := int(float64(base) * 1.5) // 210
 	got := CalculateTurns(meta, 500)
 	if got != want {
 		t.Fatalf("CalculateTurns(c++) = %d, want %d", got, want)
@@ -37,7 +37,7 @@ func TestCalculateTurns_LanguageMultiplierPython(t *testing.T) {
 	// Python multiplier 0.8x
 	meta := ComplexityMeta{RouteCount: 10, HotspotCount: 4, PrimaryLanguage: "python"}
 	base := 50 + (5 * 10) + (10 * 4) // 140
-	want := int(float64(base) * 0.8)  // 112
+	want := int(float64(base) * 0.8) // 112
 	got := CalculateTurns(meta, 500)
 	if got != want {
 		t.Fatalf("CalculateTurns(python) = %d, want %d", got, want)
@@ -89,4 +89,3 @@ func TestCalculateTimeout_Capped(t *testing.T) {
 		t.Fatalf("CalculateTimeout() = %s, want cap %s", got, 60*time.Minute)
 	}
 }
-

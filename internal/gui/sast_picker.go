@@ -45,13 +45,23 @@ func (a *App) RunSAST(
 	// do blocking I/O) and then updates the UI via fyne.Do.
 	transition := func(res SASTPickerResult) {
 		rootAgent, initialMsg := setupFn(res)
+		
+		// CRITICAL: Ensure buildMainLayout (which starts the event loop) has
+		// fully executed on the Fyne main goroutine BEFORE submitting the initial
+		// message. Otherwise the event loop may not be running when the agent
+		// starts, causing events (like ProjectMapLoadedEvent) to be lost.
+		// Use a channel to synchronize: block until buildMainLayout completes.
+		layoutReady := make(chan struct{})
 		fyne.Do(func() {
 			a.window.Resize(fyne.NewSize(1150, 750))
 			a.buildMainLayout(rootAgent, nil)
 			a.window.SetContent(a.tabs)
+			close(layoutReady)  // Signal that buildMainLayout is done
 		})
+		
 		if initialMsg != "" {
 			go func() {
+				<-layoutReady  // Wait for the layout to be fully set up and event loop running
 				time.Sleep(300 * time.Millisecond)
 				fyne.Do(func() {
 					a.mainChat.AppendMessage("user", initialMsg)

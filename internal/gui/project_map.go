@@ -104,11 +104,11 @@ func hotspotColor() color.Color {
 type ProjectMapPanel struct {
 	widget.BaseWidget
 
-	mu       sync.RWMutex
-	cards    []*clusterCard
-	fileMap  map[string]*clusterCard // file path → owning card
-	data     common.ArchitectureData
-	loaded   bool
+	mu      sync.RWMutex
+	cards   []*clusterCard
+	fileMap map[string]*clusterCard // file path → owning card
+	data    common.ArchitectureData
+	loaded  bool
 
 	scroll *container.Scroll
 	grid   *fyne.Container
