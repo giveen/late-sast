@@ -27,6 +27,7 @@ import (
 	"late/internal/common"
 	appconfig "late/internal/config"
 	"late/internal/debug"
+	"late/internal/executor"
 	"late/internal/gui"
 	"late/internal/mcp"
 	"late/internal/orchestrator"
@@ -506,6 +507,7 @@ func main() {
 		}
 
 		rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
+		rootAgent.SetCoordinator(executor.GlobalGPU)
 		return sessionResult{sess: sess, rootAgent: rootAgent, initialMsg: initialMessage, debugLog: debugLog}
 	}
 

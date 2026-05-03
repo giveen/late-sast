@@ -342,7 +342,15 @@ func ConsumeStream(
 // RunLoop handles the core, blocking event loop for autonomous agents.
 // It forces the sequence: inference stream -> verifiable accumulation -> history commit -> safe tool execution.
 // If the deterministic tool extraction yields zero calls, the loop securely collapses and returns execution control.
-
+//
+// When coordinator is non-nil the GPU lock is held only for the duration of
+// the HTTP stream (StartStream → ConsumeStream). The lock is released before
+// tool execution so that other agents can "Think" while this agent "Works".
+// The optional callbacks fire at each state transition:
+//
+//   - onStartTurn    — called before attempting to acquire the GPU lock (→ "queued")
+//   - onGPUAcquired  — called immediately after the GPU lock is obtained (→ "thinking")
+//   - onGPUReleased  — called immediately after the GPU lock is released (→ "working")
 func RunLoop(
 	ctx context.Context,
 	sess *session.Session,
@@ -352,6 +360,9 @@ func RunLoop(
 	onEndTurn func(),
 	onStreamChunk func(common.StreamResult),
 	middlewares []common.ToolMiddleware,
+	coordinator *ResourceCoordinator,
+	onGPUAcquired func(),
+	onGPUReleased func(),
 ) (string, error) {
 	var lastContent string
 	var previousToolSig string
@@ -362,8 +373,25 @@ func RunLoop(
 			onStartTurn()
 		}
 
+		if coordinator != nil {
+			if err := coordinator.AcquireGPULock(ctx); err != nil {
+				return "", err
+			}
+			if onGPUAcquired != nil {
+				onGPUAcquired()
+			}
+		}
+
 		streamCh, errCh := sess.StartStream(ctx, extraBody)
 		acc, err := ConsumeStream(ctx, streamCh, errCh, onStreamChunk)
+
+		if coordinator != nil {
+			coordinator.ReleaseGPULock()
+			// onGPUReleased ("working") is deferred to just before tool execution
+			// so the status only appears when the agent is actually running tools,
+			// not on stream errors or turns that end without tool calls.
+		}
+
 		if err != nil {
 			return "", err
 		}
@@ -470,6 +498,12 @@ func RunLoop(
 		case <-ctx.Done():
 			return lastContent + "\n\n(Stopped by user)", nil
 		default:
+		}
+
+		// Emit "working" now: the GPU lock was already released, and the agent is
+		// actually about to run tool calls (not just finishing a no-tool turn).
+		if onGPUReleased != nil {
+			onGPUReleased()
 		}
 
 		stats, err := ExecuteToolCallsWithStats(ctx, sess, validCalls, middlewares)
