@@ -9,6 +9,20 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 ## [v1.8.2] — 2026-05-02
 
 ### Added
+- **Async multi-agent GPU coordination** ([#7](https://github.com/giveen/late-sast/pull/7)):
+  - `ResourceCoordinator` (`internal/executor/coordinator.go`) — channel-semaphore (capacity 1) so `AcquireGPULock(ctx)` respects context cancellation. `ReleaseGPULock()` panics on double-release (fail-loud, like `sync.Mutex`). `GlobalGPU` singleton wired to the root orchestrator at startup via `SetCoordinator(executor.GlobalGPU)`.
+  - `RunLoop` extended with `coordinator`, `onGPUAcquired`, `onGPUReleased` — lock is held **only** during `StartStream`+`ConsumeStream`, released immediately after streaming. `onGPUReleased` ("working") is deferred to just before `ExecuteToolCallsWithStats` so the ⚙ status only appears when tool calls are actually about to run, never on stream errors or no-tool turns. Coordinator auto-propagates parent → child in `NewSubagentOrchestrator`.
+  - Status lifecycle: with coordinator — `queued` → `thinking` → `working` → `queued` …; without coordinator — legacy `thinking` only (fully backward-compatible).
+- **Blackboard inter-agent communication** (`internal/orchestrator/blackboard.go`) — thread-safe key-value store (`Write`/`Read`/`ReadAll`/`Delete`) for passing findings between concurrent agents (e.g. Dependency Agent writes a vulnerable library; Taint-Analysis Agent reads it to prioritise entry points). `GlobalBlackboard` singleton provided for default runs.
+- **Live GPU-state tab labels** (`internal/gui/events.go`) — tab label updated on every status transition via `setTabStatus`; no new widget types required:
+
+  | Status | Tab prefix |
+  |--------|-----------|
+  | `queued` | ⏳ |
+  | `thinking` | 🧠 |
+  | `working` | ⚙ |
+  | `idle` / `closed` / `error` | *(base label restored)* |
+
 - **Setup agent: Step 0 — smart install detection** (`instruction-sast-setup.md`):
   - Before cloning, the setup agent now fetches the project README and attempts two quick-install passes.
   - **Pass A — package-manager one-liners**: recognises `go install …@latest`, `pip install`, `pipx install`, `npm install -g`, `cargo install`, `gem install`. When found, spins up a minimal toolchain container (`golang:1.23`, `python:3.11-slim`, `node:20-slim`, `rust:1.80-slim`) and runs the command directly, skipping clone and build entirely. For projects like Fabric this cuts ~35 turn shell loops down to a single `go install` call.
@@ -30,6 +44,11 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 - **Error subagent tabs left open** (`internal/gui/events.go`): the `"error"` event case previously kept the subagent tab open ("so the user can read the error") but the error is already visible in the main tab as the `spawn_subagent` tool result. Error tabs now close automatically and fire a system notification, same as successful subagent completion.
 - **Tool result debug log accuracy** — `LogDebugToolResult` is now called after error-wrapping so the debug log records the final error string seen by the orchestrator rather than the raw pre-wrap message.
 - **`--subagent-max-turns` default** lowered from 500 → 150 to cap runaway subagents and reduce context pressure.
+- **GPU coordination — Copilot review fixes** ([#7](https://github.com/giveen/late-sast/pull/7)):
+  - **`Submit()` initial status flicker**: `Submit()` now emits `"queued"` (not `"thinking"`) when a coordinator is attached, consistent with `Execute()`. Eliminates the `thinking→queued→thinking` flash in GUI tabs when a new session is submitted while waiting for the GPU.
+  - **TUI `queued`/`working` statuses unhandled**: `update.go` now maps `"queued"` → `StateThinking` + "Queued..." and `"working"` → `StateThinking` + "Working..." so the TUI shows the correct spinner text when a coordinator is active outside the GUI.
+  - **Go error style**: `AcquireGPULock` error string lowercased to `"gpu lock acquisition canceled: ..."` per Go conventions.
+  - **Flaky timing test**: `TestResourceCoordinator_BlocksThenSucceeds` replaced `time.Sleep(30ms)` with a channel handshake — goroutine signals just before blocking on `AcquireGPULock`, then main releases; no scheduler-dependent delay.
 
 ### Changed
 - **History compaction gated on context pressure** (`internal/session/session.go`): `compactHistoryForContext` now only runs when `lastTokenCount / contextSize ≥ 0.75` (75% threshold). When the context window size is unknown (backend does not report it), compaction still runs as before on every save. Token count is populated after each turn via `SetLastTokenCount`.
