@@ -51,7 +51,8 @@ func main() {
 	outputReq := flag.String("output", "", "Directory to write the SAST report (default: current directory)")
 	timeoutReq := flag.Duration("timeout", 0, "Wall-clock scan timeout (e.g. 90m, 2h). 0 = no limit")
 	versionReq := flag.Bool("version", false, "Show version")
-	subagentMaxTurns := flag.Int("subagent-max-turns", 150, "Maximum turns per subagent")
+	subagentMaxTurns := flag.Int("subagent-max-turns", 300, "Maximum turns per subagent")
+	subagentTimeout := flag.Duration("subagent-timeout", 45*time.Minute, "Wall-clock timeout per subagent run (e.g. 30m, 1h)")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token for Gemma 4 models")
 
 	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")
@@ -566,7 +567,7 @@ func main() {
 				}
 				return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 			},
-			DefaultTimeout:    20 * time.Minute,
+			DefaultTimeout:    *subagentTimeout,
 			HeartbeatInterval: 30 * time.Second,
 			Heartbeat: func(agentType, goal string, elapsed time.Duration) {
 				if debugLog != nil && debugLog.Enabled() {
@@ -625,7 +626,7 @@ func main() {
 					}
 					return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 				},
-				DefaultTimeout:    20 * time.Minute,
+				DefaultTimeout:    *subagentTimeout,
 				HeartbeatInterval: 30 * time.Second,
 				Heartbeat: func(agentType, goal string, elapsed time.Duration) {
 					if debugLog != nil && debugLog.Enabled() {
