@@ -335,6 +335,8 @@ After the container is running (whether via Path A, Path B, or Path C), install 
 
 ### Step 5a — Core utilities + build essentials
 
+Install only lightweight, universally-needed tools here. **Do NOT install JDK or Node.js in this step** — they are handled conditionally below.
+
 ```bash
 docker exec <container-name> sh -c "
   if command -v apt-get >/dev/null 2>&1; then
@@ -342,33 +344,25 @@ docker exec <container-name> sh -c "
     apt-get install -y -qq \
       curl wget bash procps git jq \
       build-essential gcc g++ make \
-      default-jdk-headless \
       python3 python3-pip python3-venv pipx \
-      nodejs npm \
       2>/dev/null || true
   elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache \
       curl wget bash procps git jq \
       build-base gcc g++ make \
-      openjdk17-jre-headless \
       python3 py3-pip pipx \
-      nodejs npm \
       2>/dev/null || true
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q \
       curl wget bash procps git jq \
       gcc gcc-c++ make \
-      java-17-openjdk-headless \
       python3 python3-pip \
-      nodejs npm \
       2>/dev/null || true
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y -q \
       curl wget bash procps git jq \
       gcc gcc-c++ make \
-      java-17-openjdk-headless \
       python3 python3-pip \
-      nodejs npm \
       2>/dev/null || true
   else
     echo 'no known package manager — skipping build essentials bootstrap'
@@ -376,10 +370,58 @@ docker exec <container-name> sh -c "
 " || true
 ```
 
+#### Step 5a-ii — Conditional: JDK (Java/Kotlin/Groovy projects only)
+
+Only install a JDK if the project contains Java source markers (`*.java`, `*.kt`, `*.kts`, `pom.xml`, `*.gradle`). JDK downloads are large (150–400 MB) and are not needed for Node.js, Go, Python, or Electron projects.
+
+```bash
+HAS_JAVA=$(docker exec <container-name> sh -c "
+  find /repo -maxdepth 4 \( -name '*.java' -o -name '*.kt' -o -name '*.kts' -o -name 'pom.xml' -o -name '*.gradle' \) -print -quit 2>/dev/null
+" 2>/dev/null)
+if [ -n "$HAS_JAVA" ]; then
+  docker exec <container-name> sh -c "
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y -qq default-jdk-headless 2>/dev/null || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache openjdk17-jre-headless 2>/dev/null || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q java-17-openjdk-headless 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q java-17-openjdk-headless 2>/dev/null || true
+    fi
+  " || true
+fi
+```
+
+#### Step 5a-iii — Conditional: Node.js/npm (JS/TS projects only)
+
+Only install Node.js and npm if they are not already present AND the project has JavaScript/TypeScript sources.
+
+```bash
+if ! docker exec <container-name> sh -c "command -v node >/dev/null 2>&1" 2>/dev/null; then
+  HAS_NODE=$(docker exec <container-name> sh -c "
+    find /repo -maxdepth 3 \( -name 'package.json' -o -name '*.ts' -o -name '*.js' \) -print -quit 2>/dev/null
+  " 2>/dev/null)
+  if [ -n "$HAS_NODE" ]; then
+    docker exec <container-name> sh -c "
+      if command -v apt-get >/dev/null 2>&1; then
+        apt-get install -y -qq nodejs npm 2>/dev/null || true
+      elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache nodejs npm 2>/dev/null || true
+      elif command -v yum >/dev/null 2>&1; then
+        yum install -y -q nodejs npm 2>/dev/null || true
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y -q nodejs npm 2>/dev/null || true
+      fi
+    " || true
+  fi
+fi
+```
+
 Verify core tools:
 ```bash
 docker exec <container-name> sh -c "
-  for t in curl wget bash git jq gcc java python3; do
+  for t in curl wget bash git jq gcc python3; do
     printf '%s: ' \$t
     command -v \$t >/dev/null 2>&1 && echo 'ok' || echo 'missing'
   done

@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json" // used for hash generation
 	"errors"
@@ -361,7 +362,34 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	cmd := newShellCommand(execCtx, params.Command)
 	cmd.Dir = params.Cwd
 
-	output, err := cmd.CombinedOutput()
+	// Place cmd in its own process group so killProcessGroup can reach all
+	// descendants (e.g. `docker exec` child processes that inherit our pipes).
+	setProcessGroup(cmd)
+
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	var err error
+	if err = cmd.Start(); err != nil {
+		return fmt.Sprintf("Error starting command: %v", err), nil
+	}
+
+	// Wait for the command in a goroutine; kill the whole process group if
+	// the context deadline fires first so the pipe is closed and Wait returns.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err = <-done:
+		// command finished normally
+	case <-execCtx.Done():
+		killProcessGroup(cmd)
+		<-done // wait for Wait() to unblock after the kill
+		err = execCtx.Err()
+	}
+
+	output := outBuf.Bytes()
 
 	// Check for binary output
 	if IsBinary(output) {

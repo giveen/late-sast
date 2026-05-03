@@ -49,3 +49,14 @@ func newShellCommand(ctx context.Context, command string) *exec.Cmd {
 		"-EncodedCommand", encoded,
 	)
 }
+
+// setProcessGroup is a no-op on Windows; process-group semantics differ and
+// exec.CommandContext already terminates the process on cancellation.
+func setProcessGroup(_ *exec.Cmd) {}
+
+// killProcessGroup on Windows falls back to killing the direct process only.
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}

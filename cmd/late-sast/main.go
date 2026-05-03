@@ -463,7 +463,7 @@ func main() {
 		sess.Registry.Register(&tool.ShellTool{
 			Analyzer:     &tool.SASTBashAnalyzer{},
 			SkipSafePath: true,
-			Timeout:      2 * time.Minute,
+			Timeout:      5 * time.Minute,
 		})
 		sess.Registry.Register(tool.NewReadFileTool())
 		sess.Registry.Register(tool.WriteFileTool{})
