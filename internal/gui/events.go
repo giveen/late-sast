@@ -23,6 +23,8 @@ func (a *App) startEventLoop(
 	agentLabel string,
 	onUsage func(used, max int),
 ) {
+	currentPhase := "STOP"
+
 	// setTabStatus updates the tab label with an emoji prefix and optional turn
 	// counter. Root tabs (tabItem == nil) are left unchanged.
 	setTabStatus := func(prefix string, turn, maxTurns int) {
@@ -30,11 +32,17 @@ func (a *App) startEventLoop(
 			return
 		}
 		text := agentLabel
+		if currentPhase != "" {
+			text = fmt.Sprintf("%s · %s", text, currentPhase)
+		}
 		if turn > 0 {
 			if maxTurns > 0 {
 				text = fmt.Sprintf("%s (%d/%d)", agentLabel, turn, maxTurns)
 			} else {
 				text = fmt.Sprintf("%s (%d)", agentLabel, turn)
+			}
+			if currentPhase != "" {
+				text = fmt.Sprintf("%s · %s", text, currentPhase)
 			}
 		}
 		if prefix != "" {
@@ -44,6 +52,9 @@ func (a *App) startEventLoop(
 			tabItem.Text = text
 			a.tabs.Refresh()
 		})
+	}
+	if tabItem != nil {
+		setTabStatus("", 0, 0)
 	}
 
 	go func() {
@@ -225,6 +236,26 @@ func (a *App) startEventLoop(
 
 			case common.ProjectMapLoadedEvent:
 				a.SetArchitecture(e.Data)
+
+			case common.PhaseEvent:
+				if a.currentPhaseLabel != nil && o.ID() == "main" {
+					phaseText := "Current Phase: " + e.To
+					fyne.Do(func() {
+						a.currentPhaseLabel.SetText(phaseText)
+					})
+				}
+				if tabItem != nil {
+					currentPhase = e.To
+					setTabStatus("", currentTurn, currentMaxTurns)
+				}
+
+			case common.MissionSnapshotEvent:
+				if o.ID() == "main" {
+					snapshot := e
+					fyne.Do(func() {
+						a.updateMissionSnapshot(snapshot)
+					})
+				}
 
 			case common.ChildAddedEvent:
 				// Wire up a new subagent tab.

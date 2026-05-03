@@ -38,6 +38,14 @@ type TurnSummary struct {
 	ToolFailures       int    `json:"tool_failures,omitempty"`
 	ToolBlocked        int    `json:"tool_blocked,omitempty"`
 	ToolTimedOut       int    `json:"tool_timed_out,omitempty"`
+	// Token accounting — populated from acc.Usage so the log file is
+	// self-contained for diagnosing context-limit vs output-budget events.
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+	// NCtx is the backend context-window size reported by /props at turn time.
+	// Zero means the value was not available (non-llama.cpp backend or not fetched).
+	NCtx int `json:"n_ctx,omitempty"`
 }
 
 // New creates a new debug logger. If outputDir is empty, logging is disabled.

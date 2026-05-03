@@ -527,6 +527,7 @@ func main() {
 
 		rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
 		rootAgent.SetCoordinator(executor.GlobalGPU)
+		orchestrator.GlobalBlackboard.ResetExploitState()
 		return sessionResult{sess: sess, rootAgent: rootAgent, initialMsg: initialMessage, debugLog: debugLog}
 	}
 
@@ -558,7 +559,7 @@ func main() {
 				orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
 				orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
 			)
-			if notifyRootAgent != nil && len(cachedArchData.Clusters) > 0 {
+			if notifyRootAgent != nil {
 				notifyRootAgent.PushEvent(common.ProjectMapLoadedEvent{
 					OrcID: notifyRootAgent.ID(),
 					Data:  cachedArchData,
@@ -626,6 +627,7 @@ func main() {
 				if agentType == "auditor" {
 					agentClient = auditorClient
 				}
+				goal = buildMissionTurnGoal(agentType, goal)
 				fetchMetaOnce(filepath.Join(workDir, "repo"), rootAgent)
 				turns, timeout := resolveBudget()
 				child, err := agent.NewSubagentOrchestrator(
@@ -645,6 +647,7 @@ func main() {
 				if err != nil {
 					return "", err
 				}
+				persistMissionTurnResult(agentType, res)
 				return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 			},
 			DefaultTimeout:    *subagentTimeout,
@@ -688,6 +691,7 @@ func main() {
 					if agentType == "auditor" {
 						agentClient = auditorClient
 					}
+					goal = buildMissionTurnGoal(agentType, goal)
 					fetchMetaOnce(filepath.Join(workDir, "repo"), rootAgent)
 					turns, _ := resolveBudget()
 					hotspotSet := make(map[string]bool, len(cachedArchData.Hotspots))
@@ -715,6 +719,7 @@ func main() {
 					if err != nil {
 						return "", err
 					}
+					persistMissionTurnResult(agentType, res)
 					return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 				},
 				DefaultTimeout:    *subagentTimeout,
@@ -1012,6 +1017,139 @@ func truncateForLog(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
+type strategistTurnResult struct {
+	Action      string   `json:"action"`
+	AttemptID   string   `json:"attempt_id"`
+	Hypothesis  string   `json:"hypothesis"`
+	Constraints []string `json:"constraints"`
+}
+
+type executorTurnResult struct {
+	Turn                 int    `json:"turn"`
+	AttemptID            string `json:"attempt_id"`
+	Outcome              string `json:"outcome"`
+	Reason               string `json:"reason"`
+	SandboxLogs          string `json:"sandbox_logs"`
+	StrategistConstraint string `json:"strategist_constraint"`
+}
+
+func extractFirstJSONObject(raw string) (string, error) {
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		return "", fmt.Errorf("no JSON object found")
+	}
+	return raw[start : end+1], nil
+}
+
+func buildMissionTurnGoal(agentType, goal string) string {
+	b := orchestrator.GlobalBlackboard
+	switch agentType {
+	case "strategist":
+		history := b.ExploitHistory()
+		constraints := b.StrategistConstraints()
+		hypothesis := b.CurrentHypothesis()
+		evidence := b.ExplorerEvidence()
+
+		historyJSON, _ := json.Marshal(history)
+		constraintsJSON, _ := json.Marshal(constraints)
+
+		return goal + "\n\n[blackboard]\n" +
+			"current_hypothesis: " + hypothesis + "\n" +
+			"strategist_constraints: " + string(constraintsJSON) + "\n" +
+			"exploit_history: " + string(historyJSON) + "\n" +
+			"latest_explorer_evidence: " + evidence
+
+	case "explorer":
+		hypothesis := b.CurrentHypothesis()
+		constraintsJSON, _ := json.Marshal(b.StrategistConstraints())
+		return goal + "\n\n[blackboard]\n" +
+			"current_hypothesis: " + hypothesis + "\n" +
+			"strategist_constraints: " + string(constraintsJSON)
+
+	case "executor":
+		hypothesis := b.CurrentHypothesis()
+		evidence := b.ExplorerEvidence()
+		constraintsJSON, _ := json.Marshal(b.StrategistConstraints())
+		return goal + "\n\n[blackboard]\n" +
+			"current_hypothesis: " + hypothesis + "\n" +
+			"strategist_constraints: " + string(constraintsJSON) + "\n" +
+			"explorer_evidence: " + evidence
+	default:
+		return goal
+	}
+}
+
+func persistMissionTurnResult(agentType, raw string) {
+	b := orchestrator.GlobalBlackboard
+
+	jsonPart, err := extractFirstJSONObject(raw)
+	if err != nil {
+		if agentType == "executor" {
+			b.AppendExploitHistory(orchestrator.ExploitHistoryEntry{
+				Turn:    len(b.ExploitHistory()) + 1,
+				Outcome: "FAILED",
+				Reason:  "executor response was not valid JSON",
+			})
+		}
+		return
+	}
+
+	switch agentType {
+	case "strategist":
+		var out strategistTurnResult
+		if err := json.Unmarshal([]byte(jsonPart), &out); err != nil {
+			return
+		}
+		if out.Hypothesis != "" {
+			b.SetCurrentHypothesis(out.Hypothesis)
+		}
+		for _, c := range out.Constraints {
+			b.AddStrategistConstraint(c)
+		}
+
+	case "explorer":
+		b.SetExplorerEvidence(jsonPart)
+
+	case "executor":
+		var out executorTurnResult
+		if err := json.Unmarshal([]byte(jsonPart), &out); err != nil {
+			b.AppendExploitHistory(orchestrator.ExploitHistoryEntry{
+				Turn:    len(b.ExploitHistory()) + 1,
+				Outcome: "FAILED",
+				Reason:  "executor response failed JSON decode",
+			})
+			return
+		}
+		turn := out.Turn
+		if turn <= 0 {
+			turn = len(b.ExploitHistory()) + 1
+		}
+		b.AppendExploitHistory(orchestrator.ExploitHistoryEntry{
+			Turn:                 turn,
+			AttemptID:            out.AttemptID,
+			Outcome:              out.Outcome,
+			Reason:               out.Reason,
+			SandboxLogs:          out.SandboxLogs,
+			StrategistConstraint: out.StrategistConstraint,
+		})
+	}
+}
+
+func buildMissionSnapshotEvent(orchestratorID string) common.MissionSnapshotEvent {
+	b := orchestrator.GlobalBlackboard
+	e := common.MissionSnapshotEvent{
+		OrcID:             orchestratorID,
+		CurrentHypothesis: b.CurrentHypothesis(),
+		ActiveConstraints: b.StrategistConstraints(),
+	}
+	if last, ok := b.LatestExecutorAttempt(); ok {
+		e.LastExecutorOutcome = last.Outcome
+		e.LastExecutorReason = last.Reason
+	}
+	return e
+}
+
 // indexSASTReferences pre-loads the SAST vulnerability reference library into
 // the shared BM25 index so the scanner subagent never needs to read these files
 // into its conversation context (~128 KB for a typical scan).
@@ -1067,12 +1205,10 @@ func fetchComplexityMeta(ctx context.Context, mcpCli *mcp.Client, repoPath strin
 
 	// The response is free-form text that may contain embedded JSON blocks.
 	// Extract the first {...} block and attempt to unmarshal.
-	start := strings.Index(raw, "{")
-	end := strings.LastIndex(raw, "}")
-	if start < 0 || end <= start {
+	jsonPart, err := extractFirstJSONObject(raw)
+	if err != nil {
 		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("no JSON object in get_architecture response")
 	}
-	jsonPart := raw[start : end+1]
 
 	// Flexible schema — field names vary across codebase-memory-mcp versions.
 	var resp struct {

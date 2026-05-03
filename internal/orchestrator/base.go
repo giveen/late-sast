@@ -35,17 +35,40 @@ type BaseOrchestrator struct {
 
 	// Turn counter — incremented atomically at the start of each RunLoop turn.
 	turnCurrent int64
+
+	stateMachine *StateMachine
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
 	return &BaseOrchestrator{
-		id:          id,
-		sess:        sess,
-		middlewares: middlewares,
-		eventCh:     make(chan common.Event, 100),
-		ctx:         context.Background(),
-		stopCh:      make(chan struct{}),
-		maxTurns:    maxTurns,
+		id:           id,
+		sess:         sess,
+		middlewares:  middlewares,
+		eventCh:      make(chan common.Event, 100),
+		ctx:          context.Background(),
+		stopCh:       make(chan struct{}),
+		maxTurns:     maxTurns,
+		stateMachine: NewStateMachine(PhaseStop),
+	}
+}
+
+func (o *BaseOrchestrator) switchPhase(to Phase, reason string, turn int) {
+	if o.stateMachine == nil {
+		return
+	}
+	from, changed, err := o.stateMachine.SwitchState(to)
+	if err != nil {
+		return
+	}
+	if !changed {
+		return
+	}
+	o.eventCh <- common.PhaseEvent{
+		ID:     o.id,
+		From:   string(from),
+		To:     string(to),
+		Reason: reason,
+		Turn:   turn,
 	}
 }
 
@@ -129,6 +152,7 @@ func (o *BaseOrchestrator) Submit(text string) error {
 	// Emit the correct initial status: "queued" when a coordinator is present
 	// (the first turn will wait for the GPU lock), "thinking" otherwise.
 	atomic.StoreInt64(&o.turnCurrent, 0)
+	o.switchPhase(PhasePlan, "submit received", 0)
 	if o.Coordinator() != nil {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
 	} else {
@@ -164,6 +188,7 @@ func (o *BaseOrchestrator) buildRunLoopCallbacks(ctx context.Context) (
 		mt := o.maxTurns
 		o.mu.Unlock()
 		turn := int(atomic.AddInt64(&o.turnCurrent, 1))
+		o.switchPhase(PhasePlan, "turn start", turn)
 		if coord != nil {
 			o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued", Turn: turn, MaxTurns: mt}
 		} else {
@@ -173,9 +198,14 @@ func (o *BaseOrchestrator) buildRunLoopCallbacks(ctx context.Context) (
 
 	if coord != nil {
 		onGPUAcquired = func() {
+			o.switchPhase(PhaseExplore, "llm stream acquired", int(atomic.LoadInt64(&o.turnCurrent)))
 			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
 		}
-		onGPUReleased = func() {
+	}
+
+	onGPUReleased = func() {
+		o.switchPhase(PhaseExecute, "tool execution", int(atomic.LoadInt64(&o.turnCurrent)))
+		if coord != nil {
 			o.eventCh <- common.StatusEvent{ID: o.id, Status: "working"}
 		}
 	}
@@ -205,6 +235,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	// Emit the correct initial status: "queued" when a coordinator is present
 	// (the first turn will immediately queue for the GPU), "thinking" otherwise.
 	atomic.StoreInt64(&o.turnCurrent, 0)
+	o.switchPhase(PhasePlan, "execute invoked", 0)
 	if o.Coordinator() != nil {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
 	} else {
@@ -225,6 +256,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		usage := o.acc.Usage
 		o.acc.Reset()
 		o.mu.Unlock()
+		o.switchPhase(PhaseFeedback, "turn completed", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
 	}
 
@@ -256,8 +288,10 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	)
 
 	if err != nil {
+		o.switchPhase(PhaseStop, "run errored", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 	} else {
+		o.switchPhase(PhaseStop, "run closed", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "closed"}
 	}
 	return res, err
@@ -289,6 +323,7 @@ func (o *BaseOrchestrator) run() {
 		usage := o.acc.Usage
 		o.acc.Reset()
 		o.mu.Unlock()
+		o.switchPhase(PhaseFeedback, "turn completed", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
 	}
 
@@ -325,8 +360,10 @@ func (o *BaseOrchestrator) run() {
 	o.mu.Unlock()
 
 	if err != nil {
+		o.switchPhase(PhaseStop, "run errored", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 	} else {
+		o.switchPhase(PhaseStop, "run idle", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}
 

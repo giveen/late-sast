@@ -414,8 +414,24 @@ func RunLoop(
 			acc.ToolCalls = validCalls
 
 			if isContextFull || (len(validCalls) == 0 && acc.Content == "") {
+				sess.LogEvent("CONTEXT_LIMIT", "Context window full — unrecoverable", map[string]interface{}{
+					"turn":              i + 1,
+					"total_tokens":      acc.Usage.TotalTokens,
+					"prompt_tokens":     acc.Usage.PromptTokens,
+					"completion_tokens": acc.Usage.CompletionTokens,
+					"n_ctx":             nCtx,
+				})
 				return "", fmt.Errorf("exceeds the available context size")
 			}
+			// Recoverable: hit n_predict output budget, not the context window.
+			sess.LogEvent("OUTPUT_BUDGET_HIT", "finish_reason=length but context not full — hit n_predict budget", map[string]interface{}{
+				"turn":              i + 1,
+				"total_tokens":      acc.Usage.TotalTokens,
+				"prompt_tokens":     acc.Usage.PromptTokens,
+				"completion_tokens": acc.Usage.CompletionTokens,
+				"n_ctx":             nCtx,
+				"valid_tool_calls":  len(validCalls),
+			})
 		}
 
 		// If stopped, the last tool call might be partially streamed and thus invalid JSON.
@@ -453,16 +469,30 @@ func RunLoop(
 
 		if len(validCalls) == 0 {
 			// Detect model stall: empty finish reason with no content means the model
-			// hit context limits or crashed mid-stream without a proper stop signal.
+			// ended without yielding content (stream failure, early termination, or
+			// a context limit edge case) and without a proper stop signal.
 			// Return an error so the caller can surface it rather than silently
 			// treating a stalled response as "no findings".
 			if acc.FinishReason == "" && acc.Content == "" {
+				nCtxAtStall := sess.Client().ContextSize()
 				sess.LogTurnSummary(debug.TurnSummary{
-					TurnIndex:      i + 1,
-					FinishReason:   "empty",
-					ReasoningChars: len(acc.Reasoning),
+					TurnIndex:        i + 1,
+					FinishReason:     "empty",
+					ReasoningChars:   len(acc.Reasoning),
+					PromptTokens:     acc.Usage.PromptTokens,
+					CompletionTokens: acc.Usage.CompletionTokens,
+					TotalTokens:      acc.Usage.TotalTokens,
+					NCtx:             nCtxAtStall,
 				})
-				return "", fmt.Errorf("model returned empty response on turn %d (possible context window overflow or stream failure)", i+1)
+				sess.LogEvent("EMPTY_STREAM", "Model returned empty response — no finish_reason and no content", map[string]interface{}{
+					"turn":              i + 1,
+					"total_tokens":      acc.Usage.TotalTokens,
+					"prompt_tokens":     acc.Usage.PromptTokens,
+					"completion_tokens": acc.Usage.CompletionTokens,
+					"n_ctx":             nCtxAtStall,
+					"reasoning_chars":   len(acc.Reasoning),
+				})
+				return "", fmt.Errorf("model returned empty response on turn %d (possible empty stream, early termination, or context limit)", i+1)
 			}
 			sess.LogTurnSummary(debug.TurnSummary{
 				TurnIndex:          i + 1,
@@ -471,6 +501,10 @@ func RunLoop(
 				DuplicateToolTurns: duplicateToolTurns,
 				ContentChars:       len(acc.Content),
 				ReasoningChars:     len(acc.Reasoning),
+				PromptTokens:       acc.Usage.PromptTokens,
+				CompletionTokens:   acc.Usage.CompletionTokens,
+				TotalTokens:        acc.Usage.TotalTokens,
+				NCtx:               sess.Client().ContextSize(),
 			})
 			return acc.Content, nil
 		}
@@ -511,11 +545,12 @@ func RunLoop(
 			return "", err
 		}
 
-		// If the previous turn had failures or timeouts, reset the duplicate counter.
-		// This allows legitimate retries after a subagent timeout or tool failure
-		// without triggering the duplicate-loop blocker. Only count as duplicate
-		// if the plan repeats AFTER a successful turn.
-		if stats.Failures > 0 || stats.TimedOut > 0 {
+		// If the previous turn had failures, timeouts, or policy blocks, reset
+		// the duplicate counter. This allows legitimate retries after transient
+		// errors or blocked commands without triggering the duplicate-loop
+		// blocker. Only count as duplicate if the plan repeats AFTER a fully
+		// successful turn.
+		if stats.Failures > 0 || stats.TimedOut > 0 || stats.Blocked > 0 {
 			duplicateToolTurns = 0
 		}
 
@@ -530,6 +565,10 @@ func RunLoop(
 			ToolFailures:       stats.Failures,
 			ToolBlocked:        stats.Blocked,
 			ToolTimedOut:       stats.TimedOut,
+			PromptTokens:       acc.Usage.PromptTokens,
+			CompletionTokens:   acc.Usage.CompletionTokens,
+			TotalTokens:        acc.Usage.TotalTokens,
+			NCtx:               sess.Client().ContextSize(),
 		})
 
 		// Also check after tool execution in case user requested stop during a long tool

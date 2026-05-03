@@ -32,6 +32,30 @@ func TestSASTBashAnalyzer_ApproveAll(t *testing.T) {
 	}
 }
 
+func TestSASTBashAnalyzer_BlocksLongSleep(t *testing.T) {
+	a := &SASTBashAnalyzer{}
+
+	result := a.Analyze("sleep 240 && docker exec c find /app -name foo")
+	if !result.IsBlocked {
+		t.Fatal("expected long sleep command to be blocked")
+	}
+	if result.BlockReason == nil {
+		t.Fatal("expected block reason for long sleep command")
+	}
+}
+
+func TestSASTBashAnalyzer_BlocksCumulativeSleep(t *testing.T) {
+	a := &SASTBashAnalyzer{}
+
+	result := a.Analyze("sleep 10 && sleep 10 && sleep 10 && sleep 10 && sleep 10 && sleep 10 && sleep 10 && sleep 10 && sleep 10 && sleep 10")
+	if !result.IsBlocked {
+		t.Fatal("expected cumulative sleep command to be blocked")
+	}
+	if result.BlockReason == nil {
+		t.Fatal("expected block reason for cumulative sleep command")
+	}
+}
+
 // ── SpawnSubagentTool metadata ────────────────────────────────────────────────
 
 func TestSpawnSubagentTool_Metadata(t *testing.T) {
@@ -137,6 +161,25 @@ func TestSpawnSubagentTool_Execute_NoCtxFiles(t *testing.T) {
 	}
 }
 
+func TestSpawnSubagentTool_Execute_EmptyOutputDiagnostic(t *testing.T) {
+	tool := SpawnSubagentTool{
+		Runner: func(_ context.Context, _ string, _ []string, _ string) (string, error) {
+			return "", nil
+		},
+	}
+
+	got, err := tool.Execute(context.Background(), json.RawMessage(`{"goal":"scan","agent_type":"scanner"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "returned empty output") {
+		t.Fatalf("expected empty-output diagnostic, got: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "overflow") {
+		t.Fatalf("diagnostic should not claim overflow, got: %q", got)
+	}
+}
+
 // ── SpawnSubagentTool.CallString ──────────────────────────────────────────────
 
 func TestSpawnSubagentTool_CallString_Normal(t *testing.T) {
@@ -195,7 +238,7 @@ func TestSpawnSubagentTool_AgentTypeEnumContainsAllRoles(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{"coder", "scanner", "binary-scanner", "auditor", "setup"} {
+	for _, want := range []string{"coder", "scanner", "binary-scanner", "auditor", "setup", "strategist", "explorer", "executor"} {
 		if !enumVals[want] {
 			t.Errorf("agent_type enum missing %q; got %v", want, raw)
 		}

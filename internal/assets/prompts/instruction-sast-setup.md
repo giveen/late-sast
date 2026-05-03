@@ -174,15 +174,25 @@ docker network create ${{NETWORK_NAME}}
 
 ### Step 4 — Detect launch strategy
 
-Check the repository root for compose files and a Dockerfile:
+Detect compose files and Dockerfiles using a monorepo-aware search (do not assume root-only):
 ```bash
-ls ${{WORKDIR}}/repo/docker-compose.yml ${{WORKDIR}}/repo/docker-compose.yaml ${{WORKDIR}}/repo/compose.yml 2>/dev/null
+# 1) Quick root check
+ls ${{WORKDIR}}/repo/docker-compose.yml ${{WORKDIR}}/repo/docker-compose.yaml ${{WORKDIR}}/repo/compose.yml ${{WORKDIR}}/repo/compose.yaml 2>/dev/null
 ls ${{WORKDIR}}/repo/Dockerfile ${{WORKDIR}}/repo/dockerfile 2>/dev/null
+
+# 2) If root check is empty, scan common service directories (bounded depth)
+find ${{WORKDIR}}/repo -maxdepth 4 \( -name 'docker-compose.yml' -o -name 'docker-compose.yaml' -o -name 'compose.yml' -o -name 'compose.yaml' -o -name 'Dockerfile' -o -name 'dockerfile' \) \
+  | grep -v -E 'node_modules|vendor|dist|build|\.git' | head -40
 ```
 
-**If a compose file exists → use Path A.**
-**If no compose file but a `Dockerfile` exists → use Path C.**
-**If neither → use Path B.**
+Selection rules:
+- Prefer compose/Dockerfile paths in the same service directory selected by the monorepo check in Step 2.
+- If multiple candidates exist, prefer the one closest to the service root that contains the HTTP entrypoint.
+- If only non-root candidates exist, use them (do not report "no docker" just because root has none).
+
+**If a compose file candidate exists → use Path A with that file path.**
+**If no compose file but a Dockerfile candidate exists → use Path C with that Dockerfile directory as build context.**
+**If neither exists anywhere in the bounded search → use Path B.**
 
 ---
 
@@ -197,9 +207,9 @@ patch_compose_network(
 )
 ```
 The tool adds the external network declaration at the top level and adds it to every service. It is idempotent and preserves comments and formatting. It returns a summary of which services were patched.
-3. Launch with a namespaced project so cleanup is targeted:
+3. Launch with a namespaced project so cleanup is targeted (use the detected compose file path, not always repo root):
 ```bash
-docker compose -p ${{COMPOSE_PROJECT}} -f ${{WORKDIR}}/repo/docker-compose.yml up -d
+docker compose -p ${{COMPOSE_PROJECT}} -f <detected compose file path> up -d
 ```
 If this fails (e.g. image pull error or build error), try `docker compose ... up -d --no-build` to skip any custom build step. If still failing, fall through to Path B (manual sandbox) for the app container only.
 4. Wait 10 s then verify the app is running:
@@ -277,8 +287,19 @@ Check `.env.example` for the exact variable names the app expects.
 ```bash
 docker exec ${{CONTAINER_NAME}} bash -c "<install-command>"
 docker exec -d ${{CONTAINER_NAME}} bash -c "<start-command-with-env-vars>"
-sleep 10
-docker exec ${{CONTAINER_NAME}} bash -c "ps aux | grep -v grep | grep <process-name>"
+
+# Bounded readiness polling (max 90s, 5s interval) instead of blind long sleeps
+docker exec ${{CONTAINER_NAME}} sh -c '
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+  ps aux | grep -E "dotnet|node|python|java|gunicorn|uvicorn|spring|rails" | grep -v grep >/dev/null 2>&1 && { echo READY_PROCESS; exit 0; }
+  if [ -n "${APP_PORT:-}" ] && [ "$APP_PORT" != "unknown" ]; then
+    wget -qO- --timeout=3 "http://127.0.0.1:$APP_PORT/" >/dev/null 2>&1 && { echo READY_HTTP; exit 0; }
+  fi
+  sleep 5
+done
+echo NOT_READY
+exit 1
+'
 ```
 
 If the install command fails, inspect the error output, try the standard alternative for the detected language (e.g. `pip install -r requirements.txt` → `pip install .`), and retry once.
@@ -288,11 +309,11 @@ If the app still fails to start after injecting env vars, note it in the summary
 
 ### Path C — Build from Dockerfile
 
-When no compose file exists but a `Dockerfile` is present at the repo root, build and run it directly. The source is still mounted read-only at `/app` so static analysis tools have access to the full codebase regardless of what the image copies in.
+When no compose file exists but a Dockerfile candidate is present (root or subdirectory), build and run it directly. The source is still mounted read-only at `/app` so static analysis tools have access to the full codebase regardless of what the image copies in.
 
 **Step C1 — Build the image:**
 ```bash
-docker build -t ${{CONTAINER_NAME}}-image ${{WORKDIR}}/repo 2>&1 | tail -5
+docker build -t ${{CONTAINER_NAME}}-image -f <detected Dockerfile path> <detected Dockerfile directory> 2>&1 | tail -5
 ```
 If the build fails, fall through to Path B (do **not** use the partial image).
 

@@ -172,6 +172,13 @@ func (s *Session) LogTurnSummary(summary debug.TurnSummary) {
 	}
 }
 
+// LogEvent emits a generic named event when debug logging is enabled.
+func (s *Session) LogEvent(eventType, message string, context map[string]interface{}) {
+	if s.debugLogger != nil && s.debugLogger.Enabled() {
+		s.debugLogger.LogEvent(eventType, message, context)
+	}
+}
+
 // AddToolResultMessage adds a tool response message to history.
 func (s *Session) AddToolResultMessage(toolCallID, content string) error {
 	s.History = append(s.History, client.ChatMessage{
@@ -304,11 +311,13 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 			toolNames = append(toolNames, t.Function.Name)
 		}
 		s.debugLogger.LogEvent("LLM_REQUEST", "Sending request to LLM", map[string]interface{}{
-			"model":       s.client.Model(),
-			"base_url":    s.client.BaseURL(),
-			"history_len": len(s.History),
-			"tools":       toolNames,
-			"max_tokens":  s.maxTokens,
+			"model":            s.client.Model(),
+			"base_url":         s.client.BaseURL(),
+			"history_len":      len(s.History),
+			"tools":            toolNames,
+			"max_tokens":       s.maxTokens,
+			"n_ctx":            s.client.ContextSize(),
+			"last_token_count": s.lastTokenCount,
 		})
 	}
 

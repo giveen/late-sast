@@ -202,6 +202,27 @@ Use `query_graph` to find authentication-gated routes and verify access controls
 ### Step 7 — Live exploit verification
 **If `App started: false` OR `App port: unknown`** — skip this step entirely. Mark all CONFIRMED and LIKELY findings as **UNREACHABLE (app not running / port unknown)** and note in the Coverage summary that live verification was skipped. Focus your remaining budget on deeper graph analysis (re-run Steps 3–6 on any routes not yet traced).
 
+Before declaring the app "still building" or restarting the scanner, run a bounded readiness probe. Do not use long fixed sleeps.
+
+Readiness probe rules:
+- Never run a single `sleep` longer than 15 seconds.
+- Never use cumulative waiting longer than 90 seconds for readiness checks.
+- Use 5-second polling intervals with explicit checks each round.
+- If process check or HTTP check succeeds, treat the app as up and continue scanning immediately.
+
+Example readiness probe:
+```bash
+docker exec <container> sh -c '
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+  ps aux | grep -E "jellyfin|dotnet" | grep -v grep >/dev/null 2>&1 && { echo READY_PROCESS; break; }
+  wget -qO- --timeout=3 "http://127.0.0.1:<port>/" >/dev/null 2>&1 && { echo READY_HTTP; break; }
+  sleep 5
+done
+'
+```
+
+If all checks fail after the bounded probe, mark findings as `UNREACHABLE` with evidence from the probe commands. Do not claim "still building" without probe evidence.
+
 **If `App started: true`** — for each CONFIRMED or LIKELY finding, attempt a real PoC. Use `sh` and `wget` as the primary method (available in all images); fall back to `bash`/`curl` only if `sh`/`wget` are absent:
 ```bash
 # Primary — works in alpine, slim, and distroless images

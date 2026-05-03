@@ -36,8 +36,8 @@ func (t SpawnSubagentTool) Parameters() json.RawMessage {
 			},
 			"agent_type": { 
 				"type": "string", 
-				"enum": ["coder", "scanner", "binary-scanner", "auditor", "setup"],
-				"description": "The type of subagent to spawn. 'coder' for writing/modifying code. 'setup' for cloning/building/launching a target app. 'scanner' for SAST vulnerability analysis. 'binary-scanner' for compiled binary analysis. 'auditor' for deep security taint-chain analysis of hotspots (uses VulnLLM-R-7B)."
+					"enum": ["coder", "scanner", "binary-scanner", "auditor", "setup", "strategist", "explorer", "executor"],
+					"description": "The type of subagent to spawn. 'coder' for writing/modifying code. 'setup' for cloning/building/launching a target app. 'scanner' for SAST vulnerability analysis. 'binary-scanner' for compiled binary analysis. 'auditor' for deep security taint-chain analysis of hotspots (uses VulnLLM-R-7B). 'strategist' for hypothesis planning and constraints. 'explorer' for graph-first codebase navigation. 'executor' for sandbox PoC execution and raw outcome reporting."
 			}
 		},
 		"required": ["goal", "agent_type"]
@@ -92,11 +92,11 @@ func (t SpawnSubagentTool) Execute(ctx context.Context, args json.RawMessage) (s
 				t.Heartbeat(params.AgentType, params.Goal, time.Since(start))
 			}
 			// If the runner returned no error but also no output, the subagent
-			// stalled (context overflow, unexpected stop, etc.). Return a
+			// likely terminated early or produced an empty stream. Return a
 			// descriptive string so the orchestrator can see what happened and
 			// avoid treating silence as "no findings".
 			if res.err == nil && strings.TrimSpace(res.output) == "" {
-				return fmt.Sprintf("subagent '%s' completed but returned empty output — possible context window overflow or unexpected termination", params.AgentType), nil
+				return fmt.Sprintf("subagent '%s' completed but returned empty output; likely early termination or empty stream", params.AgentType), nil
 			}
 			return res.output, res.err
 		case <-runCtx.Done():
@@ -133,7 +133,7 @@ func (t SpawnSubagentTool) resolveTimeout(agentType string) time.Duration {
 	switch agentType {
 	case "auditor":
 		return 20 * time.Minute
-	case "scanner", "binary-scanner", "setup":
+	case "scanner", "binary-scanner", "setup", "strategist", "explorer", "executor":
 		return 15 * time.Minute
 	default:
 		return 10 * time.Minute

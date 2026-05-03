@@ -74,6 +74,30 @@ type StatusEvent struct {
 
 func (e StatusEvent) OrchestratorID() string { return e.ID }
 
+// PhaseEvent is sent when the orchestrator's higher-level state machine
+// transitions between execution phases.
+type PhaseEvent struct {
+	ID     string
+	From   string // PLAN, EXPLORE, EXECUTE, FEEDBACK, STOP
+	To     string // PLAN, EXPLORE, EXECUTE, FEEDBACK, STOP
+	Reason string // Optional transition reason
+	Turn   int    // Optional turn index when the transition occurred
+}
+
+func (e PhaseEvent) OrchestratorID() string { return e.ID }
+
+// MissionSnapshotEvent carries strategist-loop state projected from the
+// blackboard for compact live display in the GUI.
+type MissionSnapshotEvent struct {
+	OrcID               string
+	CurrentHypothesis   string
+	LastExecutorOutcome string
+	LastExecutorReason  string
+	ActiveConstraints   []string
+}
+
+func (e MissionSnapshotEvent) OrchestratorID() string { return e.OrcID }
+
 // StopRequestedEvent is sent when a stop is requested for an orchestrator.
 type StopRequestedEvent struct {
 	ID string

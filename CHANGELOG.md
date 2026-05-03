@@ -6,6 +6,89 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.8.4] — 2026-05-03
+
+### Added
+- **Strategist/Explorer/Executor role system**:
+  - New subagent role prompts:
+    - `instruction-sast-strategist.md`
+    - `instruction-sast-explorer.md`
+    - `instruction-sast-executor.md`
+  - `spawn_subagent` `agent_type` enum extended to include `strategist`, `explorer`, and `executor`.
+  - Role-specific prompt resolution and strict tool allowlists in `internal/agent/agent.go`:
+    - Strategist: `read_file` only
+    - Explorer: graph/snippet tools + `read_file`
+    - Executor: `bash` + `read_file`
+
+- **Orchestrator phase state machine + events**:
+  - New `StateMachine` with explicit phases and validated transitions in `internal/orchestrator/state_machine.go`:
+    - `PLAN`, `EXPLORE`, `EXECUTE`, `FEEDBACK`, `STOP`
+  - New `PhaseEvent` in `internal/common/interfaces.go` emitted from `BaseOrchestrator` real runtime transition points:
+    - submit/execute/start turn/GPU acquired/GPU released/end turn/idle-closed-error
+  - Added comprehensive tests in `internal/orchestrator/state_machine_test.go`.
+
+- **Typed blackboard exploit-history contract** (`internal/orchestrator/blackboard.go`):
+  - Structured keys:
+    - `exploit_history`, `strategist_constraints`, `current_hypothesis`, `explorer_evidence`, `latest_executor_attempt`
+  - `ExploitHistoryEntry` contract type.
+  - Helper APIs:
+    - `AppendExploitHistory`, `ExploitHistory`, `LatestExecutorAttempt`
+    - `AddStrategistConstraint`, `StrategistConstraints`
+    - `SetCurrentHypothesis`, `CurrentHypothesis`
+    - `SetExplorerEvidence`, `ExplorerEvidence`
+    - `ResetExploitState`
+  - Added tests in `internal/orchestrator/blackboard_test.go`.
+
+- **Mission snapshot GUI panel**:
+  - New `MissionSnapshotEvent` in `internal/common/interfaces.go`.
+  - `late-sast` emits snapshot events from the root orchestrator after mission-turn persistence.
+  - Main GUI now renders a compact Mission Snapshot card in `internal/gui/app.go`:
+    - Current hypothesis
+    - Last executor outcome (+ reason)
+    - Active constraints
+  - `internal/gui/events.go` handles `MissionSnapshotEvent` for live updates.
+
+### Changed
+- **Mission-turn orchestration now actively reads/writes blackboard contract state** (`cmd/late-sast/main.go`):
+  - Before spawning `strategist` / `explorer` / `executor`, goals are enriched with current blackboard context.
+  - After each role completes, JSON output is parsed and persisted back into blackboard.
+  - Root scan startup now resets exploit mission state via `GlobalBlackboard.ResetExploitState()`.
+  - Shared JSON extraction helper introduced and reused by architecture JSON parsing.
+
+- **GUI phase visibility improvements**:
+  - Child tabs now include live phase labels (`... · PLAN/EXPLORE/EXECUTE/FEEDBACK/STOP`) derived from `PhaseEvent` transitions.
+  - Main footer now shows `Current Phase` from real orchestrator state transitions.
+
+- **Project Map event delivery reliability**:
+  - `ProjectMapLoadedEvent` is now emitted whenever architecture metadata is fetched, even when cluster list is empty.
+
+- **SAST setup launch detection updated for monorepos** (`instruction-sast-setup.md`):
+  - Compose/Dockerfile detection changed from root-only to bounded recursive search.
+  - Selection rules now prefer the service directory found by monorepo entrypoint analysis.
+  - Path A uses detected compose path; Path C uses detected Dockerfile path + directory context.
+  - Prevents false "no docker" conclusions when Docker assets live in subdirectories.
+
+### Fixed
+- **Scanner/setup long-wait behavior hardened**:
+  - Added bounded readiness-polling guidance in prompts (`instruction-sast-scanner.md`, `instruction-sast-setup.md`).
+  - Runtime SAST shell policy now blocks:
+    - single `sleep` > 15s
+    - cumulative sleep > 90s
+  - New tests in `internal/tool/sast_tools_test.go` cover long-sleep and cumulative-sleep blocks.
+
+- **Empty-output diagnostics no longer claim context overflow by default**:
+  - `spawn_subagent` empty output message now reports likely early termination/empty stream without asserting overflow.
+  - Added regression test for wording.
+
+- **Executor observability and failure classification**:
+  - Added explicit debug events:
+    - `CONTEXT_LIMIT`
+    - `OUTPUT_BUDGET_HIT`
+    - `EMPTY_STREAM`
+  - Turn summaries now include token accounting and `n_ctx`.
+  - Duplicate-plan reset logic now also resets after policy-blocked turns.
+
+
 ## [v1.8.3] — 2026-05-03
 
 ### Added
