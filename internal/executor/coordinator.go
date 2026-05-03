@@ -48,7 +48,7 @@ func (r *ResourceCoordinator) AcquireGPULock(ctx context.Context) error {
 	case <-r.ch:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("GPU lock acquisition cancelled: %w", ctx.Err())
+		return fmt.Errorf("gpu lock acquisition canceled: %w", ctx.Err())
 	}
 }
 

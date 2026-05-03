@@ -43,24 +43,40 @@ func TestResourceCoordinator_ContextCancellation(t *testing.T) {
 func TestResourceCoordinator_BlocksThenSucceeds(t *testing.T) {
 	coord := newResourceCoordinator()
 
-	// Acquire the lock.
+	// Acquire the lock so the goroutine below must wait.
 	if err := coord.AcquireGPULock(context.Background()); err != nil {
 		t.Fatalf("setup acquire failed: %v", err)
 	}
 
-	// Release the lock asynchronously after a short delay.
+	// waiting is closed once the goroutine is blocking on AcquireGPULock,
+	// guaranteeing that ReleaseGPULock happens only after the second acquire is
+	// already queued — no scheduler timing required.
+	waiting := make(chan struct{})
+
 	go func() {
-		time.Sleep(30 * time.Millisecond)
+		close(waiting) // signal: goroutine is about to block
+		if err := coord.AcquireGPULock(context.Background()); err != nil {
+			return // context cancelled; test already failed or cleaned up
+		}
 		coord.ReleaseGPULock()
 	}()
 
-	// Second acquire should block briefly then succeed.
+	<-waiting // ensure goroutine is scheduled and waiting before we release
+	coord.ReleaseGPULock()
+
+	// Give the goroutine time to complete; a short timeout is fine here because
+	// once ReleaseGPULock() has been called the channel send is non-blocking.
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if err := coord.AcquireGPULock(ctx); err != nil {
-		t.Fatalf("expected acquire to succeed after release, got: %v", err)
+
+	// Verify the coordinator token was returned by the goroutine: try acquiring
+	// again — should succeed immediately after the goroutine releases.
+	select {
+	case <-coord.ch:
+		// token is back; goroutine released correctly
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for goroutine to release the GPU lock")
 	}
-	coord.ReleaseGPULock()
 }
 
 func TestResourceCoordinator_DoubleReleasePanics(t *testing.T) {

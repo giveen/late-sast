@@ -106,7 +106,13 @@ func (o *BaseOrchestrator) Submit(text string) error {
 		return err
 	}
 
-	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+	// Emit the correct initial status: "queued" when a coordinator is present
+	// (the first turn will wait for the GPU lock), "thinking" otherwise.
+	if o.Coordinator() != nil {
+		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
+	} else {
+		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+	}
 	// Start the run loop in a background goroutine
 	go o.run()
 	return nil

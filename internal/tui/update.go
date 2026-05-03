@@ -315,6 +315,18 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		case common.StatusEvent:
 			switch event.Status {
+			case "queued":
+				// Agent is waiting for the GPU lock; show as active but not yet streaming.
+				if s.State != StateConfirmTool {
+					s.State = StateThinking
+				}
+				s.StatusText = "Queued..."
+			case "working":
+				// Agent released the GPU lock and is executing tool calls.
+				if s.State != StateConfirmTool {
+					s.State = StateThinking
+				}
+				s.StatusText = "Working..."
 			case "thinking":
 				if s.State != StateConfirmTool {
 					s.State = StateThinking
