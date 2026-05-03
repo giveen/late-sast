@@ -36,16 +36,16 @@ const (
 
 // Session manages the chat state and interacts with the LLM client.
 type Session struct {
-	client          *client.Client
-	HistoryPath     string
-	History         []client.ChatMessage
-	systemPrompt    string
-	useTools        bool
-	maxTokens       int
-	extraBody       map[string]any
-	Registry        *tool.Registry
-	debugLogger     *debug.Logger
-	lastTokenCount  int // most recent reported prompt/total token usage
+	client         *client.Client
+	HistoryPath    string
+	History        []client.ChatMessage
+	systemPrompt   string
+	useTools       bool
+	maxTokens      int
+	extraBody      map[string]any
+	Registry       *tool.Registry
+	debugLogger    *debug.Logger
+	lastTokenCount int // most recent reported prompt/total token usage
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {

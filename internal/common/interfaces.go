@@ -33,6 +33,7 @@ type Orchestrator interface {
 
 	// Configuration
 	SetMaxTurns(int)
+	MaxTurns() int
 	RefreshContextSize(context.Context)
 	MaxTokens() int
 }
@@ -64,9 +65,11 @@ func (e ChildAddedEvent) OrchestratorID() string { return e.ParentID }
 
 // StatusEvent is sent when the orchestrator's state changes.
 type StatusEvent struct {
-	ID     string
-	Status string // "thinking", "idle", "error", etc.
-	Error  error  // Optional error info
+	ID       string
+	Status   string // "thinking", "idle", "error", etc.
+	Error    error  // Optional error info
+	Turn     int    // Optional: current turn index (1-based)
+	MaxTurns int    // Optional: orchestrator max-turn budget for this run
 }
 
 func (e StatusEvent) OrchestratorID() string { return e.ID }
@@ -77,6 +80,44 @@ type StopRequestedEvent struct {
 }
 
 func (e StopRequestedEvent) OrchestratorID() string { return e.ID }
+
+// NodeHighlightEvent is sent when an agent accesses a file or graph node,
+// triggering a real-time visual highlight in the Project Map tab.
+type NodeHighlightEvent struct {
+	OrcID     string
+	FilePath  string // The file path or graph node being accessed
+	IsHotspot bool   // Whether this node is a known security hotspot
+}
+
+func (e NodeHighlightEvent) OrchestratorID() string { return e.OrcID }
+
+// ArchitectureCluster represents a logical grouping of files detected by
+// Louvain community detection in codebase-memory-mcp.
+type ArchitectureCluster struct {
+	ID        string
+	Label     string
+	Files     []string
+	IsHotspot bool
+}
+
+// ArchitectureData is a parsed summary of the get_architecture MCP response.
+type ArchitectureData struct {
+	Clusters  []ArchitectureCluster
+	Hotspots  []string // File paths / node IDs of hotspots
+	Language  string
+	FileCount int
+	NodeCount int
+	EdgeCount int
+}
+
+// ProjectMapLoadedEvent carries the architecture data used to populate the
+// "Project Map" GUI tab. Emitted once per scan after get_architecture succeeds.
+type ProjectMapLoadedEvent struct {
+	OrcID string
+	Data  ArchitectureData
+}
+
+func (e ProjectMapLoadedEvent) OrchestratorID() string { return e.OrcID }
 
 // PromptRequest defines a generic requirement for user input.
 type PromptRequest struct {

@@ -52,6 +52,10 @@ type App struct {
 	usageLabel *widget.Label // shows "Context: N / M (X%)"
 	configDir  string        // config directory backing the Settings dialog
 
+	// Project Map tab — populated once get_architecture completes.
+	projectMap    *ProjectMapPanel
+	projectMapTab *container.TabItem
+
 	mu            sync.Mutex
 	phaseCounter  map[string]int // label → open count
 	tabsByOrcID   map[string]*container.TabItem
@@ -155,7 +159,13 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 		a.mainChat,
 	)
 	a.mainTab = container.NewTabItem("Main", mainContent)
-	a.tabs = container.NewAppTabs(a.mainTab)
+
+	// Project Map tab — initially shows "waiting" placeholder; populated once
+	// get_architecture completes and ProjectMapLoadedEvent is received.
+	a.projectMap = NewProjectMapPanel()
+	a.projectMapTab = container.NewTabItem("Project Map", container.NewPadded(a.projectMap))
+
+	a.tabs = container.NewAppTabs(a.mainTab, a.projectMapTab)
 	a.tabs.SetTabLocation(container.TabLocationTop)
 
 	a.startEventLoop(rootAgent, a.mainChat, nil, "", func(used, max int) {
@@ -249,6 +259,24 @@ func (a *App) closeSubagentTab(tabItem *container.TabItem, o common.Orchestrator
 	a.tabs.Remove(tabItem)
 	a.tabs.Select(a.mainTab)
 	a.tabs.Refresh()
+}
+
+// SetArchitecture loads architecture data into the Project Map tab.
+// Safe to call from any goroutine — marshals onto the Fyne main goroutine.
+func (a *App) SetArchitecture(data common.ArchitectureData) {
+	if a.projectMap == nil {
+		return
+	}
+	a.projectMap.Load(data)
+}
+
+// HighlightNode signals the Project Map to highlight the cluster that owns
+// filePath. Safe to call from any goroutine.
+func (a *App) HighlightNode(filePath string, isHotspot bool) {
+	if a.projectMap == nil {
+		return
+	}
+	a.projectMap.HighlightFile(filePath, isHotspot)
 }
 
 // phaseLabel returns a human-readable tab label with a counter suffix when

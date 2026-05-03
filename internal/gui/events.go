@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"fmt"
 	"late/internal/common"
 
 	"fyne.io/fyne/v2"
@@ -22,15 +23,22 @@ func (a *App) startEventLoop(
 	agentLabel string,
 	onUsage func(used, max int),
 ) {
-	// setTabStatus updates the tab label with an emoji prefix reflecting the
-	// agent's current GPU state. Root tabs (tabItem == nil) are left unchanged.
-	setTabStatus := func(prefix string) {
+	// setTabStatus updates the tab label with an emoji prefix and optional turn
+	// counter. Root tabs (tabItem == nil) are left unchanged.
+	setTabStatus := func(prefix string, turn, maxTurns int) {
 		if tabItem == nil {
 			return
 		}
 		text := agentLabel
+		if turn > 0 {
+			if maxTurns > 0 {
+				text = fmt.Sprintf("%s (%d/%d)", agentLabel, turn, maxTurns)
+			} else {
+				text = fmt.Sprintf("%s (%d)", agentLabel, turn)
+			}
+		}
 		if prefix != "" {
-			text = prefix + agentLabel
+			text = prefix + text
 		}
 		fyne.Do(func() {
 			tabItem.Text = text
@@ -44,6 +52,8 @@ func (a *App) startEventLoop(
 		thinkingStreaming := false
 		cachedHistoryLen := -1
 		cachedHistoryTokens := 0
+		currentTurn := 0
+		currentMaxTurns := 0
 
 		updateUsage := func(e common.ContentEvent) {
 			if onUsage == nil {
@@ -115,14 +125,20 @@ func (a *App) startEventLoop(
 				}
 
 			case common.StatusEvent:
+				if e.Turn > 0 {
+					currentTurn = e.Turn
+				}
+				if e.MaxTurns > 0 {
+					currentMaxTurns = e.MaxTurns
+				}
 				switch e.Status {
 				case "queued":
 					// Agent is waiting for the GPU lock.
-					setTabStatus("⏳ ")
+					setTabStatus("⏳ ", currentTurn, currentMaxTurns)
 
 				case "thinking":
 					// Agent is streaming from the LLM (holds GPU lock).
-					setTabStatus("🧠 ")
+					setTabStatus("🧠 ", currentTurn, currentMaxTurns)
 					// Collapse the thinking box between tool calls;
 					// StartThinking will reopen/reuse the same accordion on next chunk.
 					if thinkingStreaming {
@@ -134,10 +150,10 @@ func (a *App) startEventLoop(
 
 				case "working":
 					// Agent released the GPU and is executing tool calls.
-					setTabStatus("⚙ ")
+					setTabStatus("⚙ ", currentTurn, currentMaxTurns)
 
 				case "idle":
-					setTabStatus("")
+					setTabStatus("", 0, 0)
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -155,7 +171,7 @@ func (a *App) startEventLoop(
 					}
 
 				case "closed":
-					setTabStatus("")
+					setTabStatus("", 0, 0)
 					if thinkingStreaming {
 						fyne.Do(func() { panel.FinalizeThinking() })
 					}
@@ -173,7 +189,7 @@ func (a *App) startEventLoop(
 					return
 
 				case "error":
-					setTabStatus("")
+					setTabStatus("", 0, 0)
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -206,6 +222,9 @@ func (a *App) startEventLoop(
 						})
 					}
 				}
+
+			case common.ProjectMapLoadedEvent:
+				a.SetArchitecture(e.Data)
 
 			case common.ChildAddedEvent:
 				// Wire up a new subagent tab.

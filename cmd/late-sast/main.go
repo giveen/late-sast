@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -53,6 +55,8 @@ func main() {
 	versionReq := flag.Bool("version", false, "Show version")
 	subagentMaxTurns := flag.Int("subagent-max-turns", 300, "Maximum turns per subagent")
 	subagentTimeout := flag.Duration("subagent-timeout", 45*time.Minute, "Wall-clock timeout per subagent run (e.g. 30m, 1h)")
+	maxTurnsCeiling := flag.Int("max-turns-ceiling", orchestrator.DefaultMaxTurnsCeiling, "Upper bound for dynamic turn budget")
+	maxTimeoutCeiling := flag.Duration("max-timeout-ceiling", orchestrator.DefaultMaxTimeoutCeiling, "Upper bound for dynamic subagent timeout")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token for Gemma 4 models")
 
 	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")
@@ -69,6 +73,20 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	// Detect whether the user explicitly supplied --subagent-max-turns or
+	// --subagent-timeout so we can give CLI flags precedence over the dynamic
+	// budget calculated from get_architecture metrics.
+	userSetMaxTurns := false
+	userSetTimeout := false
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "subagent-max-turns":
+			userSetMaxTurns = true
+		case "subagent-timeout":
+			userSetTimeout = true
+		}
+	})
 
 	if *versionReq {
 		fmt.Printf("late-sast %s\n", common.Version)
@@ -512,8 +530,67 @@ func main() {
 		return sessionResult{sess: sess, rootAgent: rootAgent, initialMsg: initialMessage, debugLog: debugLog}
 	}
 
+	// --- Dynamic Resource Allocator -------------------------------------------
+	// Lazily fetch architecture metadata from get_architecture on the first
+	// subagent spawn. The results are cached for all subsequent subagents within
+	// the same scan and stored in GlobalBlackboard.
+	var (
+		cachedMeta     orchestrator.ComplexityMeta
+		cachedArchData common.ArchitectureData
+		metaFetchErr   error
+		metaOnce       sync.Once
+	)
+	fetchMetaOnce := func(repoPath string, notifyRootAgent *orchestrator.BaseOrchestrator) {
+		metaOnce.Do(func() {
+			cachedMeta, cachedArchData, metaFetchErr = fetchComplexityMeta(
+				context.Background(), mcpClient, repoPath,
+			)
+			if metaFetchErr != nil {
+				fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget unavailable (%v) — using CLI defaults\n", metaFetchErr)
+				return
+			}
+			mult := orchestrator.LanguageMultiplier(cachedMeta.PrimaryLanguage)
+			orchestrator.GlobalBlackboard.Write("language_multiplier", mult)
+			orchestrator.GlobalBlackboard.Write("primary_language", cachedMeta.PrimaryLanguage)
+			orchestrator.GlobalBlackboard.Write("complexity_meta", cachedMeta)
+			fmt.Printf("[late-sast] Dynamic budget: lang=%s mult=%.1fx turns≈%d timeout≈%s\n",
+				cachedMeta.PrimaryLanguage, mult,
+				orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
+				orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
+			)
+			if notifyRootAgent != nil && len(cachedArchData.Clusters) > 0 {
+				notifyRootAgent.PushEvent(common.ProjectMapLoadedEvent{
+					OrcID: notifyRootAgent.ID(),
+					Data:  cachedArchData,
+				})
+			}
+		})
+	}
+
+	// resolveBudget returns the effective (turns, timeout) for a new subagent.
+	// CLI flags take precedence when explicitly set; otherwise the dynamic
+	// budget from get_architecture is used, falling back to static defaults.
+	resolveBudget := func() (int, time.Duration) {
+		turns := *subagentMaxTurns
+		timeout := *subagentTimeout
+		if !userSetMaxTurns && metaFetchErr == nil {
+			dyn := orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling)
+			if dyn > 0 {
+				turns = dyn
+			}
+		}
+		if !userSetTimeout && metaFetchErr == nil {
+			dyn := orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling)
+			if dyn > 0 {
+				timeout = dyn
+			}
+		}
+		return turns, timeout
+	}
+	// --------------------------------------------------------------------------
+
 	if *useTUIReq {
-		// ── TUI path — old behaviour, completely unchanged ───────────────────
+		// ── TUI path ──────────────────────────────────────────────────────────
 		sr := buildScan(target, localPath, outputDir, retestPath)
 		sess, rootAgent, initialMessage, debugLog := sr.sess, sr.rootAgent, sr.initialMsg, sr.debugLog
 
@@ -549,10 +626,12 @@ func main() {
 				if agentType == "auditor" {
 					agentClient = auditorClient
 				}
+				fetchMetaOnce(filepath.Join(workDir, "repo"), rootAgent)
+				turns, timeout := resolveBudget()
 				child, err := agent.NewSubagentOrchestrator(
 					agentClient, goal, ctxFiles, agentType,
 					enabledTools, true, *gemmaThinkingReq,
-					*subagentMaxTurns, rootAgent,
+					turns, rootAgent,
 					func(reg *common.ToolRegistry) []common.ToolMiddleware {
 						return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
 					},
@@ -561,6 +640,7 @@ func main() {
 				if err != nil {
 					return "", err
 				}
+				_ = timeout // subagent timeout is set via DefaultTimeout below; per-child timeouts future work
 				res, err := child.Execute("")
 				if err != nil {
 					return "", err
@@ -608,12 +688,23 @@ func main() {
 					if agentType == "auditor" {
 						agentClient = auditorClient
 					}
+					fetchMetaOnce(filepath.Join(workDir, "repo"), rootAgent)
+					turns, _ := resolveBudget()
+					hotspotSet := make(map[string]bool, len(cachedArchData.Hotspots))
+					for _, h := range cachedArchData.Hotspots {
+						hotspotSet[h] = true
+					}
 					child, err := agent.NewSubagentOrchestrator(
 						agentClient, goal, ctxFiles, agentType,
 						enabledTools, true, *gemmaThinkingReq,
-						*subagentMaxTurns, rootAgent,
+						turns, rootAgent,
 						func(reg *common.ToolRegistry) []common.ToolMiddleware {
-							return []common.ToolMiddleware{guiApp.ConfirmMiddleware(reg, true)}
+							return []common.ToolMiddleware{
+								guiApp.ConfirmMiddleware(reg, true),
+								orchestrator.NodeHighlightMiddleware(hotspotSet, func(filePath string, isHotspot bool) {
+									guiApp.HighlightNode(filePath, isHotspot)
+								}),
+							}
 						},
 						debugLog,
 					)
@@ -957,4 +1048,150 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 			}
 		}
 	}()
+}
+
+// fetchComplexityMeta calls get_architecture via the MCP client and parses the
+// response into a ComplexityMeta for the dynamic resource allocator. It returns
+// the fallback (zero) meta and no error if the tool is unavailable or the
+// response cannot be parsed — the caller should fall back to static defaults.
+func fetchComplexityMeta(ctx context.Context, mcpCli *mcp.Client, repoPath string) (orchestrator.ComplexityMeta, common.ArchitectureData, error) {
+	t := mcpCli.GetTool("get_architecture")
+	if t == nil {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("get_architecture tool not available")
+	}
+	args, _ := json.Marshal(map[string]string{"project": repoPath})
+	raw, err := t.Execute(ctx, args)
+	if err != nil {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("get_architecture: %w", err)
+	}
+
+	// The response is free-form text that may contain embedded JSON blocks.
+	// Extract the first {...} block and attempt to unmarshal.
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("no JSON object in get_architecture response")
+	}
+	jsonPart := raw[start : end+1]
+
+	// Flexible schema — field names vary across codebase-memory-mcp versions.
+	var resp struct {
+		PrimaryLanguage string `json:"primary_language"`
+		Language        string `json:"language"`
+		Stats           struct {
+			TotalFiles int `json:"total_files"`
+			TotalNodes int `json:"total_nodes"`
+			TotalEdges int `json:"total_edges"`
+		} `json:"stats"`
+		TotalFiles int `json:"total_files"`
+		TotalNodes int `json:"total_nodes"`
+		TotalEdges int `json:"total_edges"`
+		FileCount  int `json:"file_count"`
+		NodeCount  int `json:"node_count"`
+		EdgeCount  int `json:"edge_count"`
+		RouteCount int `json:"route_count"`
+		Hotspots   []string `json:"hotspots"`
+		Clusters   []struct {
+			ID    string   `json:"id"`
+			Label string   `json:"label"`
+			Files []string `json:"files"`
+			Size  int      `json:"size"`
+		} `json:"clusters"`
+		Communities []struct {
+			ID    string   `json:"id"`
+			Label string   `json:"label"`
+			Files []string `json:"files"`
+		} `json:"communities"`
+	}
+	if err := json.Unmarshal([]byte(jsonPart), &resp); err != nil {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("parse get_architecture JSON: %w", err)
+	}
+
+	// Coalesce field variants.
+	lang := resp.PrimaryLanguage
+	if lang == "" {
+		lang = resp.Language
+	}
+	fileCount := resp.Stats.TotalFiles
+	if fileCount == 0 {
+		fileCount = resp.TotalFiles
+	}
+	if fileCount == 0 {
+		fileCount = resp.FileCount
+	}
+	nodeCount := resp.Stats.TotalNodes
+	if nodeCount == 0 {
+		nodeCount = resp.TotalNodes
+	}
+	if nodeCount == 0 {
+		nodeCount = resp.NodeCount
+	}
+	edgeCount := resp.Stats.TotalEdges
+	if edgeCount == 0 {
+		edgeCount = resp.TotalEdges
+	}
+	if edgeCount == 0 {
+		edgeCount = resp.EdgeCount
+	}
+	routeCount := resp.RouteCount
+	if routeCount == 0 {
+		routeCount = edgeCount
+	}
+	hotspotCount := len(resp.Hotspots)
+
+	meta := orchestrator.ComplexityMeta{
+		FileCount:       fileCount,
+		NodeCount:       nodeCount,
+		RouteCount:      routeCount,
+		HotspotCount:    hotspotCount,
+		PrimaryLanguage: lang,
+	}
+
+	// Build ArchitectureData for the GUI Project Map.
+	archData := common.ArchitectureData{
+		Hotspots:  resp.Hotspots,
+		Language:  lang,
+		FileCount: fileCount,
+		NodeCount: nodeCount,
+		EdgeCount: edgeCount,
+	}
+	hotspotSet := make(map[string]bool, len(resp.Hotspots))
+	for _, h := range resp.Hotspots {
+		hotspotSet[h] = true
+	}
+	// Merge clusters and communities into a single cluster list.
+	for _, c := range resp.Clusters {
+		label := c.Label
+		if label == "" {
+			label = c.ID
+		}
+		isHot := false
+		for _, f := range c.Files {
+			if hotspotSet[f] {
+				isHot = true
+				break
+			}
+		}
+		archData.Clusters = append(archData.Clusters, common.ArchitectureCluster{
+			ID: c.ID, Label: label, Files: c.Files, IsHotspot: isHot,
+		})
+	}
+	for _, c := range resp.Communities {
+		label := c.Label
+		if label == "" {
+			label = c.ID
+		}
+		isHot := false
+		for _, f := range c.Files {
+			if hotspotSet[f] {
+				isHot = true
+				break
+			}
+		}
+		archData.Clusters = append(archData.Clusters, common.ArchitectureCluster{
+			ID: c.ID, Label: label, Files: c.Files, IsHotspot: isHot,
+		})
+	}
+
+	return meta, archData, nil
 }

@@ -6,7 +6,47 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.8.3] — 2026-05-03
+
+### Added
+- **Language-weighted resource heuristics** (`internal/orchestrator/limits.go`):
+  - `LanguageMultiplier(language string) float64` — per-language turn-budget multiplier applied to the base `CalculateTurns` formula.
+  - Multipliers: C / C++ → 1.5× (deep call stacks, manual memory); Rust → 1.3×; Go / Java / C# / Kotlin / Swift → 1.0×; TypeScript → 0.9×; Python / JavaScript / PHP / Ruby → 0.8×. Unknown languages default to 1.0×.
+  - `ComplexityMeta.PrimaryLanguage` field carries the detected language through the heuristic pipeline.
+  - `--max-turns-ceiling` (default 500) and `--max-timeout-ceiling` (default 60m) CLI flags to cap the dynamic budget.
+  - **CLI override precedence**: explicitly supplied `--subagent-max-turns` / `--subagent-timeout` always win over dynamic values (`flag.Visit` detection).
+  - Language multiplier and `primary_language` written to `GlobalBlackboard` at first subagent spawn.
+
+- **Dynamic Resource Allocator — `get_architecture` integration** (`cmd/late-sast/main.go`):
+  - `fetchComplexityMeta` helper calls the `get_architecture` MCP tool with the cloned repo path and parses the response JSON (handles multiple field-name variants across codebase-memory-mcp versions).
+  - `sync.Once` lazy-fetch: called on the first `SpawnSubagentTool.Runner` invocation; result cached for all subsequent subagents in the same scan.
+  - `resolveBudget()` returns `(turns, timeout)` respecting CLI override precedence, dynamic value, or static fallback (`FallbackSubagentTurns` / `FallbackSubagentTimeout`).
+
+- **"Project Map" tab** (`internal/gui/project_map.go`, `internal/gui/app.go`):
+  - New `ProjectMapPanel` Fyne widget showing a 3-column adaptive grid of cluster cards sourced from `get_architecture` `clusters` + `communities`.
+  - Each card shows the cluster label, file count, and a hotspot indicator (`⚠ HOTSPOT`).
+  - Hotspot clusters use a red background (`color.RGBA{180,40,40,220}`); normal clusters use the theme button color.
+  - **Real-time agent tracker**: when any subagent calls `read_file`, `search_graph`, `get_code_snippet`, or `trace_path`, `NodeHighlightMiddleware` calls `guiApp.HighlightNode(filePath, isHotspot)` → `ProjectMapPanel.HighlightFile` → 1.5-second color-fade animation (`canvas.NewColorRGBAAnimation`) on the owning cluster card.
+  - Permanent red marking when a file is flagged as a hotspot.
+  - Header bar shows language, total file count, node count, cluster count, and hotspot count.
+  - Tab is added to the main `AppTabs` alongside the "Main" tab; always visible, updates lazily once `ProjectMapLoadedEvent` is received.
+
+- **`ProjectMapLoadedEvent` and `NodeHighlightEvent`** (`internal/common/interfaces.go`):
+  - New event types carrying `ArchitectureData` (clusters, hotspots, language, file/node/edge counts) and per-file highlight requests respectively.
+  - `ArchitectureData` and `ArchitectureCluster` shared data types.
+
+- **Turn-progress counter in tab labels** (`internal/orchestrator/base.go`, `internal/gui/events.go`):
+  - `StatusEvent.Turn` / `StatusEvent.MaxTurns` fields (already added in prior session) now populated by `onStartTurn` via an atomic counter (`turnCurrent int64`) reset at each `Submit`/`Execute` call.
+  - `setTabStatus` in the GUI event loop tracks `currentTurn` / `currentMaxTurns` and renders `"🧠 Testing Codebase (42/150)"` whenever `Turn > 0`.
+
+- **`BaseOrchestrator.MaxTurns() int`** — satisfies updated `common.Orchestrator` interface (was missing, causing build failure).
+- **`BaseOrchestrator.PushEvent(Event)`** — non-blocking external event injection used by `main.go` to deliver `ProjectMapLoadedEvent` into the root orchestrator's event channel.
+- **`NodeHighlightMiddleware`** (`internal/orchestrator/highlight_middleware.go`) — tool middleware that intercepts `read_file` / `search_graph` / `get_code_snippet` / `trace_path` calls, extracts the path argument, and calls a provided callback. Applied to all GUI-path subagents.
+
+---
+
 ## [v1.8.2] — 2026-05-02
+
 
 ### Added
 - **Async multi-agent GPU coordination** ([#7](https://github.com/giveen/late-sast/pull/7)):

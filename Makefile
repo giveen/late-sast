@@ -93,7 +93,7 @@ install-desktop: ## Install .desktop launcher and icon (run once after make inst
 	@printf '[Desktop Entry]\nName=Late SAST\nComment=AI Security Auditor\nExec=%s\nIcon=late-sast\nType=Application\nCategories=Development;Security;\nTerminal=false\nStartupWMClass=late-sast\n' "$(HOME)/.local/bin/late-sast" \
 		> ~/.local/share/applications/late-sast.desktop
 	@update-desktop-database ~/.local/share/applications 2>/dev/null || true
-	@gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
+	@/usr/bin/gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
 	@echo "Done. You may need to log out and back in for the launcher icon to appear."
 
 run: build ## Build and run late-sast

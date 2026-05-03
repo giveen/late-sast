@@ -7,6 +7,7 @@ import (
 	"late/internal/executor"
 	"late/internal/session"
 	"sync"
+	"sync/atomic"
 )
 
 // BaseOrchestrator implements common.Orchestrator and manages an agent's run loop.
@@ -16,10 +17,10 @@ type BaseOrchestrator struct {
 	middlewares []common.ToolMiddleware
 	eventCh     chan common.Event
 
-	mu           sync.RWMutex
-	parent       common.Orchestrator
-	children     []common.Orchestrator
-	coordinator  *executor.ResourceCoordinator
+	mu          sync.RWMutex
+	parent      common.Orchestrator
+	children    []common.Orchestrator
+	coordinator *executor.ResourceCoordinator
 
 	// Running state tracker
 	acc    executor.StreamAccumulator
@@ -31,6 +32,9 @@ type BaseOrchestrator struct {
 
 	// Max turns configuration
 	maxTurns int
+
+	// Turn counter — incremented atomically at the start of each RunLoop turn.
+	turnCurrent int64
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
@@ -61,6 +65,22 @@ func (o *BaseOrchestrator) SetMaxTurns(maxTurns int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.maxTurns = maxTurns
+}
+
+func (o *BaseOrchestrator) MaxTurns() int {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.maxTurns
+}
+
+// PushEvent injects an event into the orchestrator's event channel from outside
+// the run loop (e.g. from main.go to deliver architecture / highlight events to
+// the GUI). Non-blocking: events are dropped if the channel buffer is full.
+func (o *BaseOrchestrator) PushEvent(e common.Event) {
+	select {
+	case o.eventCh <- e:
+	default:
+	}
 }
 
 // SetCoordinator attaches a ResourceCoordinator to this orchestrator.
@@ -108,6 +128,7 @@ func (o *BaseOrchestrator) Submit(text string) error {
 
 	// Emit the correct initial status: "queued" when a coordinator is present
 	// (the first turn will wait for the GPU lock), "thinking" otherwise.
+	atomic.StoreInt64(&o.turnCurrent, 0)
 	if o.Coordinator() != nil {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
 	} else {
@@ -140,11 +161,13 @@ func (o *BaseOrchestrator) buildRunLoopCallbacks(ctx context.Context) (
 		o.RefreshContextSize(ctx)
 		o.mu.Lock()
 		o.acc.Reset()
+		mt := o.maxTurns
 		o.mu.Unlock()
+		turn := int(atomic.AddInt64(&o.turnCurrent, 1))
 		if coord != nil {
-			o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued", Turn: turn, MaxTurns: mt}
 		} else {
-			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking", Turn: turn, MaxTurns: mt}
 		}
 	}
 
@@ -181,6 +204,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 
 	// Emit the correct initial status: "queued" when a coordinator is present
 	// (the first turn will immediately queue for the GPU), "thinking" otherwise.
+	atomic.StoreInt64(&o.turnCurrent, 0)
 	if o.Coordinator() != nil {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
 	} else {
