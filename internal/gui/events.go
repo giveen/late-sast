@@ -22,6 +22,22 @@ func (a *App) startEventLoop(
 	agentLabel string,
 	onUsage func(used, max int),
 ) {
+	// setTabStatus updates the tab label with an emoji prefix reflecting the
+	// agent's current GPU state. Root tabs (tabItem == nil) are left unchanged.
+	setTabStatus := func(prefix string) {
+		if tabItem == nil {
+			return
+		}
+		text := agentLabel
+		if prefix != "" {
+			text = prefix + agentLabel
+		}
+		fyne.Do(func() {
+			tabItem.Text = text
+			a.tabs.Refresh()
+		})
+	}
+
 	go func() {
 		var acc string
 		streaming := false
@@ -100,7 +116,13 @@ func (a *App) startEventLoop(
 
 			case common.StatusEvent:
 				switch e.Status {
+				case "queued":
+					// Agent is waiting for the GPU lock.
+					setTabStatus("⏳ ")
+
 				case "thinking":
+					// Agent is streaming from the LLM (holds GPU lock).
+					setTabStatus("🧠 ")
 					// Collapse the thinking box between tool calls;
 					// StartThinking will reopen/reuse the same accordion on next chunk.
 					if thinkingStreaming {
@@ -110,7 +132,12 @@ func (a *App) startEventLoop(
 					streaming = false
 					acc = ""
 
+				case "working":
+					// Agent released the GPU and is executing tool calls.
+					setTabStatus("⚙ ")
+
 				case "idle":
+					setTabStatus("")
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -128,6 +155,7 @@ func (a *App) startEventLoop(
 					}
 
 				case "closed":
+					setTabStatus("")
 					if thinkingStreaming {
 						fyne.Do(func() { panel.FinalizeThinking() })
 					}
@@ -145,6 +173,7 @@ func (a *App) startEventLoop(
 					return
 
 				case "error":
+					setTabStatus("")
 					// Keep tab open so the user can read the error.
 					if thinkingStreaming {
 						thinkingStreaming = false

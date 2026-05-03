@@ -16,9 +16,10 @@ type BaseOrchestrator struct {
 	middlewares []common.ToolMiddleware
 	eventCh     chan common.Event
 
-	mu       sync.RWMutex
-	parent   common.Orchestrator
-	children []common.Orchestrator
+	mu           sync.RWMutex
+	parent       common.Orchestrator
+	children     []common.Orchestrator
+	coordinator  *executor.ResourceCoordinator
 
 	// Running state tracker
 	acc    executor.StreamAccumulator
@@ -62,6 +63,23 @@ func (o *BaseOrchestrator) SetMaxTurns(maxTurns int) {
 	o.maxTurns = maxTurns
 }
 
+// SetCoordinator attaches a ResourceCoordinator to this orchestrator.
+// When set, the orchestrator serialises LLM inference through the coordinator's
+// GPU mutex, releasing it between inference and tool-execution phases so that
+// sibling agents can run their own inference in the meantime.
+func (o *BaseOrchestrator) SetCoordinator(c *executor.ResourceCoordinator) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.coordinator = c
+}
+
+// Coordinator returns the attached ResourceCoordinator, or nil if none.
+func (o *BaseOrchestrator) Coordinator() *executor.ResourceCoordinator {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.coordinator
+}
+
 func (o *BaseOrchestrator) MaxTokens() int {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -94,6 +112,48 @@ func (o *BaseOrchestrator) Submit(text string) error {
 	return nil
 }
 
+// buildRunLoopCallbacks constructs the onStartTurn / onGPUAcquired /
+// onGPUReleased closures that drive the per-turn status events.
+//
+// When a coordinator is present:
+//   - onStartTurn  → "queued"  (agent is waiting for the GPU)
+//   - onGPUAcquired → "thinking" (agent now holds the GPU and is streaming)
+//   - onGPUReleased → "working"  (agent released the GPU and is running tools)
+//
+// Without a coordinator the legacy behaviour is preserved:
+//   - onStartTurn  → "thinking"  (no queuing concept)
+//   - onGPUAcquired / onGPUReleased → nil (never called)
+func (o *BaseOrchestrator) buildRunLoopCallbacks(ctx context.Context) (
+	onStartTurn func(),
+	onGPUAcquired func(),
+	onGPUReleased func(),
+) {
+	coord := o.Coordinator()
+
+	onStartTurn = func() {
+		o.RefreshContextSize(ctx)
+		o.mu.Lock()
+		o.acc.Reset()
+		o.mu.Unlock()
+		if coord != nil {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
+		} else {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+		}
+	}
+
+	if coord != nil {
+		onGPUAcquired = func() {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+		}
+		onGPUReleased = func() {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "working"}
+		}
+	}
+
+	return onStartTurn, onGPUAcquired, onGPUReleased
+}
+
 func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	o.mu.Lock()
 	if o.ctx.Err() != nil {
@@ -121,13 +181,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	// Build extra body
 	var extraBody map[string]any
 
-	onStartTurn := func() {
-		o.RefreshContextSize(ctx)
-		o.mu.Lock()
-		o.acc.Reset()
-		o.mu.Unlock()
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
-	}
+	onStartTurn, onGPUAcquired, onGPUReleased := o.buildRunLoopCallbacks(ctx)
 
 	onEndTurn := func() {
 		o.RefreshContextSize(ctx)
@@ -160,6 +214,9 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 			}
 		},
 		o.middlewares,
+		o.Coordinator(),
+		onGPUAcquired,
+		onGPUReleased,
 	)
 
 	if err != nil {
@@ -188,13 +245,7 @@ func (o *BaseOrchestrator) run() {
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
-	onStartTurn := func() {
-		o.RefreshContextSize(ctx)
-		o.mu.Lock()
-		o.acc.Reset()
-		o.mu.Unlock()
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
-	}
+	onStartTurn, onGPUAcquired, onGPUReleased := o.buildRunLoopCallbacks(ctx)
 
 	onEndTurn := func() {
 		o.RefreshContextSize(ctx)
@@ -227,6 +278,9 @@ func (o *BaseOrchestrator) run() {
 			}
 		},
 		o.middlewares,
+		o.Coordinator(),
+		onGPUAcquired,
+		onGPUReleased,
 	)
 
 	// Reset accumulator after finished or ready for next turn

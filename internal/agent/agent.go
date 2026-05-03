@@ -154,6 +154,9 @@ func NewSubagentOrchestrator(
 
 	if p, ok := parent.(*orchestrator.BaseOrchestrator); ok {
 		p.AddChild(child, agentType)
+		if coord := p.Coordinator(); coord != nil {
+			child.SetCoordinator(coord)
+		}
 	}
 
 	return child, nil

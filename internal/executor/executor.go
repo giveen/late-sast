@@ -333,7 +333,15 @@ func ConsumeStream(
 // RunLoop handles the core, blocking event loop for autonomous agents.
 // It forces the sequence: inference stream -> verifiable accumulation -> history commit -> safe tool execution.
 // If the deterministic tool extraction yields zero calls, the loop securely collapses and returns execution control.
-
+//
+// When coordinator is non-nil the GPU lock is held only for the duration of
+// the HTTP stream (StartStream → ConsumeStream). The lock is released before
+// tool execution so that other agents can "Think" while this agent "Works".
+// The optional callbacks fire at each state transition:
+//
+//   - onStartTurn    — called before attempting to acquire the GPU lock (→ "queued")
+//   - onGPUAcquired  — called immediately after the GPU lock is obtained (→ "thinking")
+//   - onGPUReleased  — called immediately after the GPU lock is released (→ "working")
 func RunLoop(
 	ctx context.Context,
 	sess *session.Session,
@@ -343,6 +351,9 @@ func RunLoop(
 	onEndTurn func(),
 	onStreamChunk func(common.StreamResult),
 	middlewares []common.ToolMiddleware,
+	coordinator *ResourceCoordinator,
+	onGPUAcquired func(),
+	onGPUReleased func(),
 ) (string, error) {
 	var lastContent string
 	var previousToolSig string
@@ -353,8 +364,23 @@ func RunLoop(
 			onStartTurn()
 		}
 
+		if coordinator != nil {
+			coordinator.AcquireGPULock()
+			if onGPUAcquired != nil {
+				onGPUAcquired()
+			}
+		}
+
 		streamCh, errCh := sess.StartStream(ctx, extraBody)
 		acc, err := ConsumeStream(ctx, streamCh, errCh, onStreamChunk)
+
+		if coordinator != nil {
+			coordinator.ReleaseGPULock()
+			if onGPUReleased != nil {
+				onGPUReleased()
+			}
+		}
+
 		if err != nil {
 			return "", err
 		}
