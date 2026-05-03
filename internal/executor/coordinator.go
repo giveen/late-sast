@@ -53,6 +53,13 @@ func (r *ResourceCoordinator) AcquireGPULock(ctx context.Context) error {
 }
 
 // ReleaseGPULock frees the GPU so the next waiting agent can begin inference.
+// Panics if called without a preceding successful AcquireGPULock (analogous
+// to sync.Mutex.Unlock on an already-unlocked mutex).
 func (r *ResourceCoordinator) ReleaseGPULock() {
-	r.ch <- struct{}{}
+	select {
+	case r.ch <- struct{}{}:
+		// token returned; GPU is free again
+	default:
+		panic("executor.ResourceCoordinator: ReleaseGPULock called without matching AcquireGPULock")
+	}
 }

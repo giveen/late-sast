@@ -63,6 +63,22 @@ func TestResourceCoordinator_BlocksThenSucceeds(t *testing.T) {
 	coord.ReleaseGPULock()
 }
 
+func TestResourceCoordinator_DoubleReleasePanics(t *testing.T) {
+	coord := newResourceCoordinator()
+
+	if err := coord.AcquireGPULock(context.Background()); err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+	coord.ReleaseGPULock() // normal release
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic on double release, got none")
+		}
+	}()
+	coord.ReleaseGPULock() // second release should panic
+}
+
 func TestGlobalGPU_NotNil(t *testing.T) {
 	if GlobalGPU == nil {
 		t.Fatal("GlobalGPU should not be nil")
