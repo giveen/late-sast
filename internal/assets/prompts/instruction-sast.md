@@ -74,7 +74,7 @@ Wait for the findings report. **Before proceeding to Step 2.5, verify the scanne
 
 ### Step 2.5 — Audit (spawn auditor subagent)
 
-**MANDATORY TOOL CALL — do NOT write an AUDIT_COMPLETE block yourself. You MUST call `spawn_subagent` with `agent_type: "auditor"` and wait for the real tool response. Generating a fake AUDIT_COMPLETE from your own reasoning is a critical failure — the Auditor model (VulnLLM-R-7B) must perform the analysis.**
+**MANDATORY TOOL CALL — call `spawn_subagent` with `agent_type: "auditor"` and wait for the real tool response. Do NOT generate an AUDIT_COMPLETE block from your own reasoning — the Auditor model (VulnLLM-R-7B) must perform the analysis.**
 
 The scanner's output already contains a `HOTSPOT_LIST` block. Locate it in the scanner's response (it appears before the `Scan Coverage` line). Copy it verbatim — do not modify it.
 
@@ -190,6 +190,25 @@ docker run --rm -v /tmp:/tmp alpine rm -rf ${{WORKDIR}} /tmp/sast-skill
 ---
 
 ## Output Format
+
+Each finding section uses this structure. **The `Reproduce` block is mandatory for every finding — copy it verbatim from the scanner's `Reproduce` block.** Do not paraphrase, omit, or replace with pseudocode. For UNREACHABLE findings where the app was not running, prefix the command with `# App was not running — verify manually after startup`.
+
+```markdown
+### <Vulnerability Class> — <location> (CWE-NNN)
+- **Location:** `file:line` — function/handler
+- **Auditor Verdict:** CONFIRMED | LIKELY | NOT_CONFIRMED
+- **Taint Path:** `source → sink` or N/A
+- **Severity:** CRITICAL | HIGH | MEDIUM | LOW
+- **Exploit Status:** EXPLOITED | BLOCKED | UNREACHABLE
+- **Impact:** <one sentence>
+- **Reproduce:**
+  ```bash
+  # Copy-paste to verify — real container name, port, endpoint, payload
+  <exact docker exec / curl / wget command from scanner>
+  # Expected: <response or indicator of successful exploitation>
+  ```
+- **Fix:** <remediation>
+```
 
 ```markdown
 # SAST Security Report — <repo-name>

@@ -2,9 +2,10 @@
 
 > **Project:** late-sast: Autonomous Security Auditor
 > **Base:** Built on mlhher/late agent engine
-> **Fork:** late-sast adds Docker sandboxing, live exploitation, CVE enrichment, and SAST pipeline
+> **Fork:** late-sast adds Docker sandboxing, live exploitation, CVE enrichment, SAST pipeline, and Fyne v2 GUI
 > **License:** BSL 1.1
-> **Generated:** From project index — 2,441 nodes, 5,318 edges, 94 Go source files
+> **Generated:** From project index — 2,441+ nodes, 5,318+ edges, 107+ Go source files
+> **Last updated:** 2026-05-03 (v1.8.3)
 
 ---
 
@@ -20,7 +21,7 @@
 8. [Tool System Architecture](#8-tool-system-architecture)
 9. [Session & State Management](#9-session--state-management)
 10. [Configuration System](#10-configuration-system)
-11. [TUI & Event System](#11-tui--event-system)
+11. [TUI, GUI & Event System](#11-tui-gui--event-system)
 12. [MCP Integration](#12-mcp-integration)
 13. [Key Interfaces](#13-key-interfaces)
 14. [Data Flow Diagrams](#14-data-flow-diagrams)
@@ -31,14 +32,14 @@
 
 ## 1. Executive Summary
 
-late-sast is an autonomous security auditor built on the Late agent engine. It takes a GitHub URL or local path, spins up a throwaway Docker sandbox, performs a full static/dynamic security scan, exploits findings live, and produces a structured markdown report.
+late-sast is an autonomous security auditor built on the Late agent engine. It takes a GitHub URL or local path, spins up a throwaway Docker sandbox, performs a full static/dynamic security scan, exploits findings live, and produces a structured markdown report. It ships both a full-featured Fyne v2 graphical interface and a classic Bubble Tea TUI.
 
 ### Two Binary Targets
 
 | Binary | Description | Entry Point |
 |--------|-------------|-------------|
 | `late` | General-purpose AI agent with TUI | `cmd/late/main.go` |
-| `late-sast` | Autonomous SAST pipeline, headless | `cmd/late-sast/main.go` |
+| `late-sast` | Autonomous SAST pipeline — GUI (default) or `--tui` | `cmd/late-sast/main.go` |
 
 ### Key Differentiators
 
@@ -47,6 +48,9 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
 - **Self-Cleaning:** Docker container + /tmp workspace cleaned on exit
 - **Model-Agnostic:** Any OpenAI-compatible endpoint
 - **Hybrid Model Routing:** Separate models for orchestrator, subagent, and auditor roles
+- **Language-Weighted Budgets:** Turn/timeout budgets scale with primary language (C/C++ 1.5×, Rust 1.3×, Python 0.8×, etc.)
+- **Async GPU Coordination:** Channel-semaphore ensures single-GPU hosts run one LLM inference at a time across all concurrent agents
+- **Live Project Map:** Real-time GUI tab visualising which codebase clusters agents are accessing
 
 ---
 
@@ -65,14 +69,53 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
                └───────────────┬───────────────┘
                                │
               ┌────────────────▼────────────────┐
+              │  UI Layer                       │
+              │  ┌────────────────────────┐     │
+              │  │  internal/gui (Fyne v2)│     │  ← GUI mode (default)
+              │  │  - App, ChatPanel      │     │
+              │  │  - ProjectMapPanel     │     │
+              │  │  - SASTPickerDialog    │     │
+              │  └────────────────────────┘     │
+              │  ┌────────────────────────┐     │
+              │  │  internal/tui (BubbleTea)│   │  ← --tui mode
+              │  └────────────────────────┘     │
+              └────────────────┬────────────────┘
+                               │
+              ┌────────────────▼────────────────┐
               │    Session / Orchestrator       │
               │    ┌────────────────────────┐   │
               │    │  BaseOrchestrator      │   │
               │    │  - Submit/Execute      │   │
-              │    │  - Event streaming     │   │
-              │    │  - Cancel/Reset        │   │
+              │    │  - GPU coordination    │   │
+              │    │  - Turn counter        │   │
+              │    │  - PushEvent()         │   │
+              │    └────────────────────────┘   │
+              │    ┌────────────────────────┐   │
+              │    │  Blackboard            │   │
+              │    │  - Inter-agent KV store│   │
+              │    └────────────────────────┘   │
+              │    ┌────────────────────────┐   │
+              │    │  Dynamic Budget        │   │
+              │    │  - LanguageMultiplier  │   │
+              │    │  - CalculateTurns      │   │
               │    └────────────────────────┘   │
               │    Tool Registry                │
+              └────────────────┬────────────────┘
+                               │
+              ┌────────────────▼────────────────┐
+              │  Executor / Coordinator         │
+              │  ┌────────────────────────┐     │
+              │  │  RunLoop               │     │
+              │  │  - GPU lock acquire    │     │
+              │  │  - Stream LLM          │     │
+              │  │  - GPU lock release    │     │
+              │  │  - Execute tool calls  │     │
+              │  └────────────────────────┘     │
+              │  ┌────────────────────────┐     │
+              │  │  ResourceCoordinator   │     │
+              │  │  - channel semaphore   │     │
+              │  │  - AcquireGPULock      │     │
+              │  └────────────────────────┘     │
               └────────────────┬────────────────┘
                                │
               ┌────────────────▼────────────────┐
@@ -80,33 +123,20 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
               │  ┌────────────────────────┐     │
               │  │  client.Client         │     │
               │  │  - Streaming API calls │     │
-              │  │  - Backend discovery   │     │
               │  └────────────────────────┘     │
               │  ┌────────────────────────┐     │
               │  │  MCP Client            │     │
-              │  │  - External tool RPC   │     │
+              │  │  - get_architecture    │     │
+              │  │  - search_graph, etc.  │     │
               │  └────────────────────────┘     │
               │  ┌────────────────────────┐     │
               │  │  Subagent Orchestrator │     │
-              │  │  - Coder/Scanner       │     │
-              │  │  - Auditor/Setup       │     │
+              │  │  + NodeHighlight MW    │     │
               │  └────────────────────────┘     │
               └────────────────┬────────────────┘
                                │
               ┌────────────────▼────────────────┐
-              │  Config / Assets / Git / TUI    │
-              │  ┌────────────────────────┐     │
-              │  │  config.Config         │     │
-              │  │  - Resolution chain    │     │
-              │  └────────────────────────┘     │
-              │  ┌────────────────────────┐     │
-              │  │  assets.PromptsFS      │     │
-              │  │  (embedded prompts)    │     │
-              │  └────────────────────────┘     │
-              │  ┌────────────────────────┐     │
-              │  │  tui.Model             │     │
-              │  │  (Bubble Tea + Glamour)│     │
-              │  └────────────────────────┘     │
+              │  Config / Assets / Git          │
               └─────────────────────────────────┘
 ```
 
@@ -115,9 +145,11 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
 | Layer | Responsibility |
 |-------|---------------|
 | **Entry Points** | CLI argument parsing, flag handling, bootstrap sequence |
-| **Session/Orchestrator** | Conversation state, tool registry, event streaming, lifecycle management |
-| **Client/MCP/Subagent** | LLM API communication, external tool RPC, subagent spawning |
-| **Config/Assets/TUI** | Configuration resolution, embedded prompts, terminal rendering |
+| **UI Layer** | Fyne v2 GUI (default) or Bubble Tea TUI (`--tui`); event rendering, Project Map, SAST picker |
+| **Session/Orchestrator** | Conversation state, turn counter, GPU lock wiring, event streaming, Blackboard KV |
+| **Executor/Coordinator** | RunLoop (inference + tool loop), `ResourceCoordinator` channel semaphore for GPU serialization |
+| **Client/MCP/Subagent** | LLM API, external tool RPC, subagent spawning with language-weighted budgets |
+| **Config/Assets** | Configuration resolution, embedded prompts, SAST skill library |
 
 ---
 
@@ -236,8 +268,24 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
     ├── config/
     │   ├── config.go                  # Configuration loading & resolution
     │   └── config_test.go
+    ├── gui/
+    │   ├── app.go                     # App struct, main window, tab manager
+    │   ├── chat.go                    # ChatPanel: message bubbles, thinking accordion
+    │   ├── confirm.go                 # GUIConfirmMiddleware: Fyne dialog for tool approval
+    │   ├── context.go                 # Context utilities for GUI input provider
+    │   ├── events.go                  # startEventLoop: GPU-status tab labels, turn counter
+    │   ├── icon.go                    # App icon (embedded SVG → PNG)
+    │   ├── input.go                   # InputPanel: text entry widget
+    │   ├── markdown.go                # Markdown rendering helper
+    │   ├── project_map.go             # ProjectMapPanel: cluster grid + highlight animation
+    │   ├── provider.go                # GUIInputProvider: JSON-schema dialog prompts
+    │   ├── sast_picker.go             # SASTPickerResult: target/path/output picker dialog
+    │   ├── sessions.go                # Session management dialog
+    │   ├── settings.go                # Settings dialog (model, keys, debug toggle)
+    │   └── theme.go                   # lateTheme: Fyne v2 custom theme
     ├── executor/
-    │   ├── executor.go                # RunLoop, tool execution, stream handling
+    │   ├── coordinator.go             # ResourceCoordinator: channel-semaphore GPU lock
+    │   ├── executor.go                # RunLoop, StreamAccumulator, tool execution
     │   └── executor_test.go
     ├── git/
     │   ├── worktree.go                # Git worktree management
@@ -247,7 +295,11 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
     │   ├── config.go                  # MCP config loading
     │   └── config_test.go
     ├── orchestrator/
-    │   └── base.go                    # BaseOrchestrator implementation
+    │   ├── base.go                    # BaseOrchestrator: run loop, turn counter, PushEvent
+    │   ├── blackboard.go              # Blackboard KV store (inter-agent comms)
+    │   ├── highlight_middleware.go    # NodeHighlightMiddleware (real-time Project Map)
+    │   ├── limits.go                  # LanguageMultiplier, ComplexityMeta, CalculateTurns/Timeout
+    │   └── limits_test.go
     ├── pathutil/
     │   └── pathutil.go                # Config/skill/cache dir resolution
     ├── session/
@@ -332,11 +384,19 @@ cmd/late              cmd/late-sast          cmd/mcp-run
     ├──────────────────────┼───────────────────────┤
     ▼                      ▼                       ▼
     │              ┌─────────────────────────┐
+    │              │  internal/gui           │◄─── Fyne v2 (GUI mode only)
+    │              │  - App, ChatPanel       │
+    │              │  - ProjectMapPanel      │
+    │              │  - SASTPickerDialog     │
+    │              └──────────┬──────────────┘
+    │                         │
+    │              ┌──────────▼──────────────┐
     │              │  internal/agent         │◄─── NewSubagentOrchestrator
     │              └──────────┬──────────────┘
     │                         │
     │              ┌──────────▼──────────────┐
-    │              │  internal/orchestrator   │◄─── BaseOrchestrator
+    │              │  internal/orchestrator  │◄─── BaseOrchestrator, Blackboard,
+    │              │                         │      LanguageMultiplier, NodeHighlightMW
     │              └──────────┬──────────────┘
     │                         │
     │              ┌──────────▼──────────────┐
@@ -344,7 +404,7 @@ cmd/late              cmd/late-sast          cmd/mcp-run
     │              └──────────┬──────────────┘
     │                         │
     │              ┌──────────▼──────────────┐
-    │              │  internal/executor      │◄─── RunLoop, tool execution
+    │              │  internal/executor      │◄─── RunLoop, ResourceCoordinator
     │              └──────────┬──────────────┘
     │                         │
     │              ┌──────────▼──────────────┐
@@ -368,7 +428,7 @@ cmd/late              cmd/late-sast          cmd/mcp-run
     │              └─────────────────────────┘
     │
     │              ┌─────────────────────────┐
-    │              │  internal/tui           │◄─── Bubble Tea TUI
+    │              │  internal/tui           │◄─── Bubble Tea TUI (--tui mode)
     │              └─────────────────────────┘
     │
     │              ┌─────────────────────────┐
@@ -376,7 +436,7 @@ cmd/late              cmd/late-sast          cmd/mcp-run
     │              └─────────────────────────┘
     │
     │              ┌─────────────────────────┐
-    │              │  internal/common        │◄─── Interfaces, utils, types
+    │              │  internal/common        │◄─── Interfaces, utils, event types
     │              └─────────────────────────┘
 ```
 
@@ -385,7 +445,8 @@ cmd/late              cmd/late-sast          cmd/mcp-run
 | Package | Depends On |
 |---------|-----------|
 | `cmd/late` | agent, client, common, config, executor, git, mcp, orchestrator, session, tool, tui, assets |
-| `cmd/late-sast` | agent, assets, client, common, config, mcp, orchestrator, pathutil, session, tool, tui |
+| `cmd/late-sast` | agent, assets, client, common, config, executor, gui, mcp, orchestrator, pathutil, session, tool, tui |
+| `internal/gui` | client, common, session |
 | `internal/agent` | assets, client, common, executor, orchestrator, session, tui |
 | `internal/orchestrator` | client, common, executor, session |
 | `internal/session` | client, common, pathutil |
@@ -407,31 +468,39 @@ The `BaseOrchestrator` (in `internal/orchestrator/base.go`) is the core agent li
 ```
 NewBaseOrchestrator()
     │
-    ├── SetContext(ctx)          ────────── Inject context with InputProvider, approval flags
-    ├── SetMiddlewares([]ToolMiddleware)   ── Attach confirmation middleware
+    ├── SetContext(ctx)           ── Inject context with InputProvider, approval flags
+    ├── SetMiddlewares([])        ── Attach middleware chain (confirm + NodeHighlight + etc.)
+    ├── SetCoordinator(ResourceCoordinator)  ── GPU lock for single-GPU hosts
     │
-    ├── Submit(text) ───────────────────── Async submission (background goroutine)
+    ├── Submit(text) ────────────────── Async submission (background goroutine)
     │       │
+    │       ├── atomic.StoreInt64(&o.turnCurrent, 0)  ── Reset turn counter
     │       ├── AddUserMessage(text)
-    │       ├── eventCh <- StatusEvent("thinking")
+    │       ├── eventCh <- StatusEvent("queued")
     │       └── go o.run()  ── Background execution loop
     │
-    └── Execute(text) ──────────────────── Synchronous execution (blocking)
+    └── Execute(text) ─────────────── Synchronous execution (blocking)
             │
             ├── AddUserMessage(text)
-            ├── executor.RunLoop(...)     ── Core inference + tool loop
-            │       │
-            │       ├── onStartTurn()     ── Reset accumulator, "thinking" event
-            │       ├── ConsumeStream()   ── Stream LLM response deltas
-            │       ├── AddAssistantMessageWithTools() ── Commit to history
-            │       ├── onEndTurn()       ── Emit ContentEvent with usage
-            │       └── ExecuteToolCalls() ── Execute via middleware chain
-            │
-            └── return (result, error)
-
-    ├── Cancel() ──────────────────────── Cancel context, signal stop
-    ├── Reset() ───────────────────────── Clear history, persist empty state
-    └── AddChild(child) ───────────────── Add subagent, emit ChildAddedEvent
+            └── executor.RunLoop(...)    ── Core inference + tool loop
+                    │
+                    ├── onStartTurn()
+                    │   ├── atomic.AddInt64(&o.turnCurrent, 1)  ← turn counter
+                    │   ├── AcquireGPULock(ctx)  ← blocks if GPU busy
+                    │   └── eventCh <- StatusEvent{Status:"queued"/"thinking",
+                    │                               Turn: N, MaxTurns: M}
+                    │
+                    ├── ConsumeStream()   ── Stream LLM response deltas
+                    │   └── Emits ContentEvent per chunk
+                    │
+                    ├── AddAssistantMessageWithTools() ── Commit to history
+                    ├── onEndTurn()       ── Emit ContentEvent(usage)
+                    │
+                    ├── ReleaseGPULock() ← returns lock BEFORE tool calls
+                    │   └── eventCh <- StatusEvent("working")
+                    │
+                    └── ExecuteToolCalls()  ── Execute via middleware chain
+                        └── loop back to onStartTurn
 ```
 
 #### Key Fields
@@ -441,14 +510,29 @@ NewBaseOrchestrator()
 | `id` | `string` | Unique orchestrator identifier |
 | `sess` | `*session.Session` | Conversation session |
 | `middlewares` | `[]ToolMiddleware` | Tool execution interceptors |
-| `eventCh` | `chan Event` | Event stream to TUI |
+| `eventCh` | `chan Event` (buf=100) | Event stream to UI |
 | `parent` | `Orchestrator` | Parent orchestrator (nil for root) |
 | `children` | `[]Orchestrator` | Child/subagent orchestrators |
+| `coordinator` | `*executor.ResourceCoordinator` | GPU lock (nil = uncoordinated) |
 | `acc` | `StreamAccumulator` | Streaming response accumulator |
 | `ctx` | `context.Context` | Cancelable execution context |
 | `cancel` | `context.CancelFunc` | Cancellation function |
 | `stopCh` | `chan struct{}` | Stop signal channel |
 | `maxTurns` | `int` | Maximum conversation turns |
+| `turnCurrent` | `int64` (atomic) | Monotonically-incrementing turn index, reset on Submit/Execute |
+
+#### GPU-Coordinated Status Lifecycle
+
+```
+            ┌──── AcquireGPULock ────┐
+            │                        │
+"queued"    │   "thinking"           │   "working"
+ (waiting)  │   (streaming LLM)      │   (executing tools)
+────────────►────────────────────────►────────────────────────►  next turn
+                                  ReleaseGPULock
+```
+
+Without a coordinator the lifecycle collapses to `"thinking"` only (backwards-compatible).
 
 ### 5.2 Session Management
 
@@ -547,99 +631,170 @@ func TUIConfirmMiddleware(p *tea.Program, reg *ToolRegistry) ToolMiddleware {
 
 ---
 
+### 5.5 Resource Coordinator (GPU Lock)
+
+`internal/executor/coordinator.go` implements the `ResourceCoordinator` type — a channel-based semaphore that serialises LLM inference across all concurrent agents on a single-GPU host.
+
+```
+                   ┌────────────────────────────────────────┐
+                   │       ResourceCoordinator               │
+                   │                                         │
+                   │  ch = make(chan struct{}, 1)            │
+                   │  ch <- token  // GPU is initially free  │
+                   │                                         │
+                   │  AcquireGPULock(ctx) ──────────────────►│── blocks on ch
+                   │                                         │   or ctx.Done()
+                   │  ReleaseGPULock()   ──────────────────►│── returns token
+                   │                          panic on over- │   to ch (panics
+                   │                          release        │   on double)
+                   └────────────────────────────────────────┘
+```
+
+- `GlobalGPU` is the default singleton; passed to every orchestrator via `SetCoordinator(executor.GlobalGPU)`.
+- The lock is held **only** during `StartStream` + `ConsumeStream`, released immediately after streaming ends — tool calls run without the lock so sibling agents can think.
+- Context cancellation (Ctrl-C, timeout) unblocks waiting agents cleanly.
+
+### 5.6 Blackboard (Inter-Agent Communication)
+
+`internal/orchestrator/blackboard.go` implements the **Blackboard architectural pattern** — a thread-safe key-value store for sharing findings between concurrent agents.
+
+```go
+// Write findings:
+orchestrator.GlobalBlackboard.Write("vulnerable_library", "log4j-2.14.1")
+orchestrator.GlobalBlackboard.Write("entry_points", []string{"/api/search", "/api/exec"})
+
+// Read in another agent:
+if lib, ok := orchestrator.GlobalBlackboard.Read("vulnerable_library"); ok {
+    // taint-analysis agent starts from this library
+}
+```
+
+Keys populated by `fetchMetaOnce` at scan start:
+
+| Key | Value |
+|-----|-------|
+| `primary_language` | Detected language string (e.g. `"go"`) |
+| `language_multiplier` | Float64 budget multiplier (e.g. `1.0`) |
+| `complexity_meta` | Full `ComplexityMeta` struct |
+
+### 5.7 Dynamic Budget Allocator
+
+`internal/orchestrator/limits.go` provides a heuristic engine that computes per-subagent turn and timeout budgets from `get_architecture` metadata.
+
+#### Language Multipliers
+
+| Language(s) | Multiplier | Rationale |
+|-------------|------------|-----------|
+| C, C++ | 1.5× | Deep call stacks, manual memory, pointer aliasing |
+| Rust | 1.3× | Ownership complexity, unsafe blocks |
+| Go, Java, C#, Kotlin, Swift | 1.0× | Baseline |
+| TypeScript | 0.9× | Slightly simpler control flow than Java |
+| Python, JavaScript, PHP, Ruby | 0.8× | Flat module structures, fewer turns needed |
+
+#### Formulas
+
+```
+turns   = (50 + 5×routeCount + 10×hotspotCount) × languageMultiplier
+           capped at maxTurnsCeiling (default 500)
+
+timeout = 5m + (2s × fileCount) + (5s × hotspotCount)
+           capped at maxTimeoutCeiling (default 60m)
+```
+
+#### Budget Precedence
+
+```
+Explicit CLI flag   ──►  beats dynamic  ──►  beats static fallback
+(--subagent-max-turns)   (from get_arch)     (150 turns / 15m)
+```
+
+`flag.Visit` detection: if the user explicitly passed `--subagent-max-turns` or `--subagent-timeout`, those values win even when dynamic data is available.
+
+### 5.8 Node Highlight Middleware
+
+`internal/orchestrator/highlight_middleware.go` provides `NodeHighlightMiddleware` — a `ToolMiddleware` that fires a callback when any subagent accesses a file or graph node, enabling real-time Project Map highlighting.
+
+```go
+// Intercepted tools:
+// "read_file", "search_graph", "get_code_snippet", "trace_path"
+
+func NodeHighlightMiddleware(
+    hotspots map[string]bool,
+    onHighlight func(filePath string, isHotspot bool),
+) common.ToolMiddleware
+```
+
+Path extraction tries keys in order: `"path"`, `"file_path"`, `"filePath"`, `"node_id"`, `"query"` — covering all tools that reference a file.
+
+---
+
 ## 6. SAST Pipeline Architecture
 
-The SAST pipeline in `cmd/late-sast/main.go` follows a deterministic 7-step flow:
+The SAST pipeline in `cmd/late-sast/main.go` follows a deterministic flow. It has two UI modes: **GUI mode** (default, Fyne v2) and **TUI mode** (`--tui`, Bubble Tea).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    SAST Pipeline — 7-Step Flow                          │
+│                    SAST Pipeline — Boot Sequence                        │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  STEP 1: CLEANUP                                                 │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │ • Reap stale Docker containers (name=sast-)               │  │   │
-│  │  │ • Remove stale Docker networks (name=sast-)               │  │   │
-│  │  │ • Extract embedded SAST skill files to /tmp/sast-skill    │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  STEP 2: CODEBASE MEMORY MCP                                     │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │ • ensureCBM(): Check PATH → ~/.local/bin → embedded       │  │   │
-│  │  │                  → download from GitHub Releases           │  │   │
-│  │  │ • Add CBM directory to $PATH                               │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  STEP 3: SESSION & TOOL SETUP                                    │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │ • Create session with SAST system prompt                  │  │   │
-│  │  │ • Register core tools (bash, read_file, write_file)       │  │   │
-│  │  │ • Register CVE lookup tools (VulnDB native Go)            │  │   │
-│  │  │ • Register compose network patching tool                  │  │   │
-│  │  │ • Register ProContext doc lookup tools                    │  │   │
-│  │  │ • Build BM25 context index (SAST refs + semgrep skills)   │  │   │
-│  │  │ • Register context tools (ctx_index, ctx_search, etc.)    │  │   │
-│  │  │ • Register MCP tools from config                          │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  STEP 4: ORCHESTRATOR SETUP                                      │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │ • Create TUI renderer (Glamour)                           │  │   │
-│  │  │ • Create root orchestrator                                │  │   │
-│  │  │ • Create Bubble Tea program                               │  │   │
-│  │  │ • Wire context (InputProvider, SkipConfirmation,          │  │   │
-│  │  │   ToolApproval for unsupervised SAST runs)                │  │   │
-│  │  │ • Wire TUI middleware (confirmation)                      │  │   │
-│  │  │ • Wire event forwarding (orchestrator → TUI)              │  │   │
-│  │  │ • Auto-submit initial audit task after 300ms delay        │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  STEP 5: SUBAGENT ROUTING                                        │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │ • auditor  → auditorClient (security-specialist model)     │  │   │
-│  │  │ • scanner  → subagentClient (code-specialist model)        │  │   │
-│  │  │ • setup    → subagentClient                                │  │   │
-│  │  │ • binary-scanner → subagentClient                          │  │   │
-│  │  │                                                          │  │   │
-│  │  │ Auditor special config:                                  │  │   │
-│  │  │   - maxTokens=8192 (extra generation budget)             │  │   │
-│  │  │   - repeat_penalty=1.15 (prevent repetition loops)       │  │   │
-│  │  │   - Tools restricted to read_file only                   │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  STEP 6: EXECUTION                                               │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │ • p.Run() — Bubble Tea main loop                          │  │   │
-│  │  │ • LLM inference → tool execution → LLM inference (loop)  │  │   │
-│  │  │ • Subagent spawning for scanning/auditing                 │  │   │
-│  │  │ • Signal handling (SIGINT/SIGTERM → cleanup)              │  │   │
-│  │  │ • Timeout enforcement (if --timeout set)                  │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  STEP 7: CLEANUP                                                 │   │
-│  │  ┌────────────────────────────────────────────────────────────┐  │   │
-│  │  │ • docker stop -t 5 <container>                             │  │   │
-│  │  │ • docker rm -f <container>                                 │  │   │
-│  │  │ • docker compose -p <project> down -v --remove-orphans    │  │   │
-│  │  │ • Remove sidecar containers (sast-<ts>-*)                  │  │   │
-│  │  │ • docker network rm <network>                              │  │   │
-│  │  │ • alpine rm -rf /tmp/sast-skill (root-owned files)         │  │   │
-│  │  │ • alpine rm -rf /tmp/sast-<timestamp> (workdir)            │  │   │
-│  │  └────────────────────────────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
+│  STEP 1: CLEANUP                                                        │
+│  • Reap stale Docker containers/networks (name=sast-)                   │
+│  • Extract embedded SAST skill files to /tmp/sast-skill                 │
+│                                    ▼                                    │
+│  STEP 2: CODEBASE MEMORY MCP                                            │
+│  • ensureCBM(): Check PATH → ~/.local/bin → embedded → GitHub Release   │
+│  • Add CBM directory to $PATH                                           │
+│                                    ▼                                    │
+│  STEP 3: SESSION & TOOL SETUP                                           │
+│  • Create session with SAST system prompt                               │
+│  • Register core tools (bash, read_file, write_file)                    │
+│  • Register CVE lookup tools (VulnDB native Go)                         │
+│  • Register compose network patching tool                               │
+│  • Register ProContext doc lookup tools                                 │
+│  • Build BM25 context index (SAST refs + semgrep skills)                │
+│  • Register context tools (ctx_index, ctx_search, etc.)                 │
+│  • Register MCP tools from config (incl. codebase-memory-mcp)           │
+│                                    ▼                                    │
+│  STEP 4: ORCHESTRATOR SETUP                                             │
+│  • Create root BaseOrchestrator                                         │
+│  • Wire ResourceCoordinator (GPU lock) via SetCoordinator               │
+│  • Auto-submit initial audit task after 300ms delay                     │
+│                                    ▼                                    │
+│  STEP 5: UI LAUNCH                                                      │
+│  ┌──────────────────────────┐     ┌──────────────────────────┐          │
+│  │  GUI mode (default)      │     │  TUI mode (--tui)        │          │
+│  │                          │     │                          │          │
+│  │  gui.App.Run()           │     │  tea.NewProgram(model)   │          │
+│  │  - SASTPickerDialog      │     │  p.Run()                 │          │
+│  │    (if no --target)      │     │  - tui.TUIConfirm MW     │          │
+│  │  - ProjectMap tab        │     └──────────────────────────┘          │
+│  │  - GUIConfirm MW         │                                           │
+│  │  - NodeHighlight MW      │                                           │
+│  └──────────────────────────┘                                           │
+│                                    ▼                                    │
+│  STEP 6: SUBAGENT ROUTING (on first SpawnSubagentTool call)             │
+│  • fetchMetaOnce (sync.Once): calls get_architecture, caches result     │
+│    - Writes primary_language, language_multiplier, complexity_meta      │
+│      to GlobalBlackboard                                                │
+│    - Emits ProjectMapLoadedEvent → GUI Project Map tab populates        │
+│  • resolveBudget(): CLI override > dynamic > static fallback            │
+│  • auditor  → auditorClient (security-specialist model)                 │
+│  • scanner  → subagentClient (code-specialist model)                    │
+│  • All GUI-path subagents get NodeHighlightMiddleware                   │
+│                                    ▼                                    │
+│  STEP 7: EXECUTION                                                      │
+│  • LLM inference → tool execution → LLM inference (loop)               │
+│  • GPU lock serialises inference (ResourceCoordinator)                  │
+│  • Subagent spawning for scanning/auditing                              │
+│  • Signal handling (SIGINT/SIGTERM → cleanup)                           │
+│  • Timeout enforcement (if --timeout set)                               │
+│                                    ▼                                    │
+│  STEP 8: CLEANUP                                                        │
+│  • docker stop -t 5 <container> + rm -f                                 │
+│  • docker compose -p <project> down -v --remove-orphans                 │
+│  • Remove sidecar containers (sast-<ts>-*)                              │
+│  • docker network rm <network>                                          │
+│  • alpine rm -rf /tmp/sast-skill + /tmp/sast-<timestamp>                │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -652,7 +807,11 @@ The SAST pipeline in `cmd/late-sast/main.go` follows a deterministic 7-step flow
 | `--path` | — | Local repository path (alternative to --target) |
 | `--output` | current dir | Report output directory |
 | `--timeout` | 0 (no limit) | Wall-clock scan timeout (e.g., 90m, 2h) |
-| `--subagent-max-turns` | 500 | Maximum turns per subagent |
+| `--tui` | false | Use Bubble Tea TUI instead of Fyne GUI |
+| `--subagent-max-turns` | 300 | Maximum turns per subagent (CLI override) |
+| `--subagent-timeout` | 45m | Wall-clock timeout per subagent |
+| `--max-turns-ceiling` | 500 | Upper cap for dynamic turn budget |
+| `--max-timeout-ceiling` | 60m | Upper cap for dynamic timeout budget |
 | `--retest` | — | Retest previous report findings |
 | `--gemma-thinking` | false | Enable Gemma 4 thinking tokens |
 
@@ -815,6 +974,9 @@ The SAST-specific analyzer (`bash_analyzer_sast.go`) extends the base analyzer w
 
 ---
 
+
+---
+
 ## 9. Session & State Management
 
 ### 9.1 Session Lifecycle
@@ -930,9 +1092,9 @@ type Config struct {
 
 ---
 
-## 11. TUI & Event System
+## 11. TUI, GUI & Event System
 
-### 11.1 TUI Architecture
+### 11.1 TUI Architecture (`--tui` mode)
 
 The TUI is built on **Bubble Tea** (The Elm Architecture in Go) with **Glamour** for markdown rendering.
 
@@ -965,65 +1127,157 @@ The TUI is built on **Bubble Tea** (The Elm Architecture in Go) with **Glamour**
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 11.2 Event Types
+### 11.2 Fyne GUI Architecture (default mode)
 
-| Event Type | Description | Payload |
-|-----------|-------------|---------|
-| `ContentEvent` | Streaming content update | `ID`, `Content`, `ReasoningContent`, `ToolCalls`, `Usage` |
-| `StatusEvent` | State change notification | `ID`, `Status` ("thinking"/"idle"/"error"/"closed"), `Error` |
-| `ChildAddedEvent` | New subagent spawned | `ParentID`, `Child` orchestrator reference |
-| `StopRequestedEvent` | Stop signal received | `ID` |
+The GUI lives in `internal/gui/` and uses **Fyne v2**. All canvas mutations go through `fyne.Do()` to ensure Fyne-thread safety.
 
-### 11.3 Input Methods
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                       Fyne v2 GUI                                    │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  App (app.go)                                                │  │
+│  │  ┌──────────────────┐  ┌──────────────────────────────────┐ │  │
+│  │  │ "Main" Tab       │  │ "Project Map" Tab                │ │  │
+│  │  │ ┌──────────────┐ │  │ ┌──────────────────────────────┐ │ │  │
+│  │  │ │ ChatPanel    │ │  │ │ ProjectMapPanel              │ │ │  │
+│  │  │ │ (chat.go)    │ │  │ │ (project_map.go)             │ │ │  │
+│  │  │ │  - bubbles   │ │  │ │  - 3-col AdaptiveGrid        │ │ │  │
+│  │  │ │  - thinking  │ │  │ │  - clusterCard widgets       │ │ │  │
+│  │  │ │    accordion │ │  │ │  - highlight animation       │ │ │  │
+│  │  │ └──────────────┘ │  │ └──────────────────────────────┘ │ │  │
+│  │  │ ┌──────────────┐ │  └──────────────────────────────────┘ │  │
+│  │  │ │ InputPanel   │ │                                       │  │
+│  │  │ │ (input.go)   │ │  ┌──────────────────────────────────┐ │  │
+│  │  │ └──────────────┘ │  │ Subagent Tabs (dynamic)          │ │  │
+│  │  └──────────────────┘  │ - "⚙ Testing Codebase (42/150)" │ │  │
+│  │                        └──────────────────────────────────┘ │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  SASTPickerDialog (sast_picker.go)                           │  │
+│  │  Shown when no --target supplied; user picks URL/path/output │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  Settings / Confirm dialogs                                  │  │
+│  │  (settings.go, confirm.go)                                   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Tab Label State Machine
+
+```
+Subagent spawned ──► "Testing Codebase"
+                         │
+         StatusEvent.Turn/MaxTurns > 0
+                         │
+                         ▼
+"⏳ Testing Codebase (1/150)"   ← queued (waiting for GPU)
+"🧠 Testing Codebase (3/150)"   ← thinking (streaming LLM)
+"⚙ Testing Codebase (3/150)"   ← working (executing tools)
+"Testing Codebase"               ← idle/closed (base label restored)
+```
+
+#### ProjectMapPanel (project_map.go)
+
+```
+ProjectMapLoadedEvent received
+    │
+    ▼
+ProjectMapPanel.Load(ArchitectureData)
+    │
+    ├── Rebuild fileMap: filePath → *clusterCard
+    ├── Rebuild 3-column AdaptiveGrid
+    └── Show header: language, fileCount, nodeCount, clusterCount, hotspotCount
+
+Agent calls read_file / search_graph:
+    │
+    NodeHighlightMiddleware.onHighlight(filePath, isHotspot)
+    │
+    ├── if isHotspot: clusterCard.markHotspot() ── permanent red fill
+    └── else:         clusterCard.highlight()   ── 1.5s canvas.NewColorRGBAAnimation
+```
+
+### 11.3 Event Types
+
+| Event Type | Description | Key Payload |
+|-----------|-------------|-------------|
+| `ContentEvent` | Streaming content / reasoning delta | `ID`, `Content`, `ReasoningContent`, `ToolCalls`, `Usage` |
+| `StatusEvent` | State change | `ID`, `Status`, `Error`, `Turn` (1-based), `MaxTurns` |
+| `ChildAddedEvent` | New subagent spawned | `ParentID`, `Child`, `AgentType` |
+| `StopRequestedEvent` | Stop signal | `ID` |
+| `NodeHighlightEvent` | Agent accessed a file | `OrcID`, `FilePath`, `IsHotspot` |
+| `ProjectMapLoadedEvent` | Architecture data ready | `OrcID`, `Data` (ArchitectureData) |
+
+#### Status Values
+
+| Status | Meaning | Tab Prefix |
+|--------|---------|-----------|
+| `queued` | Waiting for GPU lock | ⏳ |
+| `thinking` | Streaming from LLM | 🧠 |
+| `working` | Executing tool calls | ⚙ |
+| `idle` | Turn complete, awaiting input | (restored) |
+| `closed` | Subagent finished and tab removed | — |
+| `error` | Fatal error, tab removed + notification | — |
+
+### 11.4 Input Methods
 
 | Method | Description |
 |--------|-------------|
 | **Keyboard Input** | Standard TUI keyboard interaction |
 | **PromptRequest** | Modal prompts for user data (JSON Schema validated) |
 | **AutoSubmit** | Auto-submission of initial tasks (used in SAST mode) |
+| **SASTPickerDialog** | GUI-only; collects URL, local path, output dir, retest report |
 
-### 11.4 Event Flow
+### 11.5 Event Flow (GUI mode)
 
 ```
 Orchestrator Event
        │
        ▼
 ┌─────────────────────────┐
-│ ForwardOrchestratorEvents│
-│ (recursive event wiring) │
+│ App.startEventLoop()    │  ← goroutine per orchestrator
+│ (events.go)             │
 └───────────┬─────────────┘
             │
-            ▼
-┌─────────────────────────┐
-│ p.Send(TUI Message)     │  ← Bubble Tea program channel
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│ TUI Model.Update()      │  ← Elm update function
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│ TUI Model.View()        │  ← Elm view function
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│ Terminal Render         │  ← Glamour markdown rendering
-└─────────────────────────┘
+   ┌────────┴────────────────────────────┐
+   │                                     │
+   ▼                                     ▼
+ContentEvent                          StatusEvent
+   │                                     │
+   fyne.Do(panel.AppendMessage/       fyne.Do(tabItem.Text =
+           UpdateLastMessage/               "🧠 X (N/M)")
+           StartThinking/...)
+                                      ProjectMapLoadedEvent
+                                         │
+                                      a.SetArchitecture(e.Data)
+                                         │
+                                      ProjectMapPanel.Load()
+                                         │
+                                      fyne.Do(rebuild grid)
+
+NodeHighlightEvent (from NodeHighlightMiddleware)
+   │
+   guiApp.HighlightNode(filePath, isHotspot)
+   │
+   ProjectMapPanel.HighlightFile()
+   │
+   fyne.Do(canvas.NewColorRGBAAnimation / markHotspot)
 ```
 
-### 11.5 Recursive Event Forwarding
+### 11.6 Recursive Event Forwarding
 
-The event forwarding system recursively wires all orchestrator events to the TUI:
+The event forwarding system recursively wires all orchestrator events:
 
 ```go
 func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
     go func() {
         for event := range o.Events() {
             p.Send(tui.OrchestratorEventMsg{Event: event})
-            // Recursively wire child orchestrator events
             if added, ok := event.(common.ChildAddedEvent); ok {
                 ForwardOrchestratorEvents(p, added.Child)
             }
@@ -1031,6 +1285,8 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
     }()
 }
 ```
+
+In GUI mode the equivalent logic is `App.startEventLoop` which dispatches directly to Fyne widgets via `fyne.Do`; it also recursively calls itself for `ChildAddedEvent`.
 
 ---
 
@@ -1113,6 +1369,7 @@ type Orchestrator interface {
     
     // Configuration
     SetMaxTurns(int)
+    MaxTurns() int          // Returns the configured max turns ceiling
     RefreshContextSize(context.Context)
     MaxTokens() int
     
@@ -1145,18 +1402,52 @@ type ContentEvent struct {
 }
 
 type StatusEvent struct {
-    ID     string
-    Status string  // "thinking", "idle", "error", "closed"
-    Error  error
+    ID       string
+    Status   string  // "queued", "thinking", "working", "idle", "error", "closed"
+    Error    error
+    Turn     int     // 1-based current turn index (0 = not yet known)
+    MaxTurns int     // Configured max turns (0 = not yet known)
 }
 
 type ChildAddedEvent struct {
-    ParentID string
-    Child    Orchestrator
+    ParentID  string
+    Child     Orchestrator
+    AgentType string
 }
 
 type StopRequestedEvent struct {
     ID string
+}
+
+// NodeHighlightEvent fires when a subagent reads/searches a file or graph node.
+type NodeHighlightEvent struct {
+    OrcID     string
+    FilePath  string
+    IsHotspot bool
+}
+
+// ArchitectureCluster is one cluster of related files from get_architecture.
+type ArchitectureCluster struct {
+    ID        string
+    Label     string
+    Files     []string
+    IsHotspot bool
+}
+
+// ArchitectureData holds the full result of get_architecture.
+type ArchitectureData struct {
+    Clusters   []ArchitectureCluster
+    Hotspots   []string
+    Language   string
+    FileCount  int
+    NodeCount  int
+    EdgeCount  int
+}
+
+// ProjectMapLoadedEvent fires after fetchMetaOnce completes.
+type ProjectMapLoadedEvent struct {
+    OrcID string
+    Data  ArchitectureData
 }
 ```
 
@@ -1208,6 +1499,18 @@ const (
     SkipConfirmationKey   contextKey = "skip_confirmation"
     ToolApprovalKey       contextKey = "tool_approval"
 )
+```
+
+```go
+// common/tools.go
+type Tool interface {
+    Name() string
+    Description() string
+    Parameters() json.RawMessage
+    Execute(ctx context.Context, args json.RawMessage) (string, error)
+    RequiresConfirmation(args json.RawMessage) bool
+    CallString(args json.RawMessage) string
+}
 ```
 
 ---
@@ -1415,9 +1718,9 @@ Parent Orchestrator
 - `late worktree remove <path>` — Remove a worktree
 - `late worktree active` — Show current worktree
 
-### 15.2 `cmd/late-sast/main.go` — Headless SAST Pipeline
+### 15.2 `cmd/late-sast/main.go` — Autonomous SAST Pipeline
 
-**Purpose:** Autonomous security audit pipeline with Docker sandboxing.
+**Purpose:** Autonomous security audit pipeline with Docker sandboxing and optional Fyne GUI.
 
 **CLI Flags:**
 | Flag | Description | Default |
@@ -1426,14 +1729,19 @@ Parent Orchestrator
 | `--path` | Local repository path | — |
 | `--output` | Report output directory | current dir |
 | `--timeout` | Scan timeout (e.g., 90m) | 0 (no limit) |
-| `--subagent-max-turns` | Max turns per subagent | 500 |
+| `--tui` | Use Bubble Tea TUI instead of Fyne GUI | false |
+| `--subagent-max-turns` | Max turns per subagent (explicit override) | 300 |
+| `--subagent-timeout` | Timeout per subagent | 45m |
+| `--max-turns-ceiling` | Upper cap for dynamic turn budget | 500 |
+| `--max-timeout-ceiling` | Upper cap for dynamic timeout budget | 60m |
 | `--retest` | Retest previous report | — |
 | `--gemma-thinking` | Gemma 4 thinking tokens | false |
 | `--version` | Show version | — |
 
 **Modes:**
-1. **New Scan:** `--target https://github.com/owner/repo` or `--path /local/repo`
-2. **Retest:** `--retest ./sast_report_repo.md` (retests previous findings)
+1. **New Scan (GUI):** Default. Opens Fyne window with SAST Picker dialog if `--target`/`--path` omitted.
+2. **New Scan (TUI):** `--tui`. Opens Bubble Tea terminal UI.
+3. **Retest:** `--retest ./sast_report_repo.md` (retests previous findings in either UI mode).
 
 ### 15.3 `cmd/mcp-run/main.go` — MCP Server Runner
 
@@ -1447,21 +1755,39 @@ Parent Orchestrator
 
 | Metric | Value |
 |--------|-------|
-| **Total Nodes** | 2,441 |
-| **Total Edges** | 5,318 |
-| **Go Source Files** | 94 |
+| **Total Nodes** | 2,600+ |
+| **Total Edges** | 5,500+ |
+| **Go Source Files** | 107+ |
 | **Index Size** | 7.4 MB |
+
+### Package File Counts (v1.8.3)
+
+| Package | Source Files |
+|---------|-------------|
+| `internal/tool` | 30 |
+| `internal/gui` | 14 |
+| `internal/tui` | 12 |
+| `internal/session` | 6 |
+| `internal/common` | 7 |
+| `internal/orchestrator` | 5 (base, blackboard, limits, limits_test, highlight_middleware) |
+| `internal/executor` | 3 (executor, coordinator, executor_test) |
+| `internal/config` | 2 |
+| `internal/mcp` | 3 |
+| `internal/agent` | 2 |
+| `cmd/late-sast` | 6 |
+| `cmd/late` | 1 |
+| `cmd/mcp-run` | 1 |
 
 ### Node Distribution
 
 | Label | Count |
 |-------|-------|
-| Section | 1,177 |
-| Function | 490 |
-| Method | 204 |
-| File | 156 |
-| Module | 156 |
-| Class | 115 |
+| Section | 1,200+ |
+| Function | 520+ |
+| Method | 220+ |
+| File | 170+ |
+| Module | 170+ |
+| Class | 120+ |
 | Variable | 102 |
 | Folder | 26 |
 | Interface | 8 |

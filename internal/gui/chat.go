@@ -133,7 +133,12 @@ func (p *ChatPanel) UpdateThinking(content string) {
 		},
 	}
 	p.lastThink.rich.Refresh()
-	p.scroll.ScrollToBottom()
+	// Only auto-scroll if the accordion is collapsed. When the user has opened it
+	// to read the reasoning, leave the scroll position alone so they can read
+	// without being dragged to the bottom on every streaming chunk.
+	if !p.lastThink.item.Open {
+		p.scroll.ScrollToBottom()
+	}
 }
 
 // FinalizeThinking collapses the thinking accordion when reasoning is complete.

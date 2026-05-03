@@ -6,6 +6,128 @@ You will be given: either a GitHub URL **or** a Local path (never both), plus co
 
 ## Setup Workflow
 
+### Step 0 — Check for a quick-install path (GitHub URL only)
+
+**Run this step only when a GitHub URL was provided.** Many projects publish a one-line install command in their README that is faster than cloning and building from source. Check before cloning:
+
+```bash
+mkdir -p ${{WORKDIR}}
+curl -s "https://raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md" 2>/dev/null | head -200
+```
+(Derive `<owner>/<repo>` from the GitHub URL.)
+
+**Scan the README output for a quick-install command — two passes:**
+
+---
+
+#### Pass A — Package-manager one-liners
+
+| Language | Recognised patterns | Example |
+|----------|--------------------|---------| 
+| Go | `go install <module>/cmd/<name>@latest` | `go install github.com/danielmiessler/fabric/cmd/fabric@latest` |
+| Python | `pip install <name>` or `pipx install <name>` | `pip install mycli` |
+| Node.js | `npm install -g <name>` or `npx <name>` | `npm install -g @scope/tool` |
+| Rust | `cargo install <name>` | `cargo install ripgrep` |
+| Ruby | `gem install <name>` | `gem install rails` |
+
+**If a Pass A command is found:**
+1. Create the workdir and spin up a minimal container with the relevant toolchain:
+   - Go → `golang:1.23`
+   - Python → `python:3.11-slim`
+   - Node.js → `node:20-slim`
+   - Rust → `rust:1.80-slim`
+2. Run the install command inside the container:
+   ```bash
+   docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
+     -v ${{WORKDIR}}:/workdir -w /workdir <image> tail -f /dev/null
+   docker exec ${{CONTAINER_NAME}} sh -c "<quick-install-command>"
+   ```
+3. Skip Steps 1–4 entirely and jump to **Step 5**. Set `notes: installed via quick-install: <command>` in the summary.
+
+---
+
+#### Pass B — Binary release assets (.deb / .AppImage / .snap / .flatpak)
+
+If Pass A found nothing, check whether the README mentions `.deb`, `.AppImage`, `.snap`, `.flatpak`, or links to a GitHub Releases page. These projects ship pre-built binaries rather than source installs.
+
+**Detect release assets from the GitHub API:**
+```bash
+# Fetch the latest release metadata
+curl -s "https://api.github.com/repos/<owner>/<repo>/releases/latest" > /tmp/release.json
+
+# List available Linux asset filenames
+python3 -c "
+import json, sys
+data = json.load(open('/tmp/release.json'))
+assets = [a['name'] for a in data.get('assets', [])]
+print('\n'.join(assets))
+"
+```
+
+**Choose the best asset for the container (preference order):**
+1. `.deb` matching `amd64` or `x86_64` (or `arm64` on ARM hosts) — cleanest install, resolves dependencies
+2. `.AppImage` matching `x86_64` / `amd64` — portable, no install needed
+3. `.snap` — try `snap install --dangerous`
+4. `.flatpak` — last resort, needs `flatpak` runtime
+
+**Download and install the chosen asset:**
+
+*For a `.deb` file:*
+```bash
+# Start a Debian/Ubuntu base container
+docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
+  -v ${{WORKDIR}}:/workdir -w /workdir ubuntu:22.04 tail -f /dev/null
+
+# Get the download URL from the release JSON
+ASSET_URL=$(python3 -c "
+import json
+data = json.load(open('/tmp/release.json'))
+for a in data['assets']:
+    if a['name'].endswith('.deb') and ('amd64' in a['name'] or 'x86_64' in a['name']):
+        print(a['browser_download_url']); break
+")
+
+# Download into the workdir (host-visible) then install inside the container
+curl -L -o ${{WORKDIR}}/app.deb "$ASSET_URL"
+docker exec ${{CONTAINER_NAME}} sh -c "
+  apt-get update -qq 2>/dev/null
+  apt-get install -y -qq /workdir/app.deb 2>/dev/null || \
+  (dpkg -i /workdir/app.deb 2>/dev/null; apt-get install -f -y -qq 2>/dev/null)
+"
+```
+
+*For an `.AppImage` file:*
+```bash
+# Start a minimal Debian container (AppImages need glibc; alpine will NOT work)
+docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
+  -v ${{WORKDIR}}:/workdir -w /workdir debian:bookworm-slim tail -f /dev/null
+
+ASSET_URL=$(python3 -c "
+import json
+data = json.load(open('/tmp/release.json'))
+for a in data['assets']:
+    if '.AppImage' in a['name'] and ('x86_64' in a['name'] or 'amd64' in a['name']):
+        print(a['browser_download_url']); break
+")
+
+curl -L -o ${{WORKDIR}}/app.AppImage "$ASSET_URL"
+chmod +x ${{WORKDIR}}/app.AppImage
+
+# Extract the AppImage so it can run without FUSE (most containers lack /dev/fuse)
+docker exec ${{CONTAINER_NAME}} sh -c "
+  apt-get update -qq && apt-get install -y -qq libfuse2 2>/dev/null || true
+  cd /workdir && ./app.AppImage --appimage-extract 2>/dev/null || true
+  # squashfs-root/ now contains the extracted app
+  ln -sf /workdir/squashfs-root /workdir/app
+"
+```
+
+After either install, create an empty `${{WORKDIR}}/repo` dir for the indexer, copy or symlink the installed files into it, then skip Steps 1–4 and jump to **Step 5**. Set `notes: installed via release asset: <filename>` in the summary.
+
+---
+
+**If neither Pass A nor Pass B apply**, proceed with Step 1 below.
+
 ### Step 1 — Prepare workspace & obtain source code
 
 ```bash
@@ -52,15 +174,25 @@ docker network create ${{NETWORK_NAME}}
 
 ### Step 4 — Detect launch strategy
 
-Check the repository root for compose files and a Dockerfile:
+Detect compose files and Dockerfiles using a monorepo-aware search (do not assume root-only):
 ```bash
-ls ${{WORKDIR}}/repo/docker-compose.yml ${{WORKDIR}}/repo/docker-compose.yaml ${{WORKDIR}}/repo/compose.yml 2>/dev/null
+# 1) Quick root check
+ls ${{WORKDIR}}/repo/docker-compose.yml ${{WORKDIR}}/repo/docker-compose.yaml ${{WORKDIR}}/repo/compose.yml ${{WORKDIR}}/repo/compose.yaml 2>/dev/null
 ls ${{WORKDIR}}/repo/Dockerfile ${{WORKDIR}}/repo/dockerfile 2>/dev/null
+
+# 2) If root check is empty, scan common service directories (bounded depth)
+find ${{WORKDIR}}/repo -maxdepth 4 \( -name 'docker-compose.yml' -o -name 'docker-compose.yaml' -o -name 'compose.yml' -o -name 'compose.yaml' -o -name 'Dockerfile' -o -name 'dockerfile' \) \
+  | grep -v -E 'node_modules|vendor|dist|build|\.git' | head -40
 ```
 
-**If a compose file exists → use Path A.**
-**If no compose file but a `Dockerfile` exists → use Path C.**
-**If neither → use Path B.**
+Selection rules:
+- Prefer compose/Dockerfile paths in the same service directory selected by the monorepo check in Step 2.
+- If multiple candidates exist, prefer the one closest to the service root that contains the HTTP entrypoint.
+- If only non-root candidates exist, use them (do not report "no docker" just because root has none).
+
+**If a compose file candidate exists → use Path A with that file path.**
+**If no compose file but a Dockerfile candidate exists → use Path C with that Dockerfile directory as build context.**
+**If neither exists anywhere in the bounded search → use Path B.**
 
 ---
 
@@ -75,9 +207,9 @@ patch_compose_network(
 )
 ```
 The tool adds the external network declaration at the top level and adds it to every service. It is idempotent and preserves comments and formatting. It returns a summary of which services were patched.
-3. Launch with a namespaced project so cleanup is targeted:
+3. Launch with a namespaced project so cleanup is targeted (use the detected compose file path, not always repo root):
 ```bash
-docker compose -p ${{COMPOSE_PROJECT}} -f ${{WORKDIR}}/repo/docker-compose.yml up -d
+docker compose -p ${{COMPOSE_PROJECT}} -f <detected compose file path> up -d
 ```
 If this fails (e.g. image pull error or build error), try `docker compose ... up -d --no-build` to skip any custom build step. If still failing, fall through to Path B (manual sandbox) for the app container only.
 4. Wait 10 s then verify the app is running:
@@ -155,8 +287,19 @@ Check `.env.example` for the exact variable names the app expects.
 ```bash
 docker exec ${{CONTAINER_NAME}} bash -c "<install-command>"
 docker exec -d ${{CONTAINER_NAME}} bash -c "<start-command-with-env-vars>"
-sleep 10
-docker exec ${{CONTAINER_NAME}} bash -c "ps aux | grep -v grep | grep <process-name>"
+
+# Bounded readiness polling (max 90s, 5s interval) instead of blind long sleeps
+docker exec ${{CONTAINER_NAME}} sh -c '
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+  ps aux | grep -E "dotnet|node|python|java|gunicorn|uvicorn|spring|rails" | grep -v grep >/dev/null 2>&1 && { echo READY_PROCESS; exit 0; }
+  if [ -n "${APP_PORT:-}" ] && [ "$APP_PORT" != "unknown" ]; then
+    wget -qO- --timeout=3 "http://127.0.0.1:$APP_PORT/" >/dev/null 2>&1 && { echo READY_HTTP; exit 0; }
+  fi
+  sleep 5
+done
+echo NOT_READY
+exit 1
+'
 ```
 
 If the install command fails, inspect the error output, try the standard alternative for the detected language (e.g. `pip install -r requirements.txt` → `pip install .`), and retry once.
@@ -166,11 +309,11 @@ If the app still fails to start after injecting env vars, note it in the summary
 
 ### Path C — Build from Dockerfile
 
-When no compose file exists but a `Dockerfile` is present at the repo root, build and run it directly. The source is still mounted read-only at `/app` so static analysis tools have access to the full codebase regardless of what the image copies in.
+When no compose file exists but a Dockerfile candidate is present (root or subdirectory), build and run it directly. The source is still mounted read-only at `/app` so static analysis tools have access to the full codebase regardless of what the image copies in.
 
 **Step C1 — Build the image:**
 ```bash
-docker build -t ${{CONTAINER_NAME}}-image ${{WORKDIR}}/repo 2>&1 | tail -5
+docker build -t ${{CONTAINER_NAME}}-image -f <detected Dockerfile path> <detected Dockerfile directory> 2>&1 | tail -5
 ```
 If the build fails, fall through to Path B (do **not** use the partial image).
 
@@ -213,6 +356,8 @@ After the container is running (whether via Path A, Path B, or Path C), install 
 
 ### Step 5a — Core utilities + build essentials
 
+Install only lightweight, universally-needed tools here. **Do NOT install JDK or Node.js in this step** — they are handled conditionally below.
+
 ```bash
 docker exec <container-name> sh -c "
   if command -v apt-get >/dev/null 2>&1; then
@@ -220,33 +365,25 @@ docker exec <container-name> sh -c "
     apt-get install -y -qq \
       curl wget bash procps git jq \
       build-essential gcc g++ make \
-      default-jdk-headless \
-      python3 python3-pip python3-venv \
-      nodejs npm \
+      python3 python3-pip python3-venv pipx \
       2>/dev/null || true
   elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache \
       curl wget bash procps git jq \
       build-base gcc g++ make \
-      openjdk17-jre-headless \
-      python3 py3-pip \
-      nodejs npm \
+      python3 py3-pip pipx \
       2>/dev/null || true
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q \
       curl wget bash procps git jq \
       gcc gcc-c++ make \
-      java-17-openjdk-headless \
       python3 python3-pip \
-      nodejs npm \
       2>/dev/null || true
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y -q \
       curl wget bash procps git jq \
       gcc gcc-c++ make \
-      java-17-openjdk-headless \
       python3 python3-pip \
-      nodejs npm \
       2>/dev/null || true
   else
     echo 'no known package manager — skipping build essentials bootstrap'
@@ -254,10 +391,58 @@ docker exec <container-name> sh -c "
 " || true
 ```
 
+#### Step 5a-ii — Conditional: JDK (Java/Kotlin/Groovy projects only)
+
+Only install a JDK if the project contains Java source markers (`*.java`, `*.kt`, `*.kts`, `pom.xml`, `*.gradle`). JDK downloads are large (150–400 MB) and are not needed for Node.js, Go, Python, or Electron projects.
+
+```bash
+HAS_JAVA=$(docker exec <container-name> sh -c "
+  find /repo -maxdepth 4 \( -name '*.java' -o -name '*.kt' -o -name '*.kts' -o -name 'pom.xml' -o -name '*.gradle' \) -print -quit 2>/dev/null
+" 2>/dev/null)
+if [ -n "$HAS_JAVA" ]; then
+  docker exec <container-name> sh -c "
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y -qq default-jdk-headless 2>/dev/null || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache openjdk17-jre-headless 2>/dev/null || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q java-17-openjdk-headless 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q java-17-openjdk-headless 2>/dev/null || true
+    fi
+  " || true
+fi
+```
+
+#### Step 5a-iii — Conditional: Node.js/npm (JS/TS projects only)
+
+Only install Node.js and npm if they are not already present AND the project has JavaScript/TypeScript sources.
+
+```bash
+if ! docker exec <container-name> sh -c "command -v node >/dev/null 2>&1" 2>/dev/null; then
+  HAS_NODE=$(docker exec <container-name> sh -c "
+    find /repo -maxdepth 3 \( -name 'package.json' -o -name '*.ts' -o -name '*.js' \) -print -quit 2>/dev/null
+  " 2>/dev/null)
+  if [ -n "$HAS_NODE" ]; then
+    docker exec <container-name> sh -c "
+      if command -v apt-get >/dev/null 2>&1; then
+        apt-get install -y -qq nodejs npm 2>/dev/null || true
+      elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache nodejs npm 2>/dev/null || true
+      elif command -v yum >/dev/null 2>&1; then
+        yum install -y -q nodejs npm 2>/dev/null || true
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y -q nodejs npm 2>/dev/null || true
+      fi
+    " || true
+  fi
+fi
+```
+
 Verify core tools:
 ```bash
 docker exec <container-name> sh -c "
-  for t in curl wget bash git jq gcc java python3; do
+  for t in curl wget bash git jq gcc python3; do
     printf '%s: ' \$t
     command -v \$t >/dev/null 2>&1 && echo 'ok' || echo 'missing'
   done
@@ -279,14 +464,35 @@ docker exec <container-name> sh -c "
 ### Step 5c — Static analysis tools
 
 ```bash
+# Ensure pipx is available and configured to install into /usr/local/bin so
+# tools are on PATH without needing 'pipx ensurepath'. Fall back to pip if
+# pipx is unavailable (older base images).
+docker exec <container-name> sh -c "
+  if ! command -v pipx >/dev/null 2>&1; then
+    python3 -m pip install --quiet --break-system-packages pipx 2>/dev/null || \
+    python3 -m pip install --quiet pipx 2>/dev/null || true
+  fi
+  export PIPX_BIN_DIR=/usr/local/bin
+  echo \"pipx: \$(command -v pipx 2>/dev/null || echo not available)\"
+" || true
+
+# Each tool below: try pipx first (isolated venv, no PEP-668 conflict),
+# then fall back to pip --break-system-packages.
+
 # semgrep — multi-language SAST, JSON-structured findings
 docker exec <container-name> sh -c "
-  pip install --quiet semgrep 2>/dev/null || python3 -m pip install --quiet semgrep 2>/dev/null || true
+  export PIPX_BIN_DIR=/usr/local/bin
+  pipx install semgrep 2>/dev/null || \
+  pip install --quiet --break-system-packages semgrep 2>/dev/null || \
+  python3 -m pip install --quiet --break-system-packages semgrep 2>/dev/null || true
 " || true
 
 # checksec — binary hardening flags (NX / stack canary / PIE / RELRO)
 docker exec <container-name> sh -c "
-  pip install --quiet checksec 2>/dev/null || python3 -m pip install --quiet checksec 2>/dev/null || true
+  export PIPX_BIN_DIR=/usr/local/bin
+  pipx install checksec 2>/dev/null || \
+  pip install --quiet --break-system-packages checksec 2>/dev/null || \
+  python3 -m pip install --quiet --break-system-packages checksec 2>/dev/null || true
 " || true
 
 # gosec — Go-specific security scanner (only when Go is present)
@@ -318,7 +524,7 @@ docker exec <container-name> sh -c "
 ## Constraints
 
 - Fully autonomous — no confirmation prompts
-- Use only: `bash`, `read_file`, `write_file`, MCP graph tools
+- Use only: `bash`, `read_file`, `write_file`, `patch_compose_network`, MCP graph tools
 - Do not perform any security analysis
 - Do not pull images from registries other than Docker Hub official images
 

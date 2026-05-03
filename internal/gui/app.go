@@ -3,6 +3,7 @@ package gui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"late/internal/client"
@@ -38,6 +39,9 @@ var phaseLabels = map[string]string{
 	"scanner":        "Testing Codebase",
 	"binary-scanner": "Live Exploit",
 	"auditor":        "Making Report",
+	"strategist":     "Plan Hypothesis",
+	"explorer":       "Explore Graph",
+	"executor":       "Run PoC",
 }
 
 // App is the top-level GUI state container.
@@ -47,10 +51,18 @@ type App struct {
 	tabs    *container.AppTabs
 	mainTab *container.TabItem
 
-	mainChat   *ChatPanel
-	mainInput  *InputPanel
-	usageLabel *widget.Label // shows "Context: N / M (X%)"
-	configDir  string        // config directory backing the Settings dialog
+	mainChat          *ChatPanel
+	mainInput         *InputPanel
+	usageLabel        *widget.Label // shows "Context: N / M (X%)"
+	currentPhaseLabel *widget.Label // shows current orchestrator phase
+	missionHypLabel   *widget.Label // blackboard: current hypothesis
+	missionExecLabel  *widget.Label // blackboard: latest executor outcome
+	missionConsLabel  *widget.Label // blackboard: active constraints
+	configDir         string        // config directory backing the Settings dialog
+
+	// Project Map tab — populated once get_architecture completes.
+	projectMap    *ProjectMapPanel
+	projectMapTab *container.TabItem
 
 	mu            sync.Mutex
 	phaseCounter  map[string]int // label → open count
@@ -108,6 +120,18 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 
 	statusLabel := widget.NewLabel("● Ready")
 	a.usageLabel = widget.NewLabel("Context: –")
+	a.currentPhaseLabel = widget.NewLabel("Current Phase: STOP")
+	a.missionHypLabel = widget.NewLabel("Hypothesis: –")
+	a.missionExecLabel = widget.NewLabel("Last Executor: –")
+	a.missionConsLabel = widget.NewLabel("Constraints: –")
+	a.missionHypLabel.Wrapping = fyne.TextWrapWord
+	a.missionExecLabel.Wrapping = fyne.TextWrapWord
+	a.missionConsLabel.Wrapping = fyne.TextWrapWord
+	missionCard := widget.NewCard("Mission Snapshot", "Strategist loop state", container.NewVBox(
+		a.missionHypLabel,
+		a.missionExecLabel,
+		a.missionConsLabel,
+	))
 
 	// handleQuit cancels the agent, runs cleanup, then closes the window.
 	// sync.Once ensures at most one execution even if button + OS close race.
@@ -146,7 +170,8 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 
 	bottomBar := container.NewVBox(
 		a.mainInput,
-		container.NewBorder(nil, nil, statusLabel, a.usageLabel, nil),
+		missionCard,
+		container.NewBorder(nil, nil, statusLabel, a.usageLabel, a.currentPhaseLabel),
 	)
 	mainContent := container.NewBorder(
 		topBar,
@@ -155,7 +180,13 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 		a.mainChat,
 	)
 	a.mainTab = container.NewTabItem("Main", mainContent)
-	a.tabs = container.NewAppTabs(a.mainTab)
+
+	// Project Map tab — initially shows "waiting" placeholder; populated once
+	// get_architecture completes and ProjectMapLoadedEvent is received.
+	a.projectMap = NewProjectMapPanel()
+	a.projectMapTab = container.NewTabItem("Project Map", container.NewPadded(a.projectMap))
+
+	a.tabs = container.NewAppTabs(a.mainTab, a.projectMapTab)
 	a.tabs.SetTabLocation(container.TabLocationTop)
 
 	a.startEventLoop(rootAgent, a.mainChat, nil, "", func(used, max int) {
@@ -251,6 +282,24 @@ func (a *App) closeSubagentTab(tabItem *container.TabItem, o common.Orchestrator
 	a.tabs.Refresh()
 }
 
+// SetArchitecture loads architecture data into the Project Map tab.
+// Safe to call from any goroutine — marshals onto the Fyne main goroutine.
+func (a *App) SetArchitecture(data common.ArchitectureData) {
+	if a.projectMap == nil {
+		return
+	}
+	a.projectMap.Load(data)
+}
+
+// HighlightNode signals the Project Map to highlight the cluster that owns
+// filePath. Safe to call from any goroutine.
+func (a *App) HighlightNode(filePath string, isHotspot bool) {
+	if a.projectMap == nil {
+		return
+	}
+	a.projectMap.HighlightFile(filePath, isHotspot)
+}
+
 // phaseLabel returns a human-readable tab label with a counter suffix when
 // more than one tab with the same base label is open simultaneously.
 func (a *App) phaseLabel(agentType string) string {
@@ -279,4 +328,33 @@ func (a *App) sendNotification(title, body string) {
 // messageText extracts the string content from a ChatMessage.
 func messageText(msg client.ChatMessage) string {
 	return msg.Content
+}
+
+func (a *App) updateMissionSnapshot(e common.MissionSnapshotEvent) {
+	if a.missionHypLabel == nil || a.missionExecLabel == nil || a.missionConsLabel == nil {
+		return
+	}
+
+	h := strings.TrimSpace(e.CurrentHypothesis)
+	if h == "" {
+		h = "-"
+	}
+	a.missionHypLabel.SetText("Hypothesis: " + h)
+
+	outcome := strings.TrimSpace(e.LastExecutorOutcome)
+	if outcome == "" {
+		outcome = "-"
+	}
+	reason := strings.TrimSpace(e.LastExecutorReason)
+	if reason != "" {
+		a.missionExecLabel.SetText("Last Executor: " + outcome + " (" + reason + ")")
+	} else {
+		a.missionExecLabel.SetText("Last Executor: " + outcome)
+	}
+
+	if len(e.ActiveConstraints) == 0 {
+		a.missionConsLabel.SetText("Constraints: -")
+		return
+	}
+	a.missionConsLabel.SetText("Constraints: " + strings.Join(e.ActiveConstraints, " | "))
 }

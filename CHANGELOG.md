@@ -6,6 +6,188 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
+## [v1.8.4] — 2026-05-03
+
+### Added
+- **Strategist/Explorer/Executor role system**:
+  - New subagent role prompts:
+    - `instruction-sast-strategist.md`
+    - `instruction-sast-explorer.md`
+    - `instruction-sast-executor.md`
+  - `spawn_subagent` `agent_type` enum extended to include `strategist`, `explorer`, and `executor`.
+  - Role-specific prompt resolution and strict tool allowlists in `internal/agent/agent.go`:
+    - Strategist: `read_file` only
+    - Explorer: graph/snippet tools + `read_file`
+    - Executor: `bash` + `read_file`
+
+- **Orchestrator phase state machine + events**:
+  - New `StateMachine` with explicit phases and validated transitions in `internal/orchestrator/state_machine.go`:
+    - `PLAN`, `EXPLORE`, `EXECUTE`, `FEEDBACK`, `STOP`
+  - New `PhaseEvent` in `internal/common/interfaces.go` emitted from `BaseOrchestrator` real runtime transition points:
+    - submit/execute/start turn/GPU acquired/GPU released/end turn/idle-closed-error
+  - Added comprehensive tests in `internal/orchestrator/state_machine_test.go`.
+
+- **Typed blackboard exploit-history contract** (`internal/orchestrator/blackboard.go`):
+  - Structured keys:
+    - `exploit_history`, `strategist_constraints`, `current_hypothesis`, `explorer_evidence`, `latest_executor_attempt`
+  - `ExploitHistoryEntry` contract type.
+  - Helper APIs:
+    - `AppendExploitHistory`, `ExploitHistory`, `LatestExecutorAttempt`
+    - `AddStrategistConstraint`, `StrategistConstraints`
+    - `SetCurrentHypothesis`, `CurrentHypothesis`
+    - `SetExplorerEvidence`, `ExplorerEvidence`
+    - `ResetExploitState`
+  - Added tests in `internal/orchestrator/blackboard_test.go`.
+
+- **Mission snapshot GUI panel**:
+  - New `MissionSnapshotEvent` in `internal/common/interfaces.go`.
+  - `late-sast` emits snapshot events from the root orchestrator after mission-turn persistence.
+  - Main GUI now renders a compact Mission Snapshot card in `internal/gui/app.go`:
+    - Current hypothesis
+    - Last executor outcome (+ reason)
+    - Active constraints
+  - `internal/gui/events.go` handles `MissionSnapshotEvent` for live updates.
+
+### Changed
+- **Mission-turn orchestration now actively reads/writes blackboard contract state** (`cmd/late-sast/main.go`):
+  - Before spawning `strategist` / `explorer` / `executor`, goals are enriched with current blackboard context.
+  - After each role completes, JSON output is parsed and persisted back into blackboard.
+  - Root scan startup now resets exploit mission state via `GlobalBlackboard.ResetExploitState()`.
+  - Shared JSON extraction helper introduced and reused by architecture JSON parsing.
+
+- **GUI phase visibility improvements**:
+  - Child tabs now include live phase labels (`... · PLAN/EXPLORE/EXECUTE/FEEDBACK/STOP`) derived from `PhaseEvent` transitions.
+  - Main footer now shows `Current Phase` from real orchestrator state transitions.
+
+- **Project Map event delivery reliability**:
+  - `ProjectMapLoadedEvent` is now emitted whenever architecture metadata is fetched, even when cluster list is empty.
+
+- **SAST setup launch detection updated for monorepos** (`instruction-sast-setup.md`):
+  - Compose/Dockerfile detection changed from root-only to bounded recursive search.
+  - Selection rules now prefer the service directory found by monorepo entrypoint analysis.
+  - Path A uses detected compose path; Path C uses detected Dockerfile path + directory context.
+  - Prevents false "no docker" conclusions when Docker assets live in subdirectories.
+
+### Fixed
+- **Scanner/setup long-wait behavior hardened**:
+  - Added bounded readiness-polling guidance in prompts (`instruction-sast-scanner.md`, `instruction-sast-setup.md`).
+  - Runtime SAST shell policy now blocks:
+    - single `sleep` > 15s
+    - cumulative sleep > 90s
+  - New tests in `internal/tool/sast_tools_test.go` cover long-sleep and cumulative-sleep blocks.
+
+- **Empty-output diagnostics no longer claim context overflow by default**:
+  - `spawn_subagent` empty output message now reports likely early termination/empty stream without asserting overflow.
+  - Added regression test for wording.
+
+- **Executor observability and failure classification**:
+  - Added explicit debug events:
+    - `CONTEXT_LIMIT`
+    - `OUTPUT_BUDGET_HIT`
+    - `EMPTY_STREAM`
+  - Turn summaries now include token accounting and `n_ctx`.
+  - Duplicate-plan reset logic now also resets after policy-blocked turns.
+
+
+## [v1.8.3] — 2026-05-03
+
+### Added
+- **Language-weighted resource heuristics** (`internal/orchestrator/limits.go`):
+  - `LanguageMultiplier(language string) float64` — per-language turn-budget multiplier applied to the base `CalculateTurns` formula.
+  - Multipliers: C / C++ → 1.5× (deep call stacks, manual memory); Rust → 1.3×; Go / Java / C# / Kotlin / Swift → 1.0×; TypeScript → 0.9×; Python / JavaScript / PHP / Ruby → 0.8×. Unknown languages default to 1.0×.
+  - `ComplexityMeta.PrimaryLanguage` field carries the detected language through the heuristic pipeline.
+  - `--max-turns-ceiling` (default 500) and `--max-timeout-ceiling` (default 60m) CLI flags to cap the dynamic budget.
+  - **CLI override precedence**: explicitly supplied `--subagent-max-turns` / `--subagent-timeout` always win over dynamic values (`flag.Visit` detection).
+  - Language multiplier and `primary_language` written to `GlobalBlackboard` at first subagent spawn.
+
+- **Dynamic Resource Allocator — `get_architecture` integration** (`cmd/late-sast/main.go`):
+  - `fetchComplexityMeta` helper calls the `get_architecture` MCP tool with the cloned repo path and parses the response JSON (handles multiple field-name variants across codebase-memory-mcp versions).
+  - `sync.Once` lazy-fetch: called on the first `SpawnSubagentTool.Runner` invocation; result cached for all subsequent subagents in the same scan.
+  - `resolveBudget()` returns `(turns, timeout)` respecting CLI override precedence, dynamic value, or static fallback (`FallbackSubagentTurns` / `FallbackSubagentTimeout`).
+
+- **"Project Map" tab** (`internal/gui/project_map.go`, `internal/gui/app.go`):
+  - New `ProjectMapPanel` Fyne widget showing a 3-column adaptive grid of cluster cards sourced from `get_architecture` `clusters` + `communities`.
+  - Each card shows the cluster label, file count, and a hotspot indicator (`⚠ HOTSPOT`).
+  - Hotspot clusters use a red background (`color.RGBA{180,40,40,220}`); normal clusters use the theme button color.
+  - **Real-time agent tracker**: when any subagent calls `read_file`, `search_graph`, `get_code_snippet`, or `trace_path`, `NodeHighlightMiddleware` calls `guiApp.HighlightNode(filePath, isHotspot)` → `ProjectMapPanel.HighlightFile` → 1.5-second color-fade animation (`canvas.NewColorRGBAAnimation`) on the owning cluster card.
+  - Permanent red marking when a file is flagged as a hotspot.
+  - Header bar shows language, total file count, node count, cluster count, and hotspot count.
+  - Tab is added to the main `AppTabs` alongside the "Main" tab; always visible, updates lazily once `ProjectMapLoadedEvent` is received.
+
+- **`ProjectMapLoadedEvent` and `NodeHighlightEvent`** (`internal/common/interfaces.go`):
+  - New event types carrying `ArchitectureData` (clusters, hotspots, language, file/node/edge counts) and per-file highlight requests respectively.
+  - `ArchitectureData` and `ArchitectureCluster` shared data types.
+
+- **Turn-progress counter in tab labels** (`internal/orchestrator/base.go`, `internal/gui/events.go`):
+  - `StatusEvent.Turn` / `StatusEvent.MaxTurns` fields (already added in prior session) now populated by `onStartTurn` via an atomic counter (`turnCurrent int64`) reset at each `Submit`/`Execute` call.
+  - `setTabStatus` in the GUI event loop tracks `currentTurn` / `currentMaxTurns` and renders `"🧠 Testing Codebase (42/150)"` whenever `Turn > 0`.
+
+- **`BaseOrchestrator.MaxTurns() int`** — satisfies updated `common.Orchestrator` interface (was missing, causing build failure).
+- **`BaseOrchestrator.PushEvent(Event)`** — non-blocking external event injection used by `main.go` to deliver `ProjectMapLoadedEvent` into the root orchestrator's event channel.
+- **`NodeHighlightMiddleware`** (`internal/orchestrator/highlight_middleware.go`) — tool middleware that intercepts `read_file` / `search_graph` / `get_code_snippet` / `trace_path` calls, extracts the path argument, and calls a provided callback. Applied to all GUI-path subagents.
+
+---
+
+## [v1.8.2] — 2026-05-02
+
+
+### Added
+- **Async multi-agent GPU coordination** ([#7](https://github.com/giveen/late-sast/pull/7)):
+  - `ResourceCoordinator` (`internal/executor/coordinator.go`) — channel-semaphore (capacity 1) so `AcquireGPULock(ctx)` respects context cancellation. `ReleaseGPULock()` panics on double-release (fail-loud, like `sync.Mutex`). `GlobalGPU` singleton wired to the root orchestrator at startup via `SetCoordinator(executor.GlobalGPU)`.
+  - `RunLoop` extended with `coordinator`, `onGPUAcquired`, `onGPUReleased` — lock is held **only** during `StartStream`+`ConsumeStream`, released immediately after streaming. `onGPUReleased` ("working") is deferred to just before `ExecuteToolCallsWithStats` so the ⚙ status only appears when tool calls are actually about to run, never on stream errors or no-tool turns. Coordinator auto-propagates parent → child in `NewSubagentOrchestrator`.
+  - Status lifecycle: with coordinator — `queued` → `thinking` → `working` → `queued` …; without coordinator — legacy `thinking` only (fully backward-compatible).
+- **Blackboard inter-agent communication** (`internal/orchestrator/blackboard.go`) — thread-safe key-value store (`Write`/`Read`/`ReadAll`/`Delete`) for passing findings between concurrent agents (e.g. Dependency Agent writes a vulnerable library; Taint-Analysis Agent reads it to prioritise entry points). `GlobalBlackboard` singleton provided for default runs.
+- **Live GPU-state tab labels** (`internal/gui/events.go`) — tab label updated on every status transition via `setTabStatus`; no new widget types required:
+
+  | Status | Tab prefix |
+  |--------|-----------|
+  | `queued` | ⏳ |
+  | `thinking` | 🧠 |
+  | `working` | ⚙ |
+  | `idle` / `closed` / `error` | *(base label restored)* |
+
+- **Setup agent: Step 0 — smart install detection** (`instruction-sast-setup.md`):
+  - Before cloning, the setup agent now fetches the project README and attempts two quick-install passes.
+  - **Pass A — package-manager one-liners**: recognises `go install …@latest`, `pip install`, `pipx install`, `npm install -g`, `cargo install`, `gem install`. When found, spins up a minimal toolchain container (`golang:1.23`, `python:3.11-slim`, `node:20-slim`, `rust:1.80-slim`) and runs the command directly, skipping clone and build entirely. For projects like Fabric this cuts ~35 turn shell loops down to a single `go install` call.
+  - **Pass B — GitHub release binary assets**: if no one-liner is found, checks the README for `.deb` / `.AppImage` / `.snap` / `.flatpak` mentions or a releases page link, then queries `api.github.com/repos/<owner>/<repo>/releases/latest` to discover downloadable assets. Preference order: `.deb` (amd64) → `.AppImage` (x86_64) → `.snap` → `.flatpak`. For `.deb` files starts `ubuntu:22.04` and runs `dpkg -i` + `apt-get install -f`. For `.AppImage` files starts `debian:bookworm-slim` and uses `--appimage-extract` to unpack without FUSE. Covers projects like `open-webui/desktop` that ship pre-built binaries only.
+- **`spawn_subagent` empty-output detection** (`internal/tool/subagent.go`): when a runner returns `("", nil)` (e.g. model hit `finish_reason=stop` with empty content and no tool calls), instead of forwarding a misleading `"Subagent completed. Result:\n\n"` to the orchestrator, a descriptive string is now returned — `"subagent '<type>' completed but returned empty output — possible context window overflow or unexpected termination"` — so the orchestrator can distinguish stall from "no findings".
+- **pipx preferred over `pip --break-system-packages`** (`instruction-sast-setup.md` Step 5):
+  - `pipx` is now included in the `apt-get` and `apk` package lists during Step 5a bootstrap.
+  - Step 5c installs semgrep and checksec via `pipx install` first (isolated venv per tool, no PEP 668 `externally-managed-environment` conflict). Falls back to `pip install --break-system-packages` only if pipx itself could not be installed. `PIPX_BIN_DIR=/usr/local/bin` is exported so installed binaries land on PATH without needing `pipx ensurepath`.
+
+### Fixed
+- **Shell tool hangs on `docker exec` timeout** (`internal/tool/implementations.go`, `shell_command_unix.go`): the `bash` tool previously used `cmd.CombinedOutput()` which blocks on pipe-draining. When the per-call timeout fired and killed the host `bash` process, child processes (e.g. `docker exec`) inherited the pipe and kept it open, so `CombinedOutput()` never returned — the subagent stalled with only heartbeats and no TOOL_RESULT. Fixed by:
+  - Placing each shell command in its own process group (`SysProcAttr{Setpgid: true}` on Linux) and using `Start`+`Wait` with a select loop; on context deadline `killProcessGroup` sends `SIGKILL(-pgid)` to the entire group, closing all inherited pipes and allowing `Wait` to return promptly.
+  - Increasing the `ShellTool` timeout from 2 min → **5 min** in `cmd/late-sast/main.go` to give more headroom for legitimate `docker exec` operations (Trivy download, semgrep install, etc.) before timing out.
+- **Setup Step 5a: unconditional JDK/Node.js install** (`instruction-sast-setup.md`): `default-jdk-headless` (200–400 MB) and `nodejs npm` were installed unconditionally on every project, frequently exceeding the former 2-minute shell timeout. Fixes:
+  - Step 5a now installs only lightweight core utilities (curl, wget, bash, procps, git, jq, build-essential, gcc, g++, make, python3, python3-pip, python3-venv, pipx).
+  - **Step 5a-ii (conditional JDK)**: JDK is installed only when the repo contains Java project markers (`*.java`, `*.kt`, `*.kts`, `pom.xml`, `*.gradle`). Non-Java projects (Electron, Go, Python, Rust, etc.) skip the 200–400 MB download entirely.
+  - **Step 5a-iii (conditional Node.js)**: `nodejs npm` is installed only if `node` is absent in the container AND the repo has a `package.json` or JS/TS sources.
+- **Prompt correctness improvements** (5 issues across `instruction-sast*.md`):
+  - **`instruction-sast-retest.md` Step 2 — field name mismatch**: extraction instructions now reference the actual report field names (`**Location:**`, `[SEVERITY]` heading prefix, `**Taint Path:**`, `**Reproduce:**`) instead of phantom fields (`**File:**`, `**Vuln class:**`, `**Taint path:**`) that have never existed in the report template.
+  - **`instruction-sast-setup.md` Constraints**: `patch_compose_network` added to the allowed-tools list; it is called in Path A Step 2 but was previously omitted.
+  - **`instruction-sast-scanner.md` Step 3**: `trace_path` example now includes `from=` and `to=` params, consistent with the binary scanner. Previously the web scanner example omitted both required parameters.
+  - **`instruction-sast-setup.md` Step 5c**: removed a misleading comment block that implied a `pip_install` shell helper function was defined — no such function ever existed; each tool block already inlines the full fallback chain.
+  - **`instruction-sast.md` Step 2.5**: collapsed redundant triple-restatement of the mandatory `spawn_subagent` guard into a single clear sentence.
+- **MCP tools not available to any subagent** (`cmd/late-sast/main.go`): `ensureCBM()` correctly downloads and extracts `codebase-memory-mcp`, but the binary was never injected into the MCP server config — `mcp_config.json` remained `{"mcpServers":{}}`. `ConnectFromConfig` was therefore never called (early-return on empty map), so all 14 graph tools (`index_repository`, `get_architecture`, `search_graph`, `trace_call_path`, etc.) were silently absent from every agent's tool list. After `ensureCBM()` succeeds, the binary path is now auto-injected into the in-memory config under the key `"codebase-memory-mcp"` if not already present, before `ConnectFromConfig` is called. Users who have manually added their own `codebase-memory-mcp` entry in `mcp_config.json` are unaffected.
+- **Empty model response not detected as error** (`internal/executor/executor.go`): when the model returned `finish_reason=""` with empty content and no tool calls, the executor silently returned `("", nil)`. This is now detected and returned as an explicit error: `"model returned empty response on turn N (possible context window overflow or stream failure)"`.
+- **Error subagent tabs left open** (`internal/gui/events.go`): the `"error"` event case previously kept the subagent tab open ("so the user can read the error") but the error is already visible in the main tab as the `spawn_subagent` tool result. Error tabs now close automatically and fire a system notification, same as successful subagent completion.
+- **Tool result debug log accuracy** — `LogDebugToolResult` is now called after error-wrapping so the debug log records the final error string seen by the orchestrator rather than the raw pre-wrap message.
+- **Subagent execution budget defaults increased for long scans** (`cmd/late-sast/main.go`):
+  - `--subagent-max-turns` default raised from 150 → **300** to reduce premature turn-limit termination on larger targets.
+  - New `--subagent-timeout` flag added (default **45m**), and wired into both TUI and GUI `spawn_subagent` registrations. This replaces the previous hardcoded 20-minute subagent timeout and makes long-running setup/scanner passes configurable from CLI.
+- **GPU coordination — Copilot review fixes** ([#7](https://github.com/giveen/late-sast/pull/7)):
+  - **`Submit()` initial status flicker**: `Submit()` now emits `"queued"` (not `"thinking"`) when a coordinator is attached, consistent with `Execute()`. Eliminates the `thinking→queued→thinking` flash in GUI tabs when a new session is submitted while waiting for the GPU.
+  - **TUI `queued`/`working` statuses unhandled**: `update.go` now maps `"queued"` → `StateThinking` + "Queued..." and `"working"` → `StateThinking` + "Working..." so the TUI shows the correct spinner text when a coordinator is active outside the GUI.
+  - **Go error style**: `AcquireGPULock` error string lowercased to `"gpu lock acquisition canceled: ..."` per Go conventions.
+  - **Flaky timing test**: `TestResourceCoordinator_BlocksThenSucceeds` replaced `time.Sleep(30ms)` with a channel handshake — goroutine signals just before blocking on `AcquireGPULock`, then main releases; no scheduler-dependent delay.
+
+### Changed
+- **History compaction gated on context pressure** (`internal/session/session.go`): `compactHistoryForContext` now only runs when `lastTokenCount / contextSize ≥ 0.75` (75% threshold). When the context window size is unknown (backend does not report it), compaction still runs as before on every save. Token count is populated after each turn via `SetLastTokenCount`.
+- **GUI Thoughts scroll behaviour** (`internal/gui/chat.go`): `UpdateThinking` no longer calls `ScrollToBottom()` when the Thoughts accordion is open, preventing it from hijacking the user's scroll position while they are reading the chain-of-thought stream. Auto-scroll still fires when the accordion is collapsed.
+
+---
+
 ## [v1.8.1] — 2026-05-01
 
 ### Added

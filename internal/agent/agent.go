@@ -13,6 +13,54 @@ import (
 	"os"
 )
 
+func promptPathForAgentType(agentType string) (string, error) {
+	switch agentType {
+	case "coder":
+		return "prompts/instruction-coding.md", nil
+	case "scanner":
+		return "prompts/instruction-sast-scanner.md", nil
+	case "binary-scanner":
+		return "prompts/instruction-sast-scanner-binary.md", nil
+	case "auditor":
+		return "prompts/instruction-sast-auditor.md", nil
+	case "setup":
+		return "prompts/instruction-sast-setup.md", nil
+	case "strategist":
+		return "prompts/instruction-sast-strategist.md", nil
+	case "explorer":
+		return "prompts/instruction-sast-explorer.md", nil
+	case "executor":
+		return "prompts/instruction-sast-executor.md", nil
+	default:
+		return "", fmt.Errorf("unknown agent type: %s", agentType)
+	}
+}
+
+func allowToolForAgentType(agentType, toolName string) bool {
+	switch agentType {
+	case "strategist":
+		return toolName == "read_file"
+	case "explorer":
+		switch toolName {
+		case "search_graph", "trace_path", "get_code_snippet", "query_graph", "read_file":
+			return true
+		default:
+			return false
+		}
+	case "executor":
+		switch toolName {
+		case "bash", "read_file":
+			return true
+		default:
+			return false
+		}
+	case "auditor":
+		return toolName == "read_file"
+	default:
+		return true
+	}
+}
+
 // MiddlewareFactory creates middlewares bound to a specific tool registry.
 // Used to wire confirm-middleware (TUI or GUI) to the child's own registry.
 type MiddlewareFactory func(registry *common.ToolRegistry) []common.ToolMiddleware
@@ -32,50 +80,23 @@ func NewSubagentOrchestrator(
 	debugLogger *debug.Logger,
 ) (common.Orchestrator, error) {
 	// 1. Determine System Prompt
-	systemPrompt := ""
-	switch agentType {
-	case "coder":
-		content, err := assets.PromptsFS.ReadFile("prompts/instruction-coding.md")
-		if err != nil {
-			return nil, fmt.Errorf("failed to load embedded subagent prompt: %w", err)
-		}
-		systemPrompt = string(content)
+	promptPath, err := promptPathForAgentType(agentType)
+	if err != nil {
+		return nil, err
+	}
+	content, err := assets.PromptsFS.ReadFile(promptPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load embedded prompt for agent %q: %w", agentType, err)
+	}
+	systemPrompt := string(content)
 
-		if injectCWD {
-			cwd, err := os.Getwd()
-			if err == nil {
-				systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
-					"${{CWD}}": cwd,
-				})
-			}
+	if agentType == "coder" && injectCWD {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr == nil {
+			systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
+				"${{CWD}}": cwd,
+			})
 		}
-	case "scanner":
-		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-scanner.md")
-		if err != nil {
-			return nil, fmt.Errorf("failed to load embedded scanner prompt: %w", err)
-		}
-		systemPrompt = string(content)
-	case "binary-scanner":
-		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-scanner-binary.md")
-		if err != nil {
-			return nil, fmt.Errorf("failed to load embedded binary scanner prompt: %w", err)
-		}
-		systemPrompt = string(content)
-	case "auditor":
-		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-auditor.md")
-		if err != nil {
-			return nil, fmt.Errorf("failed to load embedded auditor prompt: %w", err)
-		}
-		systemPrompt = string(content)
-	case "setup":
-		content, err := assets.PromptsFS.ReadFile("prompts/instruction-sast-setup.md")
-		if err != nil {
-			return nil, fmt.Errorf("failed to load embedded setup prompt: %w", err)
-		}
-		systemPrompt = string(content)
-	default:
-		// TODO: reviewer, committer
-		return nil, fmt.Errorf("unknown agent type: %s", agentType)
 	}
 
 	if gemmaThinking {
@@ -110,10 +131,7 @@ func NewSubagentOrchestrator(
 			if name == "spawn_subagent" || name == "write_implementation_plan" {
 				continue
 			}
-			// The auditor is a small 7B model — giving it 28+ tools causes context
-			// collapse. Restrict it to read_file only; it does not need bash or
-			// graph tools to perform taint-chain analysis.
-			if agentType == "auditor" && name != "read_file" {
+			if !allowToolForAgentType(agentType, name) {
 				continue
 			}
 			sess.Registry.Register(t)
@@ -154,6 +172,9 @@ func NewSubagentOrchestrator(
 
 	if p, ok := parent.(*orchestrator.BaseOrchestrator); ok {
 		p.AddChild(child, agentType)
+		if coord := p.Coordinator(); coord != nil {
+			child.SetCoordinator(coord)
+		}
 	}
 
 	return child, nil

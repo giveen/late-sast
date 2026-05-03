@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"late/internal/common"
 	appconfig "late/internal/config"
 	"late/internal/debug"
+	"late/internal/executor"
 	"late/internal/gui"
 	"late/internal/mcp"
 	"late/internal/orchestrator"
@@ -50,7 +53,10 @@ func main() {
 	outputReq := flag.String("output", "", "Directory to write the SAST report (default: current directory)")
 	timeoutReq := flag.Duration("timeout", 0, "Wall-clock scan timeout (e.g. 90m, 2h). 0 = no limit")
 	versionReq := flag.Bool("version", false, "Show version")
-	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum turns per subagent")
+	subagentMaxTurns := flag.Int("subagent-max-turns", 300, "Maximum turns per subagent")
+	subagentTimeout := flag.Duration("subagent-timeout", 45*time.Minute, "Wall-clock timeout per subagent run (e.g. 30m, 1h)")
+	maxTurnsCeiling := flag.Int("max-turns-ceiling", orchestrator.DefaultMaxTurnsCeiling, "Upper bound for dynamic turn budget")
+	maxTimeoutCeiling := flag.Duration("max-timeout-ceiling", orchestrator.DefaultMaxTimeoutCeiling, "Upper bound for dynamic subagent timeout")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token for Gemma 4 models")
 
 	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")
@@ -67,6 +73,20 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	// Detect whether the user explicitly supplied --subagent-max-turns or
+	// --subagent-timeout so we can give CLI flags precedence over the dynamic
+	// budget calculated from get_architecture metrics.
+	userSetMaxTurns := false
+	userSetTimeout := false
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "subagent-max-turns":
+			userSetMaxTurns = true
+		case "subagent-timeout":
+			userSetTimeout = true
+		}
+	})
 
 	if *versionReq {
 		fmt.Printf("late-sast %s\n", common.Version)
@@ -286,11 +306,15 @@ func main() {
 		auditorClient.DiscoverBackend(context.Background())
 	}
 
-	// Ensure codebase-memory-mcp is available, downloading if needed
+	// Ensure codebase-memory-mcp is available, downloading if needed.
+	// Capture the path so we can auto-inject it into the MCP config below.
+	var cbmBinPath string
 	if cbmPath, cbmErr := ensureCBM(); cbmErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: codebase-memory-mcp unavailable (%v) — graph intelligence disabled\n", cbmErr)
 	} else {
-		// Add its directory to PATH so the MCP config can find it by name
+		cbmBinPath = cbmPath
+		// Add its directory to PATH so any user-configured MCP entry that
+		// references "codebase-memory-mcp" by name can resolve it.
 		cbmDir := filepath.Dir(cbmPath)
 		if cur := os.Getenv("PATH"); !strings.Contains(cur, cbmDir) {
 			os.Setenv("PATH", cbmDir+string(os.PathListSeparator)+cur)
@@ -305,7 +329,22 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load MCP config: %v\n", err)
 	}
-	if mcpConfig != nil && len(mcpConfig.McpServers) > 0 {
+	if mcpConfig == nil {
+		mcpConfig = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
+	}
+	// Auto-inject codebase-memory-mcp when ensureCBM succeeded and the user
+	// has not explicitly configured it. This wires up the 14 graph tools
+	// (index_repository, get_architecture, search_graph, …) automatically
+	// without requiring any manual mcp_config.json edits.
+	if cbmBinPath != "" {
+		if _, exists := mcpConfig.McpServers["codebase-memory-mcp"]; !exists {
+			mcpConfig.McpServers["codebase-memory-mcp"] = mcp.MCPServer{
+				Command: cbmBinPath,
+				Args:    []string{},
+			}
+		}
+	}
+	if len(mcpConfig.McpServers) > 0 {
 		fmt.Println("Connecting to MCP servers...")
 		if err := mcpClient.ConnectFromConfig(context.Background(), mcpConfig); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: MCP connection error: %v\n", err)
@@ -443,7 +482,7 @@ func main() {
 		sess.Registry.Register(&tool.ShellTool{
 			Analyzer:     &tool.SASTBashAnalyzer{},
 			SkipSafePath: true,
-			Timeout:      2 * time.Minute,
+			Timeout:      5 * time.Minute,
 		})
 		sess.Registry.Register(tool.NewReadFileTool())
 		sess.Registry.Register(tool.WriteFileTool{})
@@ -487,11 +526,72 @@ func main() {
 		}
 
 		rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
+		rootAgent.SetCoordinator(executor.GlobalGPU)
+		orchestrator.GlobalBlackboard.ResetExploitState()
 		return sessionResult{sess: sess, rootAgent: rootAgent, initialMsg: initialMessage, debugLog: debugLog}
 	}
 
+	// --- Dynamic Resource Allocator -------------------------------------------
+	// Lazily fetch architecture metadata from get_architecture on the first
+	// subagent spawn. The results are cached for all subsequent subagents within
+	// the same scan and stored in GlobalBlackboard.
+	var (
+		cachedMeta     orchestrator.ComplexityMeta
+		cachedArchData common.ArchitectureData
+		metaFetchErr   error
+		metaOnce       sync.Once
+	)
+	fetchMetaOnce := func(repoPath string, notifyRootAgent *orchestrator.BaseOrchestrator) {
+		metaOnce.Do(func() {
+			cachedMeta, cachedArchData, metaFetchErr = fetchComplexityMeta(
+				context.Background(), mcpClient, repoPath,
+			)
+			if metaFetchErr != nil {
+				fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget unavailable (%v) — using CLI defaults\n", metaFetchErr)
+				return
+			}
+			mult := orchestrator.LanguageMultiplier(cachedMeta.PrimaryLanguage)
+			orchestrator.GlobalBlackboard.Write("language_multiplier", mult)
+			orchestrator.GlobalBlackboard.Write("primary_language", cachedMeta.PrimaryLanguage)
+			orchestrator.GlobalBlackboard.Write("complexity_meta", cachedMeta)
+			fmt.Printf("[late-sast] Dynamic budget: lang=%s mult=%.1fx turns≈%d timeout≈%s\n",
+				cachedMeta.PrimaryLanguage, mult,
+				orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
+				orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
+			)
+			if notifyRootAgent != nil {
+				notifyRootAgent.PushEvent(common.ProjectMapLoadedEvent{
+					OrcID: notifyRootAgent.ID(),
+					Data:  cachedArchData,
+				})
+			}
+		})
+	}
+
+	// resolveBudget returns the effective (turns, timeout) for a new subagent.
+	// CLI flags take precedence when explicitly set; otherwise the dynamic
+	// budget from get_architecture is used, falling back to static defaults.
+	resolveBudget := func() (int, time.Duration) {
+		turns := *subagentMaxTurns
+		timeout := *subagentTimeout
+		if !userSetMaxTurns && metaFetchErr == nil {
+			dyn := orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling)
+			if dyn > 0 {
+				turns = dyn
+			}
+		}
+		if !userSetTimeout && metaFetchErr == nil {
+			dyn := orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling)
+			if dyn > 0 {
+				timeout = dyn
+			}
+		}
+		return turns, timeout
+	}
+	// --------------------------------------------------------------------------
+
 	if *useTUIReq {
-		// ── TUI path — old behaviour, completely unchanged ───────────────────
+		// ── TUI path ──────────────────────────────────────────────────────────
 		sr := buildScan(target, localPath, outputDir, retestPath)
 		sess, rootAgent, initialMessage, debugLog := sr.sess, sr.rootAgent, sr.initialMsg, sr.debugLog
 
@@ -527,10 +627,13 @@ func main() {
 				if agentType == "auditor" {
 					agentClient = auditorClient
 				}
+				goal = buildMissionTurnGoal(agentType, goal)
+				fetchMetaOnce(filepath.Join(workDir, "repo"), rootAgent)
+				turns, timeout := resolveBudget()
 				child, err := agent.NewSubagentOrchestrator(
 					agentClient, goal, ctxFiles, agentType,
 					enabledTools, true, *gemmaThinkingReq,
-					*subagentMaxTurns, rootAgent,
+					turns, rootAgent,
 					func(reg *common.ToolRegistry) []common.ToolMiddleware {
 						return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
 					},
@@ -539,13 +642,15 @@ func main() {
 				if err != nil {
 					return "", err
 				}
+				_ = timeout // subagent timeout is set via DefaultTimeout below; per-child timeouts future work
 				res, err := child.Execute("")
 				if err != nil {
 					return "", err
 				}
+				persistMissionTurnResult(agentType, res)
 				return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 			},
-			DefaultTimeout:    20 * time.Minute,
+			DefaultTimeout:    *subagentTimeout,
 			HeartbeatInterval: 30 * time.Second,
 			Heartbeat: func(agentType, goal string, elapsed time.Duration) {
 				if debugLog != nil && debugLog.Enabled() {
@@ -586,12 +691,24 @@ func main() {
 					if agentType == "auditor" {
 						agentClient = auditorClient
 					}
+					goal = buildMissionTurnGoal(agentType, goal)
+					fetchMetaOnce(filepath.Join(workDir, "repo"), rootAgent)
+					turns, _ := resolveBudget()
+					hotspotSet := make(map[string]bool, len(cachedArchData.Hotspots))
+					for _, h := range cachedArchData.Hotspots {
+						hotspotSet[h] = true
+					}
 					child, err := agent.NewSubagentOrchestrator(
 						agentClient, goal, ctxFiles, agentType,
 						enabledTools, true, *gemmaThinkingReq,
-						*subagentMaxTurns, rootAgent,
+						turns, rootAgent,
 						func(reg *common.ToolRegistry) []common.ToolMiddleware {
-							return []common.ToolMiddleware{guiApp.ConfirmMiddleware(reg, true)}
+							return []common.ToolMiddleware{
+								guiApp.ConfirmMiddleware(reg, true),
+								orchestrator.NodeHighlightMiddleware(hotspotSet, func(filePath string, isHotspot bool) {
+									guiApp.HighlightNode(filePath, isHotspot)
+								}),
+							}
 						},
 						debugLog,
 					)
@@ -602,9 +719,10 @@ func main() {
 					if err != nil {
 						return "", err
 					}
+					persistMissionTurnResult(agentType, res)
 					return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 				},
-				DefaultTimeout:    20 * time.Minute,
+				DefaultTimeout:    *subagentTimeout,
 				HeartbeatInterval: 30 * time.Second,
 				Heartbeat: func(agentType, goal string, elapsed time.Duration) {
 					if debugLog != nil && debugLog.Enabled() {
@@ -899,6 +1017,139 @@ func truncateForLog(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
+type strategistTurnResult struct {
+	Action      string   `json:"action"`
+	AttemptID   string   `json:"attempt_id"`
+	Hypothesis  string   `json:"hypothesis"`
+	Constraints []string `json:"constraints"`
+}
+
+type executorTurnResult struct {
+	Turn                 int    `json:"turn"`
+	AttemptID            string `json:"attempt_id"`
+	Outcome              string `json:"outcome"`
+	Reason               string `json:"reason"`
+	SandboxLogs          string `json:"sandbox_logs"`
+	StrategistConstraint string `json:"strategist_constraint"`
+}
+
+func extractFirstJSONObject(raw string) (string, error) {
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		return "", fmt.Errorf("no JSON object found")
+	}
+	return raw[start : end+1], nil
+}
+
+func buildMissionTurnGoal(agentType, goal string) string {
+	b := orchestrator.GlobalBlackboard
+	switch agentType {
+	case "strategist":
+		history := b.ExploitHistory()
+		constraints := b.StrategistConstraints()
+		hypothesis := b.CurrentHypothesis()
+		evidence := b.ExplorerEvidence()
+
+		historyJSON, _ := json.Marshal(history)
+		constraintsJSON, _ := json.Marshal(constraints)
+
+		return goal + "\n\n[blackboard]\n" +
+			"current_hypothesis: " + hypothesis + "\n" +
+			"strategist_constraints: " + string(constraintsJSON) + "\n" +
+			"exploit_history: " + string(historyJSON) + "\n" +
+			"latest_explorer_evidence: " + evidence
+
+	case "explorer":
+		hypothesis := b.CurrentHypothesis()
+		constraintsJSON, _ := json.Marshal(b.StrategistConstraints())
+		return goal + "\n\n[blackboard]\n" +
+			"current_hypothesis: " + hypothesis + "\n" +
+			"strategist_constraints: " + string(constraintsJSON)
+
+	case "executor":
+		hypothesis := b.CurrentHypothesis()
+		evidence := b.ExplorerEvidence()
+		constraintsJSON, _ := json.Marshal(b.StrategistConstraints())
+		return goal + "\n\n[blackboard]\n" +
+			"current_hypothesis: " + hypothesis + "\n" +
+			"strategist_constraints: " + string(constraintsJSON) + "\n" +
+			"explorer_evidence: " + evidence
+	default:
+		return goal
+	}
+}
+
+func persistMissionTurnResult(agentType, raw string) {
+	b := orchestrator.GlobalBlackboard
+
+	jsonPart, err := extractFirstJSONObject(raw)
+	if err != nil {
+		if agentType == "executor" {
+			b.AppendExploitHistory(orchestrator.ExploitHistoryEntry{
+				Turn:    len(b.ExploitHistory()) + 1,
+				Outcome: "FAILED",
+				Reason:  "executor response was not valid JSON",
+			})
+		}
+		return
+	}
+
+	switch agentType {
+	case "strategist":
+		var out strategistTurnResult
+		if err := json.Unmarshal([]byte(jsonPart), &out); err != nil {
+			return
+		}
+		if out.Hypothesis != "" {
+			b.SetCurrentHypothesis(out.Hypothesis)
+		}
+		for _, c := range out.Constraints {
+			b.AddStrategistConstraint(c)
+		}
+
+	case "explorer":
+		b.SetExplorerEvidence(jsonPart)
+
+	case "executor":
+		var out executorTurnResult
+		if err := json.Unmarshal([]byte(jsonPart), &out); err != nil {
+			b.AppendExploitHistory(orchestrator.ExploitHistoryEntry{
+				Turn:    len(b.ExploitHistory()) + 1,
+				Outcome: "FAILED",
+				Reason:  "executor response failed JSON decode",
+			})
+			return
+		}
+		turn := out.Turn
+		if turn <= 0 {
+			turn = len(b.ExploitHistory()) + 1
+		}
+		b.AppendExploitHistory(orchestrator.ExploitHistoryEntry{
+			Turn:                 turn,
+			AttemptID:            out.AttemptID,
+			Outcome:              out.Outcome,
+			Reason:               out.Reason,
+			SandboxLogs:          out.SandboxLogs,
+			StrategistConstraint: out.StrategistConstraint,
+		})
+	}
+}
+
+func buildMissionSnapshotEvent(orchestratorID string) common.MissionSnapshotEvent {
+	b := orchestrator.GlobalBlackboard
+	e := common.MissionSnapshotEvent{
+		OrcID:             orchestratorID,
+		CurrentHypothesis: b.CurrentHypothesis(),
+		ActiveConstraints: b.StrategistConstraints(),
+	}
+	if last, ok := b.LatestExecutorAttempt(); ok {
+		e.LastExecutorOutcome = last.Outcome
+		e.LastExecutorReason = last.Reason
+	}
+	return e
+}
+
 // indexSASTReferences pre-loads the SAST vulnerability reference library into
 // the shared BM25 index so the scanner subagent never needs to read these files
 // into its conversation context (~128 KB for a typical scan).
@@ -935,4 +1186,148 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 			}
 		}
 	}()
+}
+
+// fetchComplexityMeta calls get_architecture via the MCP client and parses the
+// response into a ComplexityMeta for the dynamic resource allocator. It returns
+// the fallback (zero) meta and no error if the tool is unavailable or the
+// response cannot be parsed — the caller should fall back to static defaults.
+func fetchComplexityMeta(ctx context.Context, mcpCli *mcp.Client, repoPath string) (orchestrator.ComplexityMeta, common.ArchitectureData, error) {
+	t := mcpCli.GetTool("get_architecture")
+	if t == nil {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("get_architecture tool not available")
+	}
+	args, _ := json.Marshal(map[string]string{"project": repoPath})
+	raw, err := t.Execute(ctx, args)
+	if err != nil {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("get_architecture: %w", err)
+	}
+
+	// The response is free-form text that may contain embedded JSON blocks.
+	// Extract the first {...} block and attempt to unmarshal.
+	jsonPart, err := extractFirstJSONObject(raw)
+	if err != nil {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("no JSON object in get_architecture response")
+	}
+
+	// Flexible schema — field names vary across codebase-memory-mcp versions.
+	var resp struct {
+		PrimaryLanguage string `json:"primary_language"`
+		Language        string `json:"language"`
+		Stats           struct {
+			TotalFiles int `json:"total_files"`
+			TotalNodes int `json:"total_nodes"`
+			TotalEdges int `json:"total_edges"`
+		} `json:"stats"`
+		TotalFiles int      `json:"total_files"`
+		TotalNodes int      `json:"total_nodes"`
+		TotalEdges int      `json:"total_edges"`
+		FileCount  int      `json:"file_count"`
+		NodeCount  int      `json:"node_count"`
+		EdgeCount  int      `json:"edge_count"`
+		RouteCount int      `json:"route_count"`
+		Hotspots   []string `json:"hotspots"`
+		Clusters   []struct {
+			ID    string   `json:"id"`
+			Label string   `json:"label"`
+			Files []string `json:"files"`
+			Size  int      `json:"size"`
+		} `json:"clusters"`
+		Communities []struct {
+			ID    string   `json:"id"`
+			Label string   `json:"label"`
+			Files []string `json:"files"`
+		} `json:"communities"`
+	}
+	if err := json.Unmarshal([]byte(jsonPart), &resp); err != nil {
+		return orchestrator.ComplexityMeta{}, common.ArchitectureData{}, fmt.Errorf("parse get_architecture JSON: %w", err)
+	}
+
+	// Coalesce field variants.
+	lang := resp.PrimaryLanguage
+	if lang == "" {
+		lang = resp.Language
+	}
+	fileCount := resp.Stats.TotalFiles
+	if fileCount == 0 {
+		fileCount = resp.TotalFiles
+	}
+	if fileCount == 0 {
+		fileCount = resp.FileCount
+	}
+	nodeCount := resp.Stats.TotalNodes
+	if nodeCount == 0 {
+		nodeCount = resp.TotalNodes
+	}
+	if nodeCount == 0 {
+		nodeCount = resp.NodeCount
+	}
+	edgeCount := resp.Stats.TotalEdges
+	if edgeCount == 0 {
+		edgeCount = resp.TotalEdges
+	}
+	if edgeCount == 0 {
+		edgeCount = resp.EdgeCount
+	}
+	routeCount := resp.RouteCount
+	if routeCount == 0 {
+		routeCount = edgeCount
+	}
+	hotspotCount := len(resp.Hotspots)
+
+	meta := orchestrator.ComplexityMeta{
+		FileCount:       fileCount,
+		NodeCount:       nodeCount,
+		RouteCount:      routeCount,
+		HotspotCount:    hotspotCount,
+		PrimaryLanguage: lang,
+	}
+
+	// Build ArchitectureData for the GUI Project Map.
+	archData := common.ArchitectureData{
+		Hotspots:  resp.Hotspots,
+		Language:  lang,
+		FileCount: fileCount,
+		NodeCount: nodeCount,
+		EdgeCount: edgeCount,
+	}
+	hotspotSet := make(map[string]bool, len(resp.Hotspots))
+	for _, h := range resp.Hotspots {
+		hotspotSet[h] = true
+	}
+	// Merge clusters and communities into a single cluster list.
+	for _, c := range resp.Clusters {
+		label := c.Label
+		if label == "" {
+			label = c.ID
+		}
+		isHot := false
+		for _, f := range c.Files {
+			if hotspotSet[f] {
+				isHot = true
+				break
+			}
+		}
+		archData.Clusters = append(archData.Clusters, common.ArchitectureCluster{
+			ID: c.ID, Label: label, Files: c.Files, IsHotspot: isHot,
+		})
+	}
+	for _, c := range resp.Communities {
+		label := c.Label
+		if label == "" {
+			label = c.ID
+		}
+		isHot := false
+		for _, f := range c.Files {
+			if hotspotSet[f] {
+				isHot = true
+				break
+			}
+		}
+		archData.Clusters = append(archData.Clusters, common.ArchitectureCluster{
+			ID: c.ID, Label: label, Files: c.Files, IsHotspot: isHot,
+		})
+	}
+
+	return meta, archData, nil
 }

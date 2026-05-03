@@ -176,14 +176,21 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 			}
 		}
 
-		result, err := runner(turnCtx, tc)
-		if err != nil {
-			if turnCtx.Err() == context.DeadlineExceeded {
+		toolStart := time.Now()
+		// spawn_subagent manages its own timeout internally; use the parent context
+		// so the per-turn deadline doesn't kill a long-running subagent early.
+		callCtx := turnCtx
+		if tc.Function.Name == "spawn_subagent" {
+			callCtx = ctx
+		}
+		result, runErr := runner(callCtx, tc)
+		if runErr != nil {
+			if callCtx.Err() == context.DeadlineExceeded {
 				stats.TimedOut++
 			} else {
 				stats.Failures++
 			}
-			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, err)
+			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, runErr)
 		} else {
 			if strings.Contains(result, "requires explicit approval") || strings.Contains(result, "Tool execution cancelled by user") {
 				stats.Blocked++
@@ -192,6 +199,8 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 				stats.Failures++
 			}
 		}
+		// Log the final result (after error-wrapping) so the debug log matches what the LLM receives.
+		sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, runErr, time.Since(toolStart))
 		if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
 			return stats, err
 		}
@@ -333,7 +342,15 @@ func ConsumeStream(
 // RunLoop handles the core, blocking event loop for autonomous agents.
 // It forces the sequence: inference stream -> verifiable accumulation -> history commit -> safe tool execution.
 // If the deterministic tool extraction yields zero calls, the loop securely collapses and returns execution control.
-
+//
+// When coordinator is non-nil the GPU lock is held only for the duration of
+// the HTTP stream (StartStream → ConsumeStream). The lock is released before
+// tool execution so that other agents can "Think" while this agent "Works".
+// The optional callbacks fire at each state transition:
+//
+//   - onStartTurn    — called before attempting to acquire the GPU lock (→ "queued")
+//   - onGPUAcquired  — called immediately after the GPU lock is obtained (→ "thinking")
+//   - onGPUReleased  — called immediately after the GPU lock is released (→ "working")
 func RunLoop(
 	ctx context.Context,
 	sess *session.Session,
@@ -343,6 +360,9 @@ func RunLoop(
 	onEndTurn func(),
 	onStreamChunk func(common.StreamResult),
 	middlewares []common.ToolMiddleware,
+	coordinator *ResourceCoordinator,
+	onGPUAcquired func(),
+	onGPUReleased func(),
 ) (string, error) {
 	var lastContent string
 	var previousToolSig string
@@ -353,8 +373,25 @@ func RunLoop(
 			onStartTurn()
 		}
 
+		if coordinator != nil {
+			if err := coordinator.AcquireGPULock(ctx); err != nil {
+				return "", err
+			}
+			if onGPUAcquired != nil {
+				onGPUAcquired()
+			}
+		}
+
 		streamCh, errCh := sess.StartStream(ctx, extraBody)
 		acc, err := ConsumeStream(ctx, streamCh, errCh, onStreamChunk)
+
+		if coordinator != nil {
+			coordinator.ReleaseGPULock()
+			// onGPUReleased ("working") is deferred to just before tool execution
+			// so the status only appears when the agent is actually running tools,
+			// not on stream errors or turns that end without tool calls.
+		}
+
 		if err != nil {
 			return "", err
 		}
@@ -377,25 +414,52 @@ func RunLoop(
 			acc.ToolCalls = validCalls
 
 			if isContextFull || (len(validCalls) == 0 && acc.Content == "") {
+				sess.LogEvent("CONTEXT_LIMIT", "Context window full — unrecoverable", map[string]interface{}{
+					"turn":              i + 1,
+					"total_tokens":      acc.Usage.TotalTokens,
+					"prompt_tokens":     acc.Usage.PromptTokens,
+					"completion_tokens": acc.Usage.CompletionTokens,
+					"n_ctx":             nCtx,
+				})
 				return "", fmt.Errorf("exceeds the available context size")
 			}
+			// Recoverable: hit n_predict output budget, not the context window.
+			sess.LogEvent("OUTPUT_BUDGET_HIT", "finish_reason=length but context not full — hit n_predict budget", map[string]interface{}{
+				"turn":              i + 1,
+				"total_tokens":      acc.Usage.TotalTokens,
+				"prompt_tokens":     acc.Usage.PromptTokens,
+				"completion_tokens": acc.Usage.CompletionTokens,
+				"n_ctx":             nCtx,
+				"valid_tool_calls":  len(validCalls),
+			})
 		}
 
 		// If stopped, the last tool call might be partially streamed and thus invalid JSON.
 		// We shouldn't save corrupted tool calls to the session history.
 		if ctx.Err() != nil {
-			var validCalls []client.ToolCall
+			var filtered []client.ToolCall
 			for _, tc := range acc.ToolCalls {
 				// A simple check: if the arguments are valid JSON, keeping it is probably safe.
 				// Otherwise, it was cut off mid-stream.
 				if json.Valid([]byte(tc.Function.Arguments)) {
-					validCalls = append(validCalls, tc)
+					filtered = append(filtered, tc)
 				}
 			}
-			acc.ToolCalls = validCalls
+			acc.ToolCalls = filtered
 		}
 
-		if err := sess.AddAssistantMessageWithTools(sanitizeContent(acc.Content), acc.Reasoning, acc.ToolCalls); err != nil {
+		// Report token usage to session so compaction can gate on context pressure.
+		if acc.Usage.TotalTokens > 0 {
+			sess.SetLastTokenCount(acc.Usage.TotalTokens)
+		} else if acc.Usage.PromptTokens > 0 {
+			sess.SetLastTokenCount(acc.Usage.PromptTokens)
+		}
+
+		// AddAssistantMessageWithTools returns only the calls saved to history
+		// (filtering any with malformed JSON). We execute exactly those calls so
+		// every tool result message has a matching assistant tool_call entry.
+		validCalls, err := sess.AddAssistantMessageWithTools(sanitizeContent(acc.Content), acc.Reasoning, acc.ToolCalls)
+		if err != nil {
 			return "", fmt.Errorf("failed to save history: %w", err)
 		}
 
@@ -403,7 +467,33 @@ func RunLoop(
 			onEndTurn()
 		}
 
-		if len(acc.ToolCalls) == 0 {
+		if len(validCalls) == 0 {
+			// Detect model stall: empty finish reason with no content means the model
+			// ended without yielding content (stream failure, early termination, or
+			// a context limit edge case) and without a proper stop signal.
+			// Return an error so the caller can surface it rather than silently
+			// treating a stalled response as "no findings".
+			if acc.FinishReason == "" && acc.Content == "" {
+				nCtxAtStall := sess.Client().ContextSize()
+				sess.LogTurnSummary(debug.TurnSummary{
+					TurnIndex:        i + 1,
+					FinishReason:     "empty",
+					ReasoningChars:   len(acc.Reasoning),
+					PromptTokens:     acc.Usage.PromptTokens,
+					CompletionTokens: acc.Usage.CompletionTokens,
+					TotalTokens:      acc.Usage.TotalTokens,
+					NCtx:             nCtxAtStall,
+				})
+				sess.LogEvent("EMPTY_STREAM", "Model returned empty response — no finish_reason and no content", map[string]interface{}{
+					"turn":              i + 1,
+					"total_tokens":      acc.Usage.TotalTokens,
+					"prompt_tokens":     acc.Usage.PromptTokens,
+					"completion_tokens": acc.Usage.CompletionTokens,
+					"n_ctx":             nCtxAtStall,
+					"reasoning_chars":   len(acc.Reasoning),
+				})
+				return "", fmt.Errorf("model returned empty response on turn %d (possible empty stream, early termination, or context limit)", i+1)
+			}
 			sess.LogTurnSummary(debug.TurnSummary{
 				TurnIndex:          i + 1,
 				FinishReason:       acc.FinishReason,
@@ -411,15 +501,19 @@ func RunLoop(
 				DuplicateToolTurns: duplicateToolTurns,
 				ContentChars:       len(acc.Content),
 				ReasoningChars:     len(acc.Reasoning),
+				PromptTokens:       acc.Usage.PromptTokens,
+				CompletionTokens:   acc.Usage.CompletionTokens,
+				TotalTokens:        acc.Usage.TotalTokens,
+				NCtx:               sess.Client().ContextSize(),
 			})
 			return acc.Content, nil
 		}
 
-		if len(acc.ToolCalls) > maxToolCallsPerTurn {
-			return "", fmt.Errorf("tool call budget exceeded for turn %d: %d > %d", i+1, len(acc.ToolCalls), maxToolCallsPerTurn)
+		if len(validCalls) > maxToolCallsPerTurn {
+			return "", fmt.Errorf("tool call budget exceeded for turn %d: %d > %d", i+1, len(validCalls), maxToolCallsPerTurn)
 		}
 
-		toolSig := toolCallSignature(acc.ToolCalls)
+		toolSig := toolCallSignature(validCalls)
 		if toolSig != "" && toolSig == previousToolSig {
 			duplicateToolTurns++
 		} else {
@@ -440,23 +534,30 @@ func RunLoop(
 		default:
 		}
 
-		stats, err := ExecuteToolCallsWithStats(ctx, sess, acc.ToolCalls, middlewares)
+		// Emit "working" now: the GPU lock was already released, and the agent is
+		// actually about to run tool calls (not just finishing a no-tool turn).
+		if onGPUReleased != nil {
+			onGPUReleased()
+		}
+
+		stats, err := ExecuteToolCallsWithStats(ctx, sess, validCalls, middlewares)
 		if err != nil {
 			return "", err
 		}
 
-		// If the previous turn had failures or timeouts, reset the duplicate counter.
-		// This allows legitimate retries after a subagent timeout or tool failure
-		// without triggering the duplicate-loop blocker. Only count as duplicate
-		// if the plan repeats AFTER a successful turn.
-		if stats.Failures > 0 || stats.TimedOut > 0 {
+		// If the previous turn had failures, timeouts, or policy blocks, reset
+		// the duplicate counter. This allows legitimate retries after transient
+		// errors or blocked commands without triggering the duplicate-loop
+		// blocker. Only count as duplicate if the plan repeats AFTER a fully
+		// successful turn.
+		if stats.Failures > 0 || stats.TimedOut > 0 || stats.Blocked > 0 {
 			duplicateToolTurns = 0
 		}
 
 		sess.LogTurnSummary(debug.TurnSummary{
 			TurnIndex:          i + 1,
 			FinishReason:       acc.FinishReason,
-			ToolCalls:          len(acc.ToolCalls),
+			ToolCalls:          len(validCalls),
 			DuplicateToolTurns: duplicateToolTurns,
 			ContentChars:       len(acc.Content),
 			ReasoningChars:     len(acc.Reasoning),
@@ -464,6 +565,10 @@ func RunLoop(
 			ToolFailures:       stats.Failures,
 			ToolBlocked:        stats.Blocked,
 			ToolTimedOut:       stats.TimedOut,
+			PromptTokens:       acc.Usage.PromptTokens,
+			CompletionTokens:   acc.Usage.CompletionTokens,
+			TotalTokens:        acc.Usage.TotalTokens,
+			NCtx:               sess.Client().ContextSize(),
 		})
 
 		// Also check after tool execution in case user requested stop during a long tool

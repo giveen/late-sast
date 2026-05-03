@@ -230,3 +230,77 @@ func TestNewSubagentOrchestrator_UnknownAgentTypeErrors(t *testing.T) {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
+
+func TestPromptPathForAgentType_NewRoles(t *testing.T) {
+	tests := map[string]string{
+		"strategist": "prompts/instruction-sast-strategist.md",
+		"explorer":   "prompts/instruction-sast-explorer.md",
+		"executor":   "prompts/instruction-sast-executor.md",
+	}
+
+	for role, want := range tests {
+		got, err := promptPathForAgentType(role)
+		if err != nil {
+			t.Fatalf("promptPathForAgentType(%q) returned error: %v", role, err)
+		}
+		if got != want {
+			t.Fatalf("promptPathForAgentType(%q)=%q, want %q", role, got, want)
+		}
+	}
+}
+
+func TestAllowToolForAgentType_StrictRoleBoundaries(t *testing.T) {
+	if !allowToolForAgentType("strategist", "read_file") {
+		t.Fatal("strategist should allow read_file")
+	}
+	if allowToolForAgentType("strategist", "search_graph") {
+		t.Fatal("strategist should not allow search_graph")
+	}
+
+	for _, tool := range []string{"search_graph", "trace_path", "get_code_snippet", "query_graph", "read_file"} {
+		if !allowToolForAgentType("explorer", tool) {
+			t.Fatalf("explorer should allow %q", tool)
+		}
+	}
+	if allowToolForAgentType("explorer", "bash") {
+		t.Fatal("explorer should not allow bash")
+	}
+
+	for _, tool := range []string{"bash", "read_file"} {
+		if !allowToolForAgentType("executor", tool) {
+			t.Fatalf("executor should allow %q", tool)
+		}
+	}
+	if allowToolForAgentType("executor", "search_graph") {
+		t.Fatal("executor should not allow search_graph")
+	}
+}
+
+func TestNewSubagentOrchestrator_NewRolePromptsLoad(t *testing.T) {
+	c, parent := newTestParent(t)
+	enabledTools := map[string]bool{"bash": true}
+
+	tests := []struct {
+		role        string
+		mustContain string
+	}{
+		{role: "strategist", mustContain: "Head Auditor"},
+		{role: "explorer", mustContain: "Codebase Navigator"},
+		{role: "executor", mustContain: "sandbox PoC"},
+	}
+
+	for _, tt := range tests {
+		child, err := NewSubagentOrchestrator(c, "goal", []string{}, tt.role, enabledTools, false, false, 30, parent, nil, nil)
+		if err != nil {
+			t.Fatalf("role %q returned error: %v", tt.role, err)
+		}
+		base := child.(*orchestrator.BaseOrchestrator)
+		prompt := base.Session().SystemPrompt()
+		if prompt == "" {
+			t.Fatalf("role %q prompt is empty", tt.role)
+		}
+		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(tt.mustContain)) {
+			t.Fatalf("role %q prompt missing expected text %q", tt.role, tt.mustContain)
+		}
+	}
+}

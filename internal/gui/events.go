@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"fmt"
 	"late/internal/common"
 
 	"fyne.io/fyne/v2"
@@ -22,12 +23,48 @@ func (a *App) startEventLoop(
 	agentLabel string,
 	onUsage func(used, max int),
 ) {
+	currentPhase := "STOP"
+
+	// setTabStatus updates the tab label with an emoji prefix and optional turn
+	// counter. Root tabs (tabItem == nil) are left unchanged.
+	setTabStatus := func(prefix string, turn, maxTurns int) {
+		if tabItem == nil {
+			return
+		}
+		text := agentLabel
+		if currentPhase != "" {
+			text = fmt.Sprintf("%s · %s", text, currentPhase)
+		}
+		if turn > 0 {
+			if maxTurns > 0 {
+				text = fmt.Sprintf("%s (%d/%d)", agentLabel, turn, maxTurns)
+			} else {
+				text = fmt.Sprintf("%s (%d)", agentLabel, turn)
+			}
+			if currentPhase != "" {
+				text = fmt.Sprintf("%s · %s", text, currentPhase)
+			}
+		}
+		if prefix != "" {
+			text = prefix + text
+		}
+		fyne.Do(func() {
+			tabItem.Text = text
+			a.tabs.Refresh()
+		})
+	}
+	if tabItem != nil {
+		setTabStatus("", 0, 0)
+	}
+
 	go func() {
 		var acc string
 		streaming := false
 		thinkingStreaming := false
 		cachedHistoryLen := -1
 		cachedHistoryTokens := 0
+		currentTurn := 0
+		currentMaxTurns := 0
 
 		updateUsage := func(e common.ContentEvent) {
 			if onUsage == nil {
@@ -99,8 +136,20 @@ func (a *App) startEventLoop(
 				}
 
 			case common.StatusEvent:
+				if e.Turn > 0 {
+					currentTurn = e.Turn
+				}
+				if e.MaxTurns > 0 {
+					currentMaxTurns = e.MaxTurns
+				}
 				switch e.Status {
+				case "queued":
+					// Agent is waiting for the GPU lock.
+					setTabStatus("⏳ ", currentTurn, currentMaxTurns)
+
 				case "thinking":
+					// Agent is streaming from the LLM (holds GPU lock).
+					setTabStatus("🧠 ", currentTurn, currentMaxTurns)
 					// Collapse the thinking box between tool calls;
 					// StartThinking will reopen/reuse the same accordion on next chunk.
 					if thinkingStreaming {
@@ -110,7 +159,12 @@ func (a *App) startEventLoop(
 					streaming = false
 					acc = ""
 
+				case "working":
+					// Agent released the GPU and is executing tool calls.
+					setTabStatus("⚙ ", currentTurn, currentMaxTurns)
+
 				case "idle":
+					setTabStatus("", 0, 0)
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -128,6 +182,7 @@ func (a *App) startEventLoop(
 					}
 
 				case "closed":
+					setTabStatus("", 0, 0)
 					if thinkingStreaming {
 						fyne.Do(func() { panel.FinalizeThinking() })
 					}
@@ -145,7 +200,7 @@ func (a *App) startEventLoop(
 					return
 
 				case "error":
-					// Keep tab open so the user can read the error.
+					setTabStatus("", 0, 0)
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -161,17 +216,45 @@ func (a *App) startEventLoop(
 							in.SetEnabled(true)
 						})
 					}
-					if e.Error != nil {
-						msg := e.Error.Error()
-						fyne.Do(func() {
-							panel.AppendMessage("error", "⚠ "+msg)
-						})
-						if tabItem != nil {
-							fyne.Do(func() {
-								a.sendNotification("Error in "+agentLabel, msg)
-							})
+					// Close the subagent tab — the error is already surfaced in the
+					// main tab as the spawn_subagent tool result, so the orphan tab
+					// just clutters the UI. Show a notification instead.
+					if tabItem != nil {
+						var msg string
+						if e.Error != nil {
+							msg = e.Error.Error()
 						}
+						label := agentLabel
+						fyne.Do(func() {
+							if msg != "" {
+								a.sendNotification("Error in "+label, msg)
+							}
+							a.closeSubagentTab(tabItem, o, label)
+						})
 					}
+				}
+
+			case common.ProjectMapLoadedEvent:
+				a.SetArchitecture(e.Data)
+
+			case common.PhaseEvent:
+				if a.currentPhaseLabel != nil && o.ID() == "main" {
+					phaseText := "Current Phase: " + e.To
+					fyne.Do(func() {
+						a.currentPhaseLabel.SetText(phaseText)
+					})
+				}
+				if tabItem != nil {
+					currentPhase = e.To
+					setTabStatus("", currentTurn, currentMaxTurns)
+				}
+
+			case common.MissionSnapshotEvent:
+				if o.ID() == "main" {
+					snapshot := e
+					fyne.Do(func() {
+						a.updateMissionSnapshot(snapshot)
+					})
 				}
 
 			case common.ChildAddedEvent:

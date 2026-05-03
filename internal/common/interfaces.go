@@ -33,6 +33,7 @@ type Orchestrator interface {
 
 	// Configuration
 	SetMaxTurns(int)
+	MaxTurns() int
 	RefreshContextSize(context.Context)
 	MaxTokens() int
 }
@@ -64,12 +65,38 @@ func (e ChildAddedEvent) OrchestratorID() string { return e.ParentID }
 
 // StatusEvent is sent when the orchestrator's state changes.
 type StatusEvent struct {
-	ID     string
-	Status string // "thinking", "idle", "error", etc.
-	Error  error  // Optional error info
+	ID       string
+	Status   string // "thinking", "idle", "error", etc.
+	Error    error  // Optional error info
+	Turn     int    // Optional: current turn index (1-based)
+	MaxTurns int    // Optional: orchestrator max-turn budget for this run
 }
 
 func (e StatusEvent) OrchestratorID() string { return e.ID }
+
+// PhaseEvent is sent when the orchestrator's higher-level state machine
+// transitions between execution phases.
+type PhaseEvent struct {
+	ID     string
+	From   string // PLAN, EXPLORE, EXECUTE, FEEDBACK, STOP
+	To     string // PLAN, EXPLORE, EXECUTE, FEEDBACK, STOP
+	Reason string // Optional transition reason
+	Turn   int    // Optional turn index when the transition occurred
+}
+
+func (e PhaseEvent) OrchestratorID() string { return e.ID }
+
+// MissionSnapshotEvent carries strategist-loop state projected from the
+// blackboard for compact live display in the GUI.
+type MissionSnapshotEvent struct {
+	OrcID               string
+	CurrentHypothesis   string
+	LastExecutorOutcome string
+	LastExecutorReason  string
+	ActiveConstraints   []string
+}
+
+func (e MissionSnapshotEvent) OrchestratorID() string { return e.OrcID }
 
 // StopRequestedEvent is sent when a stop is requested for an orchestrator.
 type StopRequestedEvent struct {
@@ -77,6 +104,44 @@ type StopRequestedEvent struct {
 }
 
 func (e StopRequestedEvent) OrchestratorID() string { return e.ID }
+
+// NodeHighlightEvent is sent when an agent accesses a file or graph node,
+// triggering a real-time visual highlight in the Project Map tab.
+type NodeHighlightEvent struct {
+	OrcID     string
+	FilePath  string // The file path or graph node being accessed
+	IsHotspot bool   // Whether this node is a known security hotspot
+}
+
+func (e NodeHighlightEvent) OrchestratorID() string { return e.OrcID }
+
+// ArchitectureCluster represents a logical grouping of files detected by
+// Louvain community detection in codebase-memory-mcp.
+type ArchitectureCluster struct {
+	ID        string
+	Label     string
+	Files     []string
+	IsHotspot bool
+}
+
+// ArchitectureData is a parsed summary of the get_architecture MCP response.
+type ArchitectureData struct {
+	Clusters  []ArchitectureCluster
+	Hotspots  []string // File paths / node IDs of hotspots
+	Language  string
+	FileCount int
+	NodeCount int
+	EdgeCount int
+}
+
+// ProjectMapLoadedEvent carries the architecture data used to populate the
+// "Project Map" GUI tab. Emitted once per scan after get_architecture succeeds.
+type ProjectMapLoadedEvent struct {
+	OrcID string
+	Data  ArchitectureData
+}
+
+func (e ProjectMapLoadedEvent) OrchestratorID() string { return e.OrcID }
 
 // PromptRequest defines a generic requirement for user input.
 type PromptRequest struct {

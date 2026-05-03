@@ -42,11 +42,11 @@ Use `read_file` to read the previous SAST report (the path is given in the initi
 
 For every finding under `## Critical Findings`, `## High Findings`, `## Medium Findings`, and `## Low Findings`, extract:
 - Finding title (the `###` heading text)
-- **File** path and line number (from the `**File:**` field — format is `path/to/file.go:42`)
-- Vulnerability class (from `**Vuln class:**` or inferred from title)
-- Severity
-- Taint path (from `**Taint path:**` if present)
-- Payload hint (from `**Payload:**` or `**Exploit:**` if present)
+- **Location** path and line number (from the `**Location:**` field — format is `` `path/to/file.go:42` ``)
+- Vulnerability class (inferred from the `###` heading — format is `Vulnerability Class — location (CWE-NNN)`)
+- Severity (from the `[SEVERITY]` prefix in the `###` heading)
+- Taint path (from `**Taint Path:**` if present)
+- Payload hint (from the `**Reproduce:**` block if present)
 
 Ignore `## Informational`, `## Dependency Vulnerabilities`, and `## CVE Findings` sections — do not retest those.
 
