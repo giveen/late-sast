@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"late/internal/assets"
@@ -10,8 +11,277 @@ import (
 	"late/internal/executor"
 	"late/internal/orchestrator"
 	"late/internal/session"
+	"net/url"
 	"os"
+	"regexp"
+	"strings"
 )
+
+func setupBootstrapFirstMiddleware() common.ToolMiddleware {
+	needsReadiness := false
+
+	return func(next common.ToolRunner) common.ToolRunner {
+		return func(ctx context.Context, tc client.ToolCall) (string, error) {
+			if needsReadiness && tc.Function.Name != "wait_for_target_ready" {
+				return "", fmt.Errorf("setup agent must call 'wait_for_target_ready' immediately after successful launch/setup before '%s'", tc.Function.Name)
+			}
+
+			out, err := next(ctx, tc)
+			if err != nil {
+				return out, err
+			}
+
+			if tc.Function.Name == "setup_container" || (tc.Function.Name == "launch_docker" && launchDockerActuallyStarted(out)) {
+				needsReadiness = true
+			}
+
+			if needsReadiness && tc.Function.Name == "wait_for_target_ready" {
+				needsReadiness = false
+			}
+
+			return out, nil
+		}
+	}
+}
+
+func launchDockerActuallyStarted(out string) bool {
+	var payload struct {
+		Status   string `json:"status"`
+		ModeUsed string `json:"mode_used"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return false
+	}
+	return payload.Status == "ok" && payload.ModeUsed != ""
+}
+
+var urlInShellRe = regexp.MustCompile("https?://[^\\s\"'`]+")
+
+func scannerExploitReplayMiddleware() common.ToolMiddleware {
+	attemptedCandidates := map[string]bool{}
+
+	return func(next common.ToolRunner) common.ToolRunner {
+		return func(ctx context.Context, tc client.ToolCall) (string, error) {
+			switch tc.Function.Name {
+			case "run_exploit_replay":
+				candidate, ok := replayCandidateFromArgs(tc.Function.Arguments)
+				if !ok {
+					return "", fmt.Errorf("run_exploit_replay must include endpoint or path/port so candidate matching can be enforced")
+				}
+				attemptedCandidates[candidate] = true
+				return next(ctx, tc)
+
+			case "bash":
+				command, ok := bashCommandFromArgs(tc.Function.Arguments)
+				if !ok {
+					return next(ctx, tc)
+				}
+				isRawPoC, candidate := rawExploitCandidateFromCommand(command)
+				if !isRawPoC {
+					return next(ctx, tc)
+				}
+				if candidate == "" {
+					return "", fmt.Errorf("raw exploit shell PoC blocked: unable to derive finding candidate from command; run run_exploit_replay first")
+				}
+				if !attemptedCandidates[candidate] {
+					return "", fmt.Errorf("raw exploit shell PoC blocked for candidate %q: run run_exploit_replay for this finding first", candidate)
+				}
+				return next(ctx, tc)
+			default:
+				return next(ctx, tc)
+			}
+		}
+	}
+}
+
+func scannerSecretsFirstMiddleware() common.ToolMiddleware {
+	secretsScanned := false
+
+	return func(next common.ToolRunner) common.ToolRunner {
+		return func(ctx context.Context, tc client.ToolCall) (string, error) {
+			if tc.Function.Name == "trace_path" && !secretsScanned {
+				return "", fmt.Errorf("scanner should call 'run_secrets_scanner' before taint tracing with 'trace_path'")
+			}
+
+			out, err := next(ctx, tc)
+			if err != nil {
+				return out, err
+			}
+			if tc.Function.Name == "run_secrets_scanner" {
+				secretsScanned = true
+			}
+			return out, nil
+		}
+	}
+}
+
+func cleanupToolPreferredMiddleware() common.ToolMiddleware {
+	cleanupUsed := false
+
+	return func(next common.ToolRunner) common.ToolRunner {
+		return func(ctx context.Context, tc client.ToolCall) (string, error) {
+			switch tc.Function.Name {
+			case "cleanup_scan_environment":
+				out, err := next(ctx, tc)
+				if err == nil {
+					cleanupUsed = true
+				}
+				return out, err
+			case "bash":
+				if cleanupUsed {
+					return next(ctx, tc)
+				}
+				command, ok := bashCommandFromArgs(tc.Function.Arguments)
+				if !ok {
+					return next(ctx, tc)
+				}
+				if looksLikeAdHocCleanup(command) {
+					return "", fmt.Errorf("prefer 'cleanup_scan_environment' over ad-hoc docker cleanup commands")
+				}
+				return next(ctx, tc)
+			default:
+				return next(ctx, tc)
+			}
+		}
+	}
+}
+
+func looksLikeAdHocCleanup(command string) bool {
+	c := strings.ToLower(command)
+	if !strings.Contains(c, "docker") {
+		return false
+	}
+
+	if strings.Contains(c, "docker compose") && strings.Contains(c, " down") {
+		return true
+	}
+	if strings.Contains(c, "docker network rm") {
+		return true
+	}
+	if strings.Contains(c, "docker rmi") {
+		return true
+	}
+	if strings.Contains(c, "docker rm -f") {
+		return true
+	}
+	if strings.Contains(c, "/tmp/sast-skill") || strings.Contains(c, "rm -rf /tmp/sast") {
+		return true
+	}
+
+	return false
+}
+
+// CleanupToolPreferredMiddleware nudges agents toward the deterministic
+// cleanup_scan_environment tool instead of ad-hoc bash teardown commands.
+func CleanupToolPreferredMiddleware() common.ToolMiddleware {
+	return cleanupToolPreferredMiddleware()
+}
+
+func replayCandidateFromArgs(rawArgs string) (string, bool) {
+	var p struct {
+		Endpoint string            `json:"endpoint"`
+		Path     string            `json:"path"`
+		Query    map[string]string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &p); err != nil {
+		return "", false
+	}
+	if c, ok := candidateFromURL(p.Endpoint); ok {
+		return c, true
+	}
+	path := normalizePath(p.Path)
+	if path == "" {
+		return "", false
+	}
+	u := url.URL{Path: path}
+	if len(p.Query) > 0 {
+		q := url.Values{}
+		for k, v := range p.Query {
+			q.Set(k, v)
+		}
+		u.RawQuery = q.Encode()
+	}
+	return candidateFromParsedURL(&u), true
+}
+
+func bashCommandFromArgs(rawArgs string) (string, bool) {
+	var p struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &p); err != nil {
+		return "", false
+	}
+	cmd := p.Command
+	if cmd == "" {
+		return "", false
+	}
+	return cmd, true
+}
+
+func rawExploitCandidateFromCommand(command string) (bool, string) {
+	cmdLower := strings.ToLower(command)
+	if !strings.Contains(cmdLower, "docker exec") {
+		return false, ""
+	}
+	if !strings.Contains(cmdLower, "wget") && !strings.Contains(cmdLower, "curl") {
+		return false, ""
+	}
+	for _, hit := range urlInShellRe.FindAllString(command, -1) {
+		u, err := url.Parse(hit)
+		if err != nil {
+			continue
+		}
+		h := strings.ToLower(u.Hostname())
+		if h != "localhost" && h != "127.0.0.1" {
+			continue
+		}
+		if c := candidateFromParsedURL(u); c != "" {
+			return true, c
+		}
+	}
+	return true, ""
+}
+
+func candidateFromURL(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	c := candidateFromParsedURL(u)
+	if c == "" {
+		return "", false
+	}
+	return c, true
+}
+
+func candidateFromParsedURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	path := normalizePath(u.Path)
+	if path == "" {
+		return ""
+	}
+	if u.RawQuery == "" {
+		return path
+	}
+	return path + "?" + u.Query().Encode()
+}
+
+func normalizePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
 
 func promptPathForAgentType(agentType string) (string, error) {
 	switch agentType {
@@ -62,8 +332,34 @@ func allowToolForAgentType(agentType, toolName string) bool {
 }
 
 // MiddlewareFactory creates middlewares bound to a specific tool registry.
-// Used to wire confirm-middleware (TUI or GUI) to the child's own registry.
+// Used to wire confirm-middleware (GUI) to the child's own registry.
 type MiddlewareFactory func(registry *common.ToolRegistry) []common.ToolMiddleware
+
+func buildSubagentMiddlewares(
+	parent common.Orchestrator,
+	registry *common.ToolRegistry,
+	agentType string,
+	middlewareFactory MiddlewareFactory,
+) []common.ToolMiddleware {
+	// Default behavior is to inherit parent middlewares.
+	base := parent.Middlewares()
+
+	// If a factory is provided, it intentionally replaces inherited middlewares.
+	// This avoids carrying parent-scoped confirm middleware bound to a different
+	// registry into child subagents.
+	if middlewareFactory != nil {
+		base = middlewareFactory(registry)
+	}
+
+	if agentType == "setup" {
+		return append([]common.ToolMiddleware{setupBootstrapFirstMiddleware(), cleanupToolPreferredMiddleware()}, base...)
+	}
+	if agentType == "scanner" || agentType == "binary-scanner" {
+		return append([]common.ToolMiddleware{scannerExploitReplayMiddleware()}, base...)
+	}
+
+	return base
+}
 
 // NewSubagentOrchestrator creates a new BaseOrchestrator for a subagent.
 func NewSubagentOrchestrator(
@@ -79,6 +375,10 @@ func NewSubagentOrchestrator(
 	middlewareFactory MiddlewareFactory,
 	debugLogger *debug.Logger,
 ) (common.Orchestrator, error) {
+	if parent == nil {
+		return nil, fmt.Errorf("parent orchestrator is required")
+	}
+
 	// 1. Determine System Prompt
 	promptPath, err := promptPathForAgentType(agentType)
 	if err != nil {
@@ -124,7 +424,7 @@ func NewSubagentOrchestrator(
 		})
 	}
 	// Inherit all tools from parent (including MCP tools)
-	if parent != nil && parent.Registry() != nil {
+	if parent.Registry() != nil {
 		for _, t := range parent.Registry().All() {
 			// Skip spawn_subagent and write_implementation_plan to prevent recursion/confusion
 			name := t.Name()
@@ -161,11 +461,7 @@ func NewSubagentOrchestrator(
 
 	// 4. Create Orchestrator
 	id := fmt.Sprintf("subagent-%d", len(parent.Children()))
-	mws := parent.Middlewares()
-
-	if middlewareFactory != nil {
-		mws = middlewareFactory(sess.Registry)
-	}
+	mws := buildSubagentMiddlewares(parent, sess.Registry, agentType, middlewareFactory)
 
 	child := orchestrator.NewBaseOrchestrator(id, sess, mws, maxTurns)
 	child.SetContext(parent.Context())
