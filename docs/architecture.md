@@ -21,7 +21,7 @@
 8. [Tool System Architecture](#8-tool-system-architecture)
 9. [Session & State Management](#9-session--state-management)
 10. [Configuration System](#10-configuration-system)
-11. [TUI, GUI & Event System](#11-tui-gui--event-system)
+11. [GUI & Event System](#11-gui--event-system)
 12. [MCP Integration](#12-mcp-integration)
 13. [Key Interfaces](#13-key-interfaces)
 14. [Data Flow Diagrams](#14-data-flow-diagrams)
@@ -32,14 +32,14 @@
 
 ## 1. Executive Summary
 
-late-sast is an autonomous security auditor built on the Late agent engine. It takes a GitHub URL or local path, spins up a throwaway Docker sandbox, performs a full static/dynamic security scan, exploits findings live, and produces a structured markdown report. It ships both a full-featured Fyne v2 graphical interface and a classic Bubble Tea TUI.
+late-sast is an autonomous security auditor built on the Late agent engine. It takes a GitHub URL or local path, spins up a throwaway Docker sandbox, performs a full static/dynamic security scan, exploits findings live, and produces a structured markdown report. It ships a full-featured Fyne v2 graphical interface.
 
 ### Two Binary Targets
 
 | Binary | Description | Entry Point |
 |--------|-------------|-------------|
-| `late` | General-purpose AI agent with TUI | `cmd/late/main.go` |
-| `late-sast` | Autonomous SAST pipeline — GUI (default) or `--tui` | `cmd/late-sast/main.go` |
+| `late` | General-purpose AI agent with GUI | `cmd/late/main.go` |
+| `late-sast` | Autonomous SAST pipeline — Fyne v2 GUI | `cmd/late-sast/main.go` |
 
 ### Key Differentiators
 
@@ -75,9 +75,6 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
               │  │  - App, ChatPanel      │     │
               │  │  - ProjectMapPanel     │     │
               │  │  - SASTPickerDialog    │     │
-              │  └────────────────────────┘     │
-              │  ┌────────────────────────┐     │
-              │  │  internal/tui (BubbleTea)│   │  ← --tui mode
               │  └────────────────────────┘     │
               └────────────────┬────────────────┘
                                │
@@ -145,7 +142,7 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
 | Layer | Responsibility |
 |-------|---------------|
 | **Entry Points** | CLI argument parsing, flag handling, bootstrap sequence |
-| **UI Layer** | Fyne v2 GUI (default) or Bubble Tea TUI (`--tui`); event rendering, Project Map, SAST picker |
+| **UI Layer** | Fyne v2 GUI; event rendering, Project Map, SAST picker |
 | **Session/Orchestrator** | Conversation state, turn counter, GPU lock wiring, event streaming, Blackboard KV |
 | **Executor/Coordinator** | RunLoop (inference + tool loop), `ResourceCoordinator` channel semaphore for GPU serialization |
 | **Client/MCP/Subagent** | LLM API, external tool RPC, subagent spawning with language-weighted budgets |
@@ -175,7 +172,7 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
 │   └── sast_report_govwa.md
 ├── cmd/
 │   ├── late/
-│   │   └── main.go                    # Interactive TUI agent
+│   │   └── main.go                    # Interactive GUI agent
 │   ├── late-sast/
 │   │   ├── main.go                    # Headless SAST pipeline
 │   │   ├── cbm_embed.go               # CBM binary embed (build tag)
@@ -362,21 +359,7 @@ late-sast is an autonomous security auditor built on the Late agent engine. It t
     │   ├── targetEdit_test.go
     │   ├── tool.go                    # Tool/Registry type aliases
     │   └── utils.go                   # Tool utilities
-    └── tui/
-        ├── interactions.go            # TUI interaction handlers
-        ├── interactions_test.go
-        ├── keys.go                    # Key bindings
-        ├── model.go                   # Bubble Tea model
-        ├── state.go                   # Generation state management
-        ├── styles.go                  # Glamour styling
-        ├── theme.go                   # Theme definitions
-        ├── update.go                  # Bubble Tea update loop
-        └── view.go                    # Bubble Tea view rendering
-```
-
----
-
-## 4. Package Dependency Graph
+    └── tool/
 
 ```
 cmd/late              cmd/late-sast          cmd/mcp-run
@@ -428,10 +411,6 @@ cmd/late              cmd/late-sast          cmd/mcp-run
     │              └─────────────────────────┘
     │
     │              ┌─────────────────────────┐
-    │              │  internal/tui           │◄─── Bubble Tea TUI (--tui mode)
-    │              └─────────────────────────┘
-    │
-    │              ┌─────────────────────────┐
     │              │  internal/assets        │◄─── Embedded prompts/SKILL.md
     │              └─────────────────────────┘
     │
@@ -444,16 +423,15 @@ cmd/late              cmd/late-sast          cmd/mcp-run
 
 | Package | Depends On |
 |---------|-----------|
-| `cmd/late` | agent, client, common, config, executor, git, mcp, orchestrator, session, tool, tui, assets |
-| `cmd/late-sast` | agent, assets, client, common, config, executor, gui, mcp, orchestrator, pathutil, session, tool, tui |
+| `cmd/late` | agent, client, common, config, executor, git, mcp, orchestrator, session, tool, assets |
+| `cmd/late-sast` | agent, assets, client, common, config, executor, gui, mcp, orchestrator, pathutil, session, tool |
 | `internal/gui` | client, common, session |
-| `internal/agent` | assets, client, common, executor, orchestrator, session, tui |
+| `internal/agent` | assets, client, common, executor, orchestrator, session |
 | `internal/orchestrator` | client, common, executor, session |
 | `internal/session` | client, common, pathutil |
 | `internal/executor` | client, common, pathutil, session, skill, tool |
 | `internal/tool` | common, pathutil, client |
 | `internal/client` | common |
-| `internal/tui` | client, common, tool |
 
 ---
 
@@ -556,7 +534,7 @@ Session Lifecycle:
 
 | Mode | Persistence | Use Case |
 |------|-------------|----------|
-| Regular (`late`) | Persistent (JSON to `~/.config/late/sessions/`) | Interactive TUI conversations |
+| Regular (`late`) | Persistent (JSON to `~/.config/late/sessions/`) | Interactive GUI conversations |
 | SAST (`late-sast`) | Non-persistent | Headless audit runs |
 | Subagent | Non-persistent | Temporary spawned agents |
 
@@ -615,8 +593,8 @@ Each `ToolMiddleware` wraps the next runner:
 ```go
 type ToolMiddleware func(next ToolRunner) ToolRunner
 
-// TUI confirmation middleware example:
-func TUIConfirmMiddleware(p *tea.Program, reg *ToolRegistry) ToolMiddleware {
+// GUI confirmation middleware example:
+func GUIConfirmMiddleware(app *gui.App, reg *ToolRegistry) ToolMiddleware {
     return func(next ToolRunner) ToolRunner {
         return func(ctx context.Context, tc ToolCall) (string, error) {
             // Prompt user for confirmation before executing shell commands
@@ -730,7 +708,7 @@ Path extraction tries keys in order: `"path"`, `"file_path"`, `"filePath"`, `"no
 
 ## 6. SAST Pipeline Architecture
 
-The SAST pipeline in `cmd/late-sast/main.go` follows a deterministic flow. It has two UI modes: **GUI mode** (default, Fyne v2) and **TUI mode** (`--tui`, Bubble Tea).
+The SAST pipeline in `cmd/late-sast/main.go` follows a deterministic flow with a **Fyne v2 GUI** interface.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -761,16 +739,16 @@ The SAST pipeline in `cmd/late-sast/main.go` follows a deterministic flow. It ha
 │  • Auto-submit initial audit task after 300ms delay                     │
 │                                    ▼                                    │
 │  STEP 5: UI LAUNCH                                                      │
-│  ┌──────────────────────────┐     ┌──────────────────────────┐          │
-│  │  GUI mode (default)      │     │  TUI mode (--tui)        │          │
-│  │                          │     │                          │          │
-│  │  gui.App.Run()           │     │  tea.NewProgram(model)   │          │
-│  │  - SASTPickerDialog      │     │  p.Run()                 │          │
-│  │    (if no --target)      │     │  - tui.TUIConfirm MW     │          │
-│  │  - ProjectMap tab        │     └──────────────────────────┘          │
-│  │  - GUIConfirm MW         │                                           │
-│  │  - NodeHighlight MW      │                                           │
-│  └──────────────────────────┘                                           │
+│  ┌──────────────────────────┐                                               │
+│  │  GUI mode (Fyne v2)       │                                               │
+│  │                          │                                               │
+│  │  gui.App.Run()           │                                               │
+│  │  - SASTPickerDialog      │                                               │
+│  │    (if no --target)      │                                               │
+│  │  - ProjectMap tab        │                                               │
+│  │  - GUIConfirm MW         │                                               │
+│  │  - NodeHighlight MW      │                                               │
+│  └──────────────────────────┘                                               │
 │                                    ▼                                    │
 │  STEP 6: SUBAGENT ROUTING (on first SpawnSubagentTool call)             │
 │  • fetchMetaOnce (sync.Once): calls get_architecture, caches result     │
@@ -807,7 +785,6 @@ The SAST pipeline in `cmd/late-sast/main.go` follows a deterministic flow. It ha
 | `--path` | — | Local repository path (alternative to --target) |
 | `--output` | current dir | Report output directory |
 | `--timeout` | 0 (no limit) | Wall-clock scan timeout (e.g., 90m, 2h) |
-| `--tui` | false | Use Bubble Tea TUI instead of Fyne GUI |
 | `--subagent-max-turns` | 300 | Maximum turns per subagent (CLI override) |
 | `--subagent-timeout` | 45m | Wall-clock timeout per subagent |
 | `--max-turns-ceiling` | 500 | Upper cap for dynamic turn budget |
@@ -1092,44 +1069,11 @@ type Config struct {
 
 ---
 
-## 11. TUI, GUI & Event System
+## 11. GUI & Event System
 
-### 11.1 TUI Architecture (`--tui` mode)
+### 11.1 GUI Architecture (Fyne v2)
 
-The TUI is built on **Bubble Tea** (The Elm Architecture in Go) with **Glamour** for markdown rendering.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Bubble Tea TUI                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────┐ │
-│  │  model.go  │  │ update.go  │  │  view.go   │  │ keys.go  │ │
-│  │  (State    │  │ (Msg       │  │ (Render    │  │ (Key     │ │
-│  │   machine) │  │  handling) │  │  output)   │  │  binds)  │ │
-│  └────────────┘  └────────────┘  └────────────┘  └──────────┘ │
-│         │                │                │              │       │
-│         ▼                ▼                ▼              ▼       │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │  state.go  (GenerationState — streaming state management)   │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │  interactions.go  (User input, prompts, confirmations)      │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │  styles.go + theme.go  (Glamour theme, styling)             │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 11.2 Fyne GUI Architecture (default mode)
-
-The GUI lives in `internal/gui/` and uses **Fyne v2**. All canvas mutations go through `fyne.Do()` to ensure Fyne-thread safety.
+The GUI is built on **Fyne v2** with a custom amethyst dark theme.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -1228,10 +1172,10 @@ Agent calls read_file / search_graph:
 
 | Method | Description |
 |--------|-------------|
-| **Keyboard Input** | Standard TUI keyboard interaction |
+| **GUI Input** | Fyne dialog-based input for user data |
 | **PromptRequest** | Modal prompts for user data (JSON Schema validated) |
 | **AutoSubmit** | Auto-submission of initial tasks (used in SAST mode) |
-| **SASTPickerDialog** | GUI-only; collects URL, local path, output dir, retest report |
+| **SASTPickerDialog** | Collects URL, local path, output dir, retest report |
 
 ### 11.5 Event Flow (GUI mode)
 
@@ -1274,12 +1218,12 @@ NodeHighlightEvent (from NodeHighlightMiddleware)
 The event forwarding system recursively wires all orchestrator events:
 
 ```go
-func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
+func ForwardOrchestratorEvents(app *gui.App, o common.Orchestrator) {
     go func() {
         for event := range o.Events() {
-            p.Send(tui.OrchestratorEventMsg{Event: event})
+            app.SendEvent(event)
             if added, ok := event.(common.ChildAddedEvent); ok {
-                ForwardOrchestratorEvents(p, added.Child)
+                ForwardOrchestratorEvents(app, added.Child)
             }
         }
     }()
@@ -1589,7 +1533,7 @@ User Input (text)
          │
          ▼
 ┌──────────────────┐     ┌──────────────────┐
-│ StatusEvent      │────►│ TUI (thinking)   │
+│ StatusEvent      │────►│ GUI (thinking)   │
 │ "thinking"       │     └──────────────────┘
 └────────┬─────────┘
          │
@@ -1602,7 +1546,7 @@ User Input (text)
 │  │    ┌─────────────────────────┐ │   │
 │  │    │ ConsumeStream()         │ │   │
 │  │    │ • Accumulate deltas     │ │   │
-│  │    │ • onChunk → TUI events  │ │   │
+│  │    │ • onChunk → GUI events  │ │   │
 │  │    │ • Check ctx.Done()      │ │   │
 │  │    └─────────────────────────┘ │   │
 │  │                                │   │
@@ -1624,7 +1568,7 @@ User Input (text)
          │
          ▼
 ┌──────────────────┐     ┌──────────────────┐
-│ ContentEvent     │────►│ TUI (render      │
+│ ContentEvent     │────►│ GUI (render      │
 │ (content + usage)│     │  final output)   │
 └──────────────────┘     └──────────────────┘
          │
@@ -1689,9 +1633,9 @@ Parent Orchestrator
 
 ## 15. Entry Points
 
-### 15.1 `cmd/late/main.go` — Interactive TUI Agent
+### 15.1 `cmd/late/main.go` — Interactive GUI Agent
 
-**Purpose:** General-purpose AI coding agent with terminal UI.
+**Purpose:** General-purpose AI coding agent with Fyne v2 GUI.
 
 **CLI Flags:**
 | Flag | Description | Default |
@@ -1720,7 +1664,7 @@ Parent Orchestrator
 
 ### 15.2 `cmd/late-sast/main.go` — Autonomous SAST Pipeline
 
-**Purpose:** Autonomous security audit pipeline with Docker sandboxing and optional Fyne GUI.
+**Purpose:** Autonomous security audit pipeline with Docker sandboxing and Fyne v2 GUI.
 
 **CLI Flags:**
 | Flag | Description | Default |
@@ -1729,7 +1673,6 @@ Parent Orchestrator
 | `--path` | Local repository path | — |
 | `--output` | Report output directory | current dir |
 | `--timeout` | Scan timeout (e.g., 90m) | 0 (no limit) |
-| `--tui` | Use Bubble Tea TUI instead of Fyne GUI | false |
 | `--subagent-max-turns` | Max turns per subagent (explicit override) | 300 |
 | `--subagent-timeout` | Timeout per subagent | 45m |
 | `--max-turns-ceiling` | Upper cap for dynamic turn budget | 500 |
@@ -1740,8 +1683,7 @@ Parent Orchestrator
 
 **Modes:**
 1. **New Scan (GUI):** Default. Opens Fyne window with SAST Picker dialog if `--target`/`--path` omitted.
-2. **New Scan (TUI):** `--tui`. Opens Bubble Tea terminal UI.
-3. **Retest:** `--retest ./sast_report_repo.md` (retests previous findings in either UI mode).
+2. **Retest:** `--retest ./sast_report_repo.md` (retests previous findings).
 
 ### 15.3 `cmd/mcp-run/main.go` — MCP Server Runner
 
@@ -1766,7 +1708,6 @@ Parent Orchestrator
 |---------|-------------|
 | `internal/tool` | 30 |
 | `internal/gui` | 14 |
-| `internal/tui` | 12 |
 | `internal/session` | 6 |
 | `internal/common` | 7 |
 | `internal/orchestrator` | 5 (base, blackboard, limits, limits_test, highlight_middleware) |
@@ -1834,7 +1775,6 @@ Parent Orchestrator
 | `internal/skill` | 2 | — |
 | `internal/tool` | 26 | 40+ |
 | `internal/tool/ast` | 14 | 25+ |
-| `internal/tui` | 10 | 30+ |
 
 ### SAST Vulnerability References
 

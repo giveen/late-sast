@@ -10,8 +10,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"late/internal/common"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Client manages MCP connections and tools.
@@ -177,7 +178,7 @@ func NewStdioTransport(ctx context.Context, command string, args []string, env [
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
 
-	// Discard stderr to prevent output from bleeding into TUI
+	// Discard stderr from subprocess
 	go func() {
 		io.Copy(io.Discard, stderr)
 	}()

@@ -2,7 +2,7 @@
 
 # Project variables — late-sast is the primary binary
 BINARY_NAME=late-sast
-VERSION?=v1.8.2
+VERSION?=v2.0.0
 
 # Go compiler flags
 LDFLAGS=-ldflags "-X late/internal/common.Version=${VERSION}"

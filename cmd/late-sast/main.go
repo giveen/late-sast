@@ -36,10 +36,6 @@ import (
 	"late/internal/pathutil"
 	"late/internal/session"
 	"late/internal/tool"
-	"late/internal/tui"
-
-	tea "charm.land/bubbletea/v2"
-	"charm.land/glamour/v2"
 )
 
 func main() {
@@ -536,14 +532,13 @@ func main() {
 	// subagent spawn. The results are cached for all subsequent subagents within
 	// the same scan and stored in GlobalBlackboard.
 	var (
-		cachedMeta     orchestrator.ComplexityMeta
-		cachedArchData common.ArchitectureData
-		metaFetchErr   error
-		metaOnce       sync.Once
+		cachedMeta   orchestrator.ComplexityMeta
+		metaFetchErr error
+		metaOnce     sync.Once
 	)
 	fetchMetaOnce := func(repoPath string, notifyRootAgent *orchestrator.BaseOrchestrator) {
 		metaOnce.Do(func() {
-			cachedMeta, cachedArchData, metaFetchErr = fetchComplexityMeta(
+			cachedMeta, _, metaFetchErr = fetchComplexityMeta(
 				context.Background(), mcpClient, repoPath,
 			)
 			if metaFetchErr != nil {
@@ -559,17 +554,8 @@ func main() {
 				orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
 				orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
 			)
-			if notifyRootAgent != nil {
-				notifyRootAgent.PushEvent(common.ProjectMapLoadedEvent{
-					OrcID: notifyRootAgent.ID(),
-					Data:  cachedArchData,
-				})
-			}
 		})
 	}
-
-	// resolveBudget returns the effective (turns, timeout) for a new subagent.
-	// CLI flags take precedence when explicitly set; otherwise the dynamic
 	// budget from get_architecture is used, falling back to static defaults.
 	resolveBudget := func() (int, time.Duration) {
 		turns := *subagentMaxTurns
@@ -589,37 +575,21 @@ func main() {
 		return turns, timeout
 	}
 	// --------------------------------------------------------------------------
+	// ── GUI path — always use Fyne GUI (TUI mode removed) ────────────────────
+	guiApp := gui.NewApp()
+	guiApp.SetConfigDir(sastCfgDir)
+	guiApp.SetOnQuit(cleanupContainer)
 
-	if *useTUIReq {
-		// ── TUI path ──────────────────────────────────────────────────────────
-		sr := buildScan(target, localPath, outputDir, retestPath)
-		sess, rootAgent, initialMessage, debugLog := sr.sess, sr.rootAgent, sr.initialMsg, sr.debugLog
+	setupFn := func(res gui.SASTPickerResult) (common.Orchestrator, string) {
+		sr := buildScan(res.URL, res.LocalPath, res.OutputDir, res.RetestReportPath)
+		sess, rootAgent, debugLog := sr.sess, sr.rootAgent, sr.debugLog
 
-		renderer, _ := glamour.NewTermRenderer(
-			glamour.WithStylesFromJSONBytes(tui.LateTheme),
-			glamour.WithWordWrap(80),
-			glamour.WithPreservedNewLines(),
-		)
-		model := tui.NewModel(rootAgent, renderer)
-		p := tea.NewProgram(model)
-
-		go func() {
-			p.Send(tui.SetMessengerMsg{Messenger: p})
-
-			ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
-			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
-			ctx = context.WithValue(ctx, common.ToolApprovalKey, true)
-			rootAgent.SetContext(ctx)
-			rootAgent.SetMiddlewares([]common.ToolMiddleware{
-				tui.TUIConfirmMiddleware(p, sess.Registry),
-			})
-			ForwardOrchestratorEvents(p, rootAgent)
-
-			if initialMessage != "" {
-				time.Sleep(300 * time.Millisecond)
-				p.Send(tui.AutoSubmitMsg{Text: initialMessage})
-			}
-		}()
+		baseCtx := context.WithValue(context.Background(), common.SkipConfirmationKey, true)
+		baseCtx = context.WithValue(baseCtx, common.ToolApprovalKey, true)
+		rootAgent.SetContext(baseCtx)
+		rootAgent.SetMiddlewares([]common.ToolMiddleware{
+			guiApp.ConfirmMiddleware(sess.Registry, true),
+		})
 
 		sess.Registry.Register(tool.SpawnSubagentTool{
 			Runner: func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
@@ -635,14 +605,26 @@ func main() {
 					enabledTools, true, *gemmaThinkingReq,
 					turns, rootAgent,
 					func(reg *common.ToolRegistry) []common.ToolMiddleware {
-						return []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, reg)}
+						return []common.ToolMiddleware{
+							guiApp.ConfirmMiddleware(reg, true),
+						}
 					},
 					debugLog,
 				)
 				if err != nil {
 					return "", err
 				}
-				_ = timeout // subagent timeout is set via DefaultTimeout below; per-child timeouts future work
+
+				childCtx := ctx
+				var cancel context.CancelFunc
+				if timeout > 0 {
+					childCtx, cancel = context.WithTimeout(ctx, timeout)
+					defer cancel()
+				}
+				if cs, ok := child.(interface{ SetContext(context.Context) }); ok {
+					cs.SetContext(childCtx)
+				}
+
 				res, err := child.Execute("")
 				if err != nil {
 					return "", err
@@ -650,7 +632,7 @@ func main() {
 				persistMissionTurnResult(agentType, res)
 				return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
 			},
-			DefaultTimeout:    *subagentTimeout,
+			DefaultTimeout:    *maxTimeoutCeiling,
 			HeartbeatInterval: 30 * time.Second,
 			Heartbeat: func(agentType, goal string, elapsed time.Duration) {
 				if debugLog != nil && debugLog.Enabled() {
@@ -663,83 +645,10 @@ func main() {
 			},
 		})
 
-		if _, err := p.Run(); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			cleanupContainer()
-			os.Exit(1)
-		}
-	} else {
-		// ── GUI path — shows target picker when no target supplied via CLI ────
-		guiApp := gui.NewApp()
-		guiApp.SetConfigDir(sastCfgDir)
-		guiApp.SetOnQuit(cleanupContainer)
-
-		setupFn := func(res gui.SASTPickerResult) (common.Orchestrator, string) {
-			sr := buildScan(res.URL, res.LocalPath, res.OutputDir, res.RetestReportPath)
-			sess, rootAgent, debugLog := sr.sess, sr.rootAgent, sr.debugLog
-
-			baseCtx := context.WithValue(context.Background(), common.SkipConfirmationKey, true)
-			baseCtx = context.WithValue(baseCtx, common.ToolApprovalKey, true)
-			rootAgent.SetContext(baseCtx)
-			rootAgent.SetMiddlewares([]common.ToolMiddleware{
-				guiApp.ConfirmMiddleware(sess.Registry, true),
-			})
-
-			sess.Registry.Register(tool.SpawnSubagentTool{
-				Runner: func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-					agentClient := subagentClient
-					if agentType == "auditor" {
-						agentClient = auditorClient
-					}
-					goal = buildMissionTurnGoal(agentType, goal)
-					fetchMetaOnce(filepath.Join(workDir, "repo"), rootAgent)
-					turns, _ := resolveBudget()
-					hotspotSet := make(map[string]bool, len(cachedArchData.Hotspots))
-					for _, h := range cachedArchData.Hotspots {
-						hotspotSet[h] = true
-					}
-					child, err := agent.NewSubagentOrchestrator(
-						agentClient, goal, ctxFiles, agentType,
-						enabledTools, true, *gemmaThinkingReq,
-						turns, rootAgent,
-						func(reg *common.ToolRegistry) []common.ToolMiddleware {
-							return []common.ToolMiddleware{
-								guiApp.ConfirmMiddleware(reg, true),
-								orchestrator.NodeHighlightMiddleware(hotspotSet, func(filePath string, isHotspot bool) {
-									guiApp.HighlightNode(filePath, isHotspot)
-								}),
-							}
-						},
-						debugLog,
-					)
-					if err != nil {
-						return "", err
-					}
-					res, err := child.Execute("")
-					if err != nil {
-						return "", err
-					}
-					persistMissionTurnResult(agentType, res)
-					return fmt.Sprintf("Subagent completed. Result:\n\n%s", res), nil
-				},
-				DefaultTimeout:    *subagentTimeout,
-				HeartbeatInterval: 30 * time.Second,
-				Heartbeat: func(agentType, goal string, elapsed time.Duration) {
-					if debugLog != nil && debugLog.Enabled() {
-						debugLog.LogEvent("SUBAGENT_HEARTBEAT", "Subagent is still running", map[string]interface{}{
-							"agent_type":   agentType,
-							"elapsed_ms":   elapsed.Milliseconds(),
-							"goal_preview": truncateForLog(goal, 120),
-						})
-					}
-				},
-			})
-
-			return rootAgent, sr.initialMsg
-		}
-
-		guiApp.RunSAST(target, localPath, retestPath, outputDir, setupFn)
+		return rootAgent, sr.initialMsg
 	}
+
+	guiApp.RunSAST(target, localPath, retestPath, outputDir, setupFn)
 
 	// Normal exit — clean up Docker resources.
 	cleanupContainer()
@@ -1136,20 +1045,6 @@ func persistMissionTurnResult(agentType, raw string) {
 	}
 }
 
-func buildMissionSnapshotEvent(orchestratorID string) common.MissionSnapshotEvent {
-	b := orchestrator.GlobalBlackboard
-	e := common.MissionSnapshotEvent{
-		OrcID:             orchestratorID,
-		CurrentHypothesis: b.CurrentHypothesis(),
-		ActiveConstraints: b.StrategistConstraints(),
-	}
-	if last, ok := b.LatestExecutorAttempt(); ok {
-		e.LastExecutorOutcome = last.Outcome
-		e.LastExecutorReason = last.Reason
-	}
-	return e
-}
-
 // indexSASTReferences pre-loads the SAST vulnerability reference library into
 // the shared BM25 index so the scanner subagent never needs to read these files
 // into its conversation context (~128 KB for a typical scan).
@@ -1174,18 +1069,6 @@ func indexSASTReferences(idx *tool.ContextIndex, dir string) {
 		source := strings.TrimSuffix(e.Name(), ".md")
 		idx.IndexText(source, string(b))
 	}
-}
-
-// ForwardOrchestratorEvents streams orchestrator events into the TUI.
-func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
-	go func() {
-		for event := range o.Events() {
-			p.Send(tui.OrchestratorEventMsg{Event: event})
-			if added, ok := event.(common.ChildAddedEvent); ok {
-				ForwardOrchestratorEvents(p, added.Child)
-			}
-		}
-	}()
 }
 
 // fetchComplexityMeta calls get_architecture via the MCP client and parses the

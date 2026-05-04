@@ -1,5 +1,15 @@
 {
   "go.toolsEnvVars": {
     "GOOS": "linux"
+  },
+  "gopls": {
+    "env": {
+      "GOOS": "linux",
+      "GOARCH": "amd64",
+      "CGO_ENABLED": "1"
+    },
+    "build.buildFlags": [
+      "-tags=cbm_embedded"
+    ]
   }
 }

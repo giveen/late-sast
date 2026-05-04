@@ -285,6 +285,9 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		o.Coordinator(),
 		onGPUAcquired,
 		onGPUReleased,
+		func(toolName string, running bool) {
+			o.eventCh <- common.ToolRuntimeEvent{ID: o.id, Tool: toolName, Running: running}
+		},
 	)
 
 	if err != nil {
@@ -352,6 +355,9 @@ func (o *BaseOrchestrator) run() {
 		o.Coordinator(),
 		onGPUAcquired,
 		onGPUReleased,
+		func(toolName string, running bool) {
+			o.eventCh <- common.ToolRuntimeEvent{ID: o.id, Tool: toolName, Running: running}
+		},
 	)
 
 	// Reset accumulator after finished or ready for next turn

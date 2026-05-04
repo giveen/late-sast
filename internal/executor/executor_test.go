@@ -215,7 +215,7 @@ func TestExecuteToolCallsWithStats_NoMiddlewareCountsBlocked(t *testing.T) {
 	RegisterTools(sess.Registry, map[string]bool{"bash": true}, false)
 	toolCalls := []client.ToolCall{{ID: "tc_1", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"echo hi"}`}}}
 
-	stats, err := ExecuteToolCallsWithStats(context.Background(), sess, toolCalls, nil)
+	stats, err := ExecuteToolCallsWithStats(context.Background(), sess, toolCalls, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

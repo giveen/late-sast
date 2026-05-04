@@ -16,7 +16,7 @@ import (
 )
 
 // GUIConfirmMiddleware returns a ToolMiddleware that shows a Fyne dialog for
-// tool-call confirmation. It mirrors the logic of tui.TUIConfirmMiddleware.
+// tool-call confirmation.
 func GUIConfirmMiddleware(win fyne.Window, reg *common.ToolRegistry, unsupervised bool) common.ToolMiddleware {
 	return func(next common.ToolRunner) common.ToolRunner {
 		return func(ctx context.Context, tc client.ToolCall) (string, error) {

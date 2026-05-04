@@ -22,8 +22,8 @@ import (
 // --- Stream Accumulator ---
 
 // execHTMLTagRe strips known HTML formatting tags that models sometimes emit into
-// their output. Uses the same allowlist as the TUI renderer so generic angle-bracket
-// constructs (C++ templates, XML snippets, generic type params) are left intact.
+// their output. Preserves generic angle-bracket constructs (C++ templates, XML
+// snippets, generic type params).
 var execHTMLTagRe = regexp.MustCompile(`(?i)</?(?:pre|code|br|p|li|ol|ul|details|summary|div|span|h[1-6]|blockquote|hr|table|thead|tbody|tr|th|td|em|strong|b|i|a|img|figure|figcaption|section|article|aside|header|footer|nav|main|form|input|button|select|option|textarea|label|script|style|html|head|body)(?:\s[^>]*)?>|</>`)
 
 // sanitizeContent strips HTML tags and collapses repeated-line loops before the
@@ -130,7 +130,13 @@ type ToolExecutionStats struct {
 }
 
 // ExecuteToolCallsWithStats runs a slice of tool calls and returns execution stats.
-func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolCalls []client.ToolCall, middlewares []common.ToolMiddleware) (ToolExecutionStats, error) {
+func ExecuteToolCallsWithStats(
+	ctx context.Context,
+	sess *session.Session,
+	toolCalls []client.ToolCall,
+	middlewares []common.ToolMiddleware,
+	onToolState func(toolName string, running bool),
+) (ToolExecutionStats, error) {
 	stats := ToolExecutionStats{}
 
 	turnCtx := ctx
@@ -162,7 +168,7 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 
 		// Fail-closed: if no confirmation middleware is provided, do not
 		// execute shell commands (they must be explicitly approved by a
-		// middleware such as the TUI confirm middleware).
+		// confirmation middleware).
 		if len(middlewares) == 0 {
 			if t := sess.Registry.Get(tc.Function.Name); t != nil {
 				if _, ok := t.(*tool.ShellTool); ok {
@@ -177,6 +183,9 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 		}
 
 		toolStart := time.Now()
+		if onToolState != nil {
+			onToolState(tc.Function.Name, true)
+		}
 		// spawn_subagent manages its own timeout internally; use the parent context
 		// so the per-turn deadline doesn't kill a long-running subagent early.
 		callCtx := turnCtx
@@ -202,7 +211,13 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 		// Log the final result (after error-wrapping) so the debug log matches what the LLM receives.
 		sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, runErr, time.Since(toolStart))
 		if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
+			if onToolState != nil {
+				onToolState(tc.Function.Name, false)
+			}
 			return stats, err
+		}
+		if onToolState != nil {
+			onToolState(tc.Function.Name, false)
 		}
 	}
 
@@ -213,7 +228,7 @@ func ExecuteToolCallsWithStats(ctx context.Context, sess *session.Session, toolC
 // ExecuteToolCalls runs a slice of tool calls against the session.
 // Results are added to the session history.
 func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []client.ToolCall, middlewares []common.ToolMiddleware) error {
-	_, err := ExecuteToolCallsWithStats(ctx, sess, toolCalls, middlewares)
+	_, err := ExecuteToolCallsWithStats(ctx, sess, toolCalls, middlewares, nil)
 	return err
 }
 
@@ -363,6 +378,7 @@ func RunLoop(
 	coordinator *ResourceCoordinator,
 	onGPUAcquired func(),
 	onGPUReleased func(),
+	onToolState func(toolName string, running bool),
 ) (string, error) {
 	var lastContent string
 	var previousToolSig string
@@ -540,7 +556,7 @@ func RunLoop(
 			onGPUReleased()
 		}
 
-		stats, err := ExecuteToolCallsWithStats(ctx, sess, validCalls, middlewares)
+		stats, err := ExecuteToolCallsWithStats(ctx, sess, validCalls, middlewares, onToolState)
 		if err != nil {
 			return "", err
 		}

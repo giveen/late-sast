@@ -60,55 +60,31 @@ ctx_search(query="<keyword or pattern>")
 
 
 ### Step 1b — Secrets scan
-Before any taint analysis, run a fast secrets grep across the repository. This step is deterministic — no taint tracing needed, near-zero false positive rate.
+Before any taint analysis, run the built-in secrets scanner backed by TruffleHog:
 
-Run two passes:
-
-**Pass 1 — quoted values** (catches `KEY = "value"` and `KEY: 'value'` patterns):
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-grep -rn \
-  --include='*.py' --include='*.js' --include='*.ts' --include='*.jsx' --include='*.tsx' \
-  --include='*.go' --include='*.rb' --include='*.php' --include='*.java' --include='*.cs' \
-  --include='*.env' --include='*.env.*' \
-  --include='*.yml' --include='*.yaml' --include='*.json' --include='*.toml' \
-  --include='*.xml' --include='*.properties' --include='*.conf' --include='*.cfg' --include='*.ini' \
-  -E '(password|passwd|secret|api.?key|private.?key|access.?key|auth.?token|client.?secret|signing.?key)[[:space:]]*[=:][[:space:]]*[\"'"'"'][^\"'"'"']{8,}[\"'"'"']' \
-  /app 2>/dev/null | grep -v '\.example' | grep -vi 'test\|mock\|fake\|placeholder\|your[_-]' | head -50
-"
+```json
+run_secrets_scanner({
+  "container_name": "${{CONTAINER_NAME}}",
+  "scan_path": "/app",
+  "only_verified": false,
+  "max_findings": 100
+})
 ```
 
-**Pass 2 — bare values** (catches `DB_PASS=hunter2` in .env files and config files with no quotes):
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-grep -rn \
-  --include='*.env' --include='*.env.*' --include='.env' \
-  --include='*.conf' --include='*.cfg' --include='*.ini' --include='*.properties' \
-  -E '^[[:space:]]*(PASSWORD|PASSWD|SECRET|API_KEY|PRIVATE_KEY|ACCESS_KEY|AUTH_TOKEN|CLIENT_SECRET|SIGNING_KEY|DB_PASS|DB_PASSWORD|DATABASE_PASSWORD)[[:space:]]*=[[:space:]]*[^${\(\"\x27][^\n]{6,}' \
-  /app 2>/dev/null | grep -v '\.example' | grep -vi 'changeme\|replace\|your[_-]' | head -30
-"
-```
-
-For each match across both passes, check if it is a hardcoded value (not an env var reference like `\${VAR}` or `os.Getenv`). Report each confirmed hardcoded secret as a **CRITICAL** finding under `information_disclosure`.
+Use `findings` from this tool as candidate secret exposures. For each result, verify whether it is a hardcoded value in code/config (not an env-var reference like `${VAR}` or `os.Getenv`). Report confirmed hardcoded secrets as **CRITICAL** findings under `information_disclosure`.
 
 ### Step 1c — Dependency CVE scan
-Run trivy against the repository's dependency files:
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-  if command -v trivy >/dev/null 2>&1; then
-    trivy fs --quiet --format table /app 2>/dev/null | head -60
-  else
-    echo 'trivy not available — skipping CVE scan'
-  fi
-"
+Use the built-in Trivy tool to scan all dependency files in the container for known CVEs:
+```json
+run_trivy_scan({
+  "container_name": "${{CONTAINER_NAME}}",
+  "scan_path": "/app",
+  "cvss_threshold": 0
+})
 ```
-If trivy is not available in the container, attempt to install it:
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin 2>/dev/null
-" || true
-```
-Then re-run the scan. Include any HIGH or CRITICAL CVEs in the report under `## Dependency Vulnerabilities`.
+The tool auto-installs Trivy if absent, returns structured JSON, and deduplicates by CVE ID.
+Store the `findings` array — it feeds directly into `write_sast_report`'s `cve_findings` field.
+Log any `skipped_low_cvss` count for completeness in the Coverage section.
 
 ### Step 1d — CVE lookup
 Use the built-in CVE tools to query the live cve.circl.lu database for known vulnerabilities in the target's key dependencies. First extract dependency names from the repo:
@@ -165,22 +141,16 @@ ctx_search(query="<keyword>")
 
 ### Step 1f — Semgrep structured SAST scan
 
-Run semgrep with curated security rulesets for a structured, JSON-output SAST pass. Non-fatal — skip if unavailable.
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-  command -v semgrep >/dev/null 2>&1 || { echo 'semgrep not available — skipping'; exit 0; }
-  semgrep --config=p/security-audit --config=p/owasp-top-ten --config=p/cwe-top-25 --config=p/trailofbits --json --quiet /app 2>/dev/null \
-  | python3 -c '
-import json, sys
-r = json.load(sys.stdin)
-for f in r.get(\"results\", []):
-    sev = f[\"extra\"].get(\"severity\", \"\")
-    msg = f[\"extra\"][\"message\"][:120]
-    print(f[\"path\"] + \":\" + str(f[\"start\"][\"line\"]) + \" [\" + f[\"check_id\"] + \"] (\" + sev + \") \" + msg)
-' 2>/dev/null | head -60
-" || true
+Run semgrep via the structured tool. Auto-selects language-appropriate rule packs, installs semgrep when absent, and returns parsed findings — non-fatal if unavailable.
+```json
+run_semgrep_scan({
+  "container_name": "${{CONTAINER_NAME}}",
+  "scan_path": "/app",
+  "severity_filter": ["ERROR", "WARNING"]
+})
 ```
-Add any `file:line` locations from semgrep `ERROR` or `WARNING` severity results to the source-map in Step 2. Treat semgrep `ERROR` findings as LIKELY candidates pending Judge re-verification in Step 5.
+Each finding includes `check_id`, `path`, `line`, `severity`, `message`, `cwe`, and `owasp`.
+Add any `path:line` locations with severity `ERROR` or `WARNING` to the source-map in Step 2. Treat `ERROR` findings as LIKELY candidates pending Judge re-verification in Step 5.
 
 ### Step 2 — Map sources (graph-first)
 You were given `Language`, `Entry points`, and `Key routes` from the setup subagent — **do not call `get_architecture` again**. Use those values directly.
@@ -204,34 +174,60 @@ Use `query_graph` to find authentication-gated routes and verify access controls
 
 Before declaring the app "still building" or restarting the scanner, run a bounded readiness probe. Do not use long fixed sleeps.
 
+Use a single deterministic tool call instead of ad-hoc shell loops:
+
+```json
+wait_for_target_ready({
+  "container_name": "<container>",
+  "port": <port-if-known>,
+  "max_wait_seconds": 90,
+  "interval_seconds": 5
+})
+```
+
 Readiness probe rules:
 - Never run a single `sleep` longer than 15 seconds.
 - Never use cumulative waiting longer than 90 seconds for readiness checks.
-- Use 5-second polling intervals with explicit checks each round.
-- If process check or HTTP check succeeds, treat the app as up and continue scanning immediately.
+- Prefer `wait_for_target_ready` output as probe evidence.
+- If `status` is `ready`, continue scanning immediately.
 
-Example readiness probe:
-```bash
-docker exec <container> sh -c '
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
-  ps aux | grep -E "jellyfin|dotnet" | grep -v grep >/dev/null 2>&1 && { echo READY_PROCESS; break; }
-  wget -qO- --timeout=3 "http://127.0.0.1:<port>/" >/dev/null 2>&1 && { echo READY_HTTP; break; }
-  sleep 5
-done
-'
+If readiness remains `not_ready` or `crashed`, mark findings as `UNREACHABLE` with evidence from the tool diagnostics. Do not claim "still building" without probe evidence.
+
+**If `App started: true`** — for each CONFIRMED or LIKELY finding, use the deterministic replay tool first:
+
+```json
+run_exploit_replay({
+  "container_name": "<container>",
+  "port": <port>,
+  "method": "GET",
+  "path": "<endpoint>",
+  "query": {"<param>": "<payload>"},
+  "timeout_seconds": 10,
+  "retries": 2,
+  "success_indicators": ["uid=", "root:"],
+  "block_indicators": ["forbidden", "unauthorized", "access denied"]
+})
 ```
 
-If all checks fail after the bounded probe, mark findings as `UNREACHABLE` with evidence from the probe commands. Do not claim "still building" without probe evidence.
+When needed, add side-effect verification in the same call:
 
-**If `App started: true`** — for each CONFIRMED or LIKELY finding, attempt a real PoC. Use `sh` and `wget` as the primary method (available in all images); fall back to `bash`/`curl` only if `sh`/`wget` are absent:
-```bash
-# Primary — works in alpine, slim, and distroless images
-docker exec <container> sh -c "wget -qO- --timeout=10 'http://localhost:<port>/<endpoint>?<payload>' 2>&1 || echo CONNECT_FAILED"
-
-# Fallback — if wget not available
-docker exec <container> bash -c "curl --max-time 10 -s 'http://localhost:<port>/<endpoint>?<payload>' 2>&1 || echo CONNECT_FAILED"
+```json
+run_exploit_replay({
+  "container_name": "<container>",
+  "port": <port>,
+  "method": "GET",
+  "path": "<endpoint>",
+  "query": {"<param>": "<payload>"},
+  "side_effect_command": "cat /tmp/rce_proof",
+  "side_effect_contains": "rce_proof"
+})
 ```
-Mark each finding: **EXPLOITED**, **BLOCKED**, or **UNREACHABLE**.
+
+Map tool verdicts as:
+- `exploited` -> **EXPLOITED**
+- `blocked` -> **BLOCKED**
+- `unreachable` -> **UNREACHABLE**
+- `inconclusive` -> keep as LIKELY/NEEDS CONTEXT and include replay evidence.
 
 ---
 
@@ -239,7 +235,9 @@ Mark each finding: **EXPLOITED**, **BLOCKED**, or **UNREACHABLE**.
 
 - Graph tools first: `search_graph`, `trace_path`, `get_code_snippet`, `query_graph`
 - `read_file` only when the graph is insufficient; for files >20 KB use `ctx_index_file` + `ctx_search` instead
-- `bash` for docker exec / sh / wget / curl (always `--timeout 10` / `--max-time 10`)
+- `run_secrets_scanner` for deterministic secret exposure discovery
+- `run_exploit_replay` for deterministic exploit verification and replay evidence
+- `bash` only for setup/inspection steps when replay tool inputs need refinement
 
 ---
 

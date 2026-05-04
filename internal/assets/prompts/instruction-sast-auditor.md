@@ -29,6 +29,16 @@ Categories: `user_input`, `db_query`, `memory_alloc`, `auth`, `file_io`, `exec`,
 
 ---
 
+## Critical Context Rules
+
+Before analyzing, check the **file path and name**:
+- **Email templates** (`templates/email/*`, `smtp/templates/*`, `*.mjml`) are server-side only — template variables in email markup are safe from XSS because emails are not DOM-executed. Flag only if the template *string itself* is user-controlled (SSTI, not XSS).
+- **Static assets** (JS/CSS in `public/`, `static/`, `assets/`) are not sinks for taint analysis unless they are dynamically generated.
+- **Config files** (YAML, JSON, `.env` samples) should only be flagged if user-controlled and loaded into dangerous operations at runtime.
+- **Test fixtures and example files** in `test/`, `examples/`, `docs/` are intentionally vulnerable — apply the 34-class taxonomy normally but mark severity conservatively (prefer MEDIUM/LOW for examples unless exploited in production code too).
+
+---
+
 ## Reasoning Protocol (apply to each hotspot)
 
 For each hotspot, work through these questions in order. Write your reasoning **explicitly** before reaching a verdict — do not skip steps.

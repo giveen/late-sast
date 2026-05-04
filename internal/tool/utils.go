@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"late/internal/common"
 )
 
 // getToolParam extracts a string parameter from tool arguments
@@ -79,4 +81,13 @@ func IsBinary(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// ParseArchitectureData unmarshals JSON architecture data from get_architecture MCP tool.
+func ParseArchitectureData(jsonStr string) (common.ArchitectureData, error) {
+	var data common.ArchitectureData
+	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+		return common.ArchitectureData{}, fmt.Errorf("invalid architecture JSON: %w", err)
+	}
+	return data, nil
 }
