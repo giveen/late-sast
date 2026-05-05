@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// RunSemgrepScanTool runs semgrep inside a scan container and returns structured
+// RunSemgrepScanTool runs opengrep inside a scan container and returns structured
 // SAST findings ready to feed into write_sast_report. Handles rule-pack selection
-// automatically based on detected language and auto-installs semgrep if absent.
+// automatically based on detected language and auto-installs opengrep if absent.
 type RunSemgrepScanTool struct {
 	Runner setupCommandRunner
 }
@@ -17,7 +17,7 @@ type RunSemgrepScanTool struct {
 func (t RunSemgrepScanTool) Name() string { return "run_semgrep_scan" }
 
 func (t RunSemgrepScanTool) Description() string {
-	return "Run semgrep SAST inside a container and return structured findings. Auto-selects language-appropriate rule packs and installs semgrep when absent."
+	return "Run opengrep SAST inside a container and return structured findings. Auto-selects language-appropriate rule packs and installs opengrep when absent."
 }
 
 func (t RunSemgrepScanTool) Parameters() json.RawMessage {
@@ -30,15 +30,15 @@ func (t RunSemgrepScanTool) Parameters() json.RawMessage {
 			"rule_packs": {
 				"type": "array",
 				"items": {"type": "string"},
-				"description": "Explicit semgrep rule packs to use (overrides auto-selection). E.g. ['p/security-audit', 'p/owasp-top-ten']"
+				"description": "Explicit opengrep rule packs to use (overrides auto-selection). E.g. ['p/security-audit', 'p/owasp-top-ten']"
 			},
 			"severity_filter": {
 				"type": "array",
 				"items": {"type": "string"},
-				"description": "Semgrep severity levels to include: ERROR, WARNING, INFO (default: ERROR, WARNING)"
+				"description": "OpenGrep severity levels to include: ERROR, WARNING, INFO (default: ERROR, WARNING)"
 			},
 			"max_findings": {"type": "integer", "description": "Maximum findings to return (default: 100)"},
-			"timeout_seconds": {"type": "integer", "description": "Semgrep scan timeout in seconds (default: 120, max: 300)"}
+			"timeout_seconds": {"type": "integer", "description": "OpenGrep scan timeout in seconds (default: 120, max: 300)"}
 		},
 		"required": ["container_name"]
 	}`)
@@ -97,11 +97,11 @@ func (t RunSemgrepScanTool) Execute(ctx context.Context, args json.RawMessage) (
 		p.SeverityFilter = []string{"ERROR", "WARNING"}
 	}
 
-	// Ensure semgrep is available.
-	if installed, err := t.ensureSemgrep(ctx, runner, p.ContainerName); err != nil || !installed {
+	// Ensure opengrep is available.
+	if installed, err := t.ensureOpenGrep(ctx, runner, p.ContainerName); err != nil || !installed {
 		result := map[string]any{
 			"status":    "skipped",
-			"reason":    "semgrep not available and could not be installed",
+			"reason":    "opengrep not available and could not be installed",
 			"findings":  []any{},
 			"total":     0,
 			"installed": false,
@@ -122,23 +122,23 @@ func (t RunSemgrepScanTool) Execute(ctx context.Context, args json.RawMessage) (
 		packs = defaultRulePacks(lang)
 	}
 
-	// Build semgrep command.
+	// Build opengrep command.
 	configArgs := ""
 	for _, pack := range packs {
 		configArgs += fmt.Sprintf(" --config=%s", pack)
 	}
-	semgrepCmd := fmt.Sprintf(
-		"semgrep%s --json --quiet --timeout %d %s 2>/dev/null",
+	opengrepCmd := fmt.Sprintf(
+		"opengrep scan%s --json --quiet --timeout %d %s 2>/dev/null",
 		configArgs,
 		p.TimeoutSeconds,
 		p.ScanPath,
 	)
 
-	raw, err := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", semgrepCmd)
+	raw, err := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", opengrepCmd)
 	if err != nil && strings.TrimSpace(raw) == "" {
 		result := map[string]any{
 			"status":   "error",
-			"reason":   fmt.Sprintf("semgrep failed: %v", err),
+			"reason":   fmt.Sprintf("opengrep failed: %v", err),
 			"findings": []any{},
 			"total":    0,
 		}
@@ -146,7 +146,7 @@ func (t RunSemgrepScanTool) Execute(ctx context.Context, args json.RawMessage) (
 		return string(out), nil
 	}
 
-	findings, parseErr := parseSemgrepJSON(raw, p.SeverityFilter, p.MaxFindings)
+	findings, parseErr := parseOpenGrepJSON(raw, p.SeverityFilter, p.MaxFindings)
 	if parseErr != nil {
 		result := map[string]any{
 			"status":     "partial",
@@ -178,17 +178,19 @@ func (t RunSemgrepScanTool) Execute(ctx context.Context, args json.RawMessage) (
 	return string(encoded), nil
 }
 
-// ensureSemgrep checks whether semgrep is present and installs it if not.
-func (t RunSemgrepScanTool) ensureSemgrep(ctx context.Context, runner setupCommandRunner, container string) (bool, error) {
-	out, _ := runner(ctx, "docker", "exec", container, "sh", "-c", "command -v semgrep >/dev/null 2>&1 && echo ok || echo missing")
+// ensureOpenGrep checks whether opengrep is present and downloads binary if not.
+func (t RunSemgrepScanTool) ensureOpenGrep(ctx context.Context, runner setupCommandRunner, container string) (bool, error) {
+	out, _ := runner(ctx, "docker", "exec", container, "sh", "-c", "command -v opengrep >/dev/null 2>&1 && echo ok || echo missing")
 	if strings.TrimSpace(out) == "ok" {
 		return true, nil
 	}
 
-	installCmd := `pipx install semgrep 2>/dev/null || pip install --quiet --break-system-packages semgrep 2>/dev/null || python3 -m pip install --quiet --break-system-packages semgrep 2>/dev/null || true`
+	// Download opengrep binary for Linux x86_64 (detect OS/arch in future if needed)
+	// Using self-contained binary that doesn't require Python
+	installCmd := `curl -sSfL https://github.com/opengrep/opengrep/releases/download/v1.20.0/opengrep-1.20.0-x86_64-unknown-linux-musl -o /tmp/opengrep && chmod +x /tmp/opengrep && mv /tmp/opengrep /usr/local/bin/ 2>/dev/null || true`
 	_, _ = runner(ctx, "docker", "exec", container, "sh", "-c", installCmd)
 
-	out2, _ := runner(ctx, "docker", "exec", container, "sh", "-c", "command -v semgrep >/dev/null 2>&1 && echo ok || echo missing")
+	out2, _ := runner(ctx, "docker", "exec", container, "sh", "-c", "command -v opengrep >/dev/null 2>&1 && echo ok || echo missing")
 	return strings.TrimSpace(out2) == "ok", nil
 }
 
@@ -217,7 +219,7 @@ func (t RunSemgrepScanTool) detectLanguage(ctx context.Context, runner setupComm
 	return lang
 }
 
-// defaultRulePacks returns the recommended semgrep rule packs for a given language.
+// defaultRulePacks returns the recommended opengrep rule packs for a given language.
 func defaultRulePacks(lang string) []string {
 	switch lang {
 	case "go":
@@ -278,16 +280,16 @@ type rawSemgrepOutput struct {
 	} `json:"errors"`
 }
 
-func parseSemgrepJSON(raw string, severityFilter []string, maxFindings int) ([]semgrepFinding, error) {
+func parseOpenGrepJSON(raw string, severityFilter []string, maxFindings int) ([]semgrepFinding, error) {
 	idx := strings.Index(raw, "{")
 	if idx < 0 {
-		return nil, fmt.Errorf("no JSON object in semgrep output")
+		return nil, fmt.Errorf("no JSON object in opengrep output")
 	}
 	raw = raw[idx:]
 
 	var out rawSemgrepOutput
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil, fmt.Errorf("unmarshal semgrep JSON: %w", err)
+		return nil, fmt.Errorf("unmarshal opengrep JSON: %w", err)
 	}
 
 	// Build a set of accepted severities.
@@ -305,7 +307,7 @@ func parseSemgrepJSON(raw string, severityFilter []string, maxFindings int) ([]s
 
 		cwe := extractMetaString(r.Extra.Metadata, "cwe")
 		owasp := extractMetaString(r.Extra.Metadata, "owasp")
-		ruleURL := fmt.Sprintf("https://semgrep.dev/r/%s", r.CheckID)
+		ruleURL := fmt.Sprintf("https://docs.semgrep.dev/rules/%s", r.CheckID)
 
 		findings = append(findings, semgrepFinding{
 			CheckID:  r.CheckID,
@@ -326,7 +328,7 @@ func parseSemgrepJSON(raw string, severityFilter []string, maxFindings int) ([]s
 	return findings, nil
 }
 
-// extractMetaString pulls a string value from semgrep's metadata map.
+// extractMetaString pulls a string value from opengrep's metadata map.
 // Values can be strings or arrays of strings; we take the first.
 func extractMetaString(meta map[string]json.RawMessage, key string) string {
 	raw, ok := meta[key]

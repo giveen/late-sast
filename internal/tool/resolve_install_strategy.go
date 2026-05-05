@@ -244,10 +244,18 @@ func selectBestAsset(assets []releaseAsset, arch string) (releaseAsset, bool) {
 	archTags := archMatchTokens(arch)
 	kinds := []string{"deb", "appimage", "snap", "flatpak"}
 	for _, kind := range kinds {
+		candidates := make([]releaseAsset, 0)
 		for _, a := range assets {
 			if assetKind(a.Name) != kind {
 				continue
 			}
+			candidates = append(candidates, a)
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+
+		for _, a := range candidates {
 			if kind == "snap" || kind == "flatpak" {
 				return a, true
 			}
@@ -255,11 +263,25 @@ func selectBestAsset(assets []releaseAsset, arch string) (releaseAsset, bool) {
 				return a, true
 			}
 		}
+
+		// Fallback: if no arch marker matched, prefer an asset without any explicit arch marker.
+		for _, a := range candidates {
+			if !hasAnyArchToken(a.Name) {
+				return a, true
+			}
+		}
+
+		if len(candidates) == 1 {
+			return candidates[0], true
+		}
 	}
 	return releaseAsset{}, false
 }
 
 func assetKind(name string) string {
+	if !isInstallableAssetName(name) {
+		return ""
+	}
 	n := strings.ToLower(name)
 	switch {
 	case strings.HasSuffix(n, ".deb"):
@@ -275,6 +297,26 @@ func assetKind(name string) string {
 	}
 }
 
+func isInstallableAssetName(name string) bool {
+	n := strings.ToLower(name)
+	for _, suffix := range []string{".asc", ".sig", ".minisig", ".sha256", ".sha256sum", ".sha512", ".sha512sum", ".zsync"} {
+		if strings.HasSuffix(n, suffix) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasAnyArchToken(name string) bool {
+	n := strings.ToLower(name)
+	for _, tag := range []string{"amd64", "x86_64", "x86-64", "x64", "arm64", "aarch64", "armv7", "armhf", "i386", "x86", "386"} {
+		if strings.Contains(n, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 func filenameMatchesArch(name string, tags []string) bool {
 	n := strings.ToLower(name)
 	for _, tag := range tags {
@@ -288,9 +330,9 @@ func filenameMatchesArch(name string, tags []string) bool {
 func archMatchTokens(arch string) []string {
 	switch arch {
 	case "amd64":
-		return []string{"amd64", "x86_64"}
+		return []string{"amd64", "x86_64", "x86-64", "x64"}
 	case "arm64":
-		return []string{"arm64", "aarch64"}
+		return []string{"arm64", "aarch64", "armv8"}
 	default:
 		return []string{strings.ToLower(arch)}
 	}
@@ -299,9 +341,9 @@ func archMatchTokens(arch string) []string {
 func normalizeArch(arch string) string {
 	a := strings.ToLower(strings.TrimSpace(arch))
 	switch a {
-	case "", "amd64", "x86_64":
+	case "", "amd64", "x86_64", "x86-64", "x64":
 		return "amd64"
-	case "arm64", "aarch64":
+	case "arm64", "aarch64", "armv8":
 		return "arm64"
 	default:
 		return a

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -386,7 +387,8 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Connection error: remain unknown to allow retry
+		// Connection error: remain unknown to allow retry on next call.
+		fmt.Fprintf(os.Stderr, "[client] DiscoverBackend: probe failed (%v), context size unknown\n", err)
 		return c.backend
 	}
 	defer resp.Body.Close()

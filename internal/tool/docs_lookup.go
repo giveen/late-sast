@@ -379,7 +379,7 @@ type DocsResolveTool struct {
 
 func (t DocsResolveTool) Name() string { return "docs_resolve" }
 func (t DocsResolveTool) Description() string {
-	return "Resolve a library or package name to its official documentation index URL using the ProContext registry (2100+ libraries). Call this first when looking up remediation guidance, migration docs, or security advisories for any detected vulnerability. Returns index_url — pass it to docs_read or docs_search."
+	return "Resolve a library or framework name to its official documentation index URL using the ProContext registry (2100+ libraries). Use docs_* tools when you know the library name and want official docs, remediation guidance, CVE advisories, or migration guides — the registry handles URL discovery for you. Do NOT use docs_* for arbitrary URLs or local files; use ctx_fetch_and_index + ctx_search instead. Returns index_url — pass it to docs_read or docs_search."
 }
 func (t DocsResolveTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -435,7 +435,7 @@ type DocsReadTool struct {
 
 func (t DocsReadTool) Name() string { return "docs_read" }
 func (t DocsReadTool) Description() string {
-	return "Fetch a documentation page or llms.txt index and return a windowed slice of its content with line numbers. Use the index_url from docs_resolve. Set offset to jump to a specific section; limit controls how many lines are returned. Use docs_search when looking for a specific keyword."
+	return "Fetch a documentation page from a docs_resolve index_url and return a windowed slice of its content with line numbers. Only works with URLs returned by docs_resolve — for arbitrary web pages use ctx_fetch_and_index instead. Set offset to jump to a specific section; use docs_search when looking for a specific keyword."
 }
 func (t DocsReadTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -535,7 +535,7 @@ type DocsSearchTool struct {
 
 func (t DocsSearchTool) Name() string { return "docs_search" }
 func (t DocsSearchTool) Description() string {
-	return "Search a documentation page for lines matching a keyword or regex. Returns matching lines with line numbers. Use the index_url or any linked URL from docs_resolve. Smart case: lowercase query = case-insensitive; mixed-case = case-sensitive. Ideal for finding security advisories, CVE remediations, and migration guides."
+	return "Search a documentation page (from docs_resolve) for lines matching a keyword or regex. Returns matching lines with line numbers. Only works with URLs returned by docs_resolve — for arbitrary web pages use ctx_fetch_and_index + ctx_search instead. Smart case: lowercase query = case-insensitive; mixed-case = case-sensitive."
 }
 func (t DocsSearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

@@ -186,7 +186,9 @@ func NewStdioTransport(ctx context.Context, command string, args []string, env [
 	// Kill the subprocess when the context is cancelled.
 	go func() {
 		<-ctx.Done()
-		cmd.Process.Kill()
+		if cmd.Process != nil {
+			cmd.Process.Kill() //nolint:errcheck
+		}
 	}()
 
 	return &mcp.IOTransport{

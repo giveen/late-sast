@@ -127,3 +127,89 @@ func TestResolveInstallStrategyTool_InvalidURL(t *testing.T) {
 		t.Fatal("expected error for non-github URL")
 	}
 }
+
+func TestResolveInstallStrategyTool_AppImageSkipsSignatureSidecar(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/owner/repo/HEAD/README.md":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("No quick install here\n"))
+		case "/repos/owner/repo/releases/latest":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+				"assets": [
+					{"name":"qbittorrent-5.2.0_x86_64.AppImage.asc","browser_download_url":"https://example/appimage-asc"},
+					{"name":"qbittorrent-5.2.0_x86_64.AppImage","browser_download_url":"https://example/appimage"}
+				]
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	tool := ResolveInstallStrategyTool{
+		HTTPClient:        srv.Client(),
+		RawContentBaseURL: srv.URL,
+		GitHubAPIBaseURL:  srv.URL,
+	}
+	args := json.RawMessage(`{"github_url":"https://github.com/owner/repo","arch":"amd64"}`)
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if resp["strategy"] != "release_asset" {
+		t.Fatalf("expected release_asset strategy, got %v", resp["strategy"])
+	}
+	asset, _ := resp["release_asset"].(map[string]any)
+	if asset["name"] != "qbittorrent-5.2.0_x86_64.AppImage" {
+		t.Fatalf("expected AppImage binary asset, got %v", asset["name"])
+	}
+}
+
+func TestResolveInstallStrategyTool_AppImageSupportsX64ArchAlias(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/owner/repo/HEAD/README.md":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("No quick install here\n"))
+		case "/repos/owner/repo/releases/latest":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+				"assets": [
+					{"name":"qbittorrent-5.2.0_x86_64.AppImage","browser_download_url":"https://example/appimage"}
+				]
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	tool := ResolveInstallStrategyTool{
+		HTTPClient:        srv.Client(),
+		RawContentBaseURL: srv.URL,
+		GitHubAPIBaseURL:  srv.URL,
+	}
+	args := json.RawMessage(`{"github_url":"https://github.com/owner/repo","arch":"x64"}`)
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if resp["strategy"] != "release_asset" {
+		t.Fatalf("expected release_asset strategy, got %v", resp["strategy"])
+	}
+	if resp["arch"] != "amd64" {
+		t.Fatalf("expected normalized arch amd64, got %v", resp["arch"])
+	}
+}

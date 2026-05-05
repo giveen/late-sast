@@ -39,13 +39,13 @@ func TestRunSemgrepScan_BasicParsing(t *testing.T) {
 		for _, a := range args {
 			joined += " " + a
 		}
-		if containsStr(joined, "command -v semgrep") {
+		if containsStr(joined, "command -v opengrep") {
 			return "ok", nil
 		}
 		if containsStr(joined, "go.mod") {
 			return "go", nil // simulate detectLanguage returning "go"
 		}
-		if containsStr(joined, "semgrep") {
+		if containsStr(joined, "opengrep scan") {
 			return report, nil
 		}
 		return "", nil
@@ -110,10 +110,10 @@ func TestRunSemgrepScan_SeverityFilter(t *testing.T) {
 		for _, a := range args {
 			joined += " " + a
 		}
-		if containsStr(joined, "command -v semgrep") {
+		if containsStr(joined, "command -v opengrep") {
 			return "ok", nil
 		}
-		if containsStr(joined, "semgrep") {
+		if containsStr(joined, "opengrep scan") {
 			return report, nil
 		}
 		return "", nil
@@ -157,10 +157,10 @@ func TestRunSemgrepScan_MaxFindings(t *testing.T) {
 		for _, a := range args {
 			joined += " " + a
 		}
-		if containsStr(joined, "command -v semgrep") {
+		if containsStr(joined, "command -v opengrep") {
 			return "ok", nil
 		}
-		if containsStr(joined, "semgrep") {
+		if containsStr(joined, "opengrep scan") {
 			return report, nil
 		}
 		return "", nil
@@ -212,17 +212,17 @@ func TestRunSemgrepScan_AutoInstallAndRetry(t *testing.T) {
 		for _, a := range args {
 			joined += " " + a
 		}
-		if containsStr(joined, "command -v semgrep") {
+		if containsStr(joined, "command -v opengrep") {
 			callCount++
 			if callCount == 1 {
 				return "missing", nil
 			}
 			return "ok", nil
 		}
-		if containsStr(joined, "pipx") || containsStr(joined, "pip install") {
+		if containsStr(joined, "curl") || containsStr(joined, "wget") {
 			return "", nil
 		}
-		if containsStr(joined, "semgrep") {
+		if containsStr(joined, "opengrep scan") {
 			return report, nil
 		}
 		return "", nil
@@ -239,7 +239,7 @@ func TestRunSemgrepScan_AutoInstallAndRetry(t *testing.T) {
 	var result map[string]any
 	_ = json.Unmarshal([]byte(out), &result)
 	if result["status"] != "ok" {
-		t.Errorf("expected ok after install, got %v", result["status"])
+		t.Errorf("expected ok after binary download, got %v", result["status"])
 	}
 }
 
@@ -249,7 +249,7 @@ func TestRunSemgrepScan_SemgrepUnavailableAndInstallFails(t *testing.T) {
 		for _, a := range args {
 			joined += " " + a
 		}
-		if containsStr(joined, "command -v semgrep") {
+		if containsStr(joined, "command -v opengrep") {
 			return "missing", nil
 		}
 		return "", nil
@@ -263,7 +263,7 @@ func TestRunSemgrepScan_SemgrepUnavailableAndInstallFails(t *testing.T) {
 	var result map[string]any
 	_ = json.Unmarshal([]byte(out), &result)
 	if result["status"] != "skipped" {
-		t.Errorf("expected skipped when semgrep unavailable, got %v", result["status"])
+		t.Errorf("expected skipped when opengrep unavailable, got %v", result["status"])
 	}
 }
 
@@ -285,10 +285,10 @@ func TestRunSemgrepScan_ExplicitRulePacks(t *testing.T) {
 		for _, a := range args {
 			joined += " " + a
 		}
-		if containsStr(joined, "command -v semgrep") {
+		if containsStr(joined, "command -v opengrep") {
 			return "ok", nil
 		}
-		if containsStr(joined, "semgrep") {
+		if containsStr(joined, "opengrep scan") {
 			capturedCmd = joined
 			return report, nil
 		}
@@ -336,10 +336,10 @@ func TestRunSemgrepScan_CWEArrayMetadata(t *testing.T) {
 		for _, a := range args {
 			joined += " " + a
 		}
-		if containsStr(joined, "command -v semgrep") {
+		if containsStr(joined, "command -v opengrep") {
 			return "ok", nil
 		}
-		if containsStr(joined, "semgrep") {
+		if containsStr(joined, "opengrep scan") {
 			return report, nil
 		}
 		return "", nil

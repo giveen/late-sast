@@ -14,10 +14,10 @@ func main() {
 
 	// Step 1: assess_disclosure_context
 	fmt.Println("=== Step 1: assess_disclosure_context ===")
-	assessTool := tool.NewAssessDisclosureContextTool()
+	assessTool := tool.AssessDisclosureContextTool{}
 	assessArgs, _ := json.Marshal(map[string]interface{}{
-		"repo_path":   "/tmp/sast-20260504-100406/repo",
-		"github_url":  "https://github.com/giveen/late-sast",
+		"repo_path":  "/tmp/sast-20260504-100406/repo",
+		"github_url": "https://github.com/giveen/late-sast",
 		"findings": []map[string]interface{}{
 			{"id": "H1", "title": "Command Injection — ShellTool.executeShellCommand", "cwe": 78, "severity": "CRITICAL", "impact": "Remote command execution via unsanitized shell command"},
 			{"id": "H2", "title": "Command Injection — write_sast_report.go Execute", "cwe": 78, "severity": "HIGH", "impact": "Remote command execution via unsanitized report path in write_sast_report tool"},
@@ -74,12 +74,12 @@ func main() {
 			{"id": "H8", "title": "Command Injection — setup_container.go Execute", "location": "internal/tool/setup_container.go:70", "cwe": 78, "auditor_verdict": "CONFIRMED", "taint_path": "AI agent → SetupContainerTool.Execute() → exec.CommandContext() → docker", "severity": "HIGH", "reproduce": "late --docker-args run --rm -v /tmp:/tmp ubuntu", "impact": "Remote command execution via unsanitized docker setup arguments"},
 			{"id": "H9", "title": "Command Injection — run_git_command.go Execute", "location": "internal/tool/run_git_command.go:220", "cwe": 78, "auditor_verdict": "CONFIRMED", "taint_path": "AI agent → RunGitCommandTool.Execute() → exec.CommandContext() → git", "severity": "MEDIUM", "reproduce": "late --parts git log --all", "impact": "Remote command execution via unsanitized git arguments"},
 		},
-		"cve_findings": []map[string]interface{}{},
+		"cve_findings":         []map[string]interface{}{},
 		"previously_disclosed": []map[string]interface{}{},
 		"scan_coverage": map[string]interface{}{
-			"languages":           "Go",
-			"entry_points":        6,
-			"functions_analyzed":  150,
+			"languages":          "Go",
+			"entry_points":       6,
+			"functions_analyzed": 150,
 		},
 	})
 	result, err = reportTool.Execute(ctx, reportArgs)

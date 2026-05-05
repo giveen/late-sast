@@ -13,7 +13,12 @@ import (
 
 // WriteSASTReportTool assembles a normalized, de-duplicated SAST security
 // report from structured finding records and writes it to disk.
-type WriteSASTReportTool struct{}
+type WriteSASTReportTool struct {
+	// OnWritten is called (in the tool Execute goroutine) after the report has
+	// been successfully written to disk. The argument is the absolute output
+	// path. Optional — nil is a no-op.
+	OnWritten func(path string)
+}
 
 // ReportFinding is the structured input for one finding.
 type ReportFinding struct {
@@ -394,6 +399,10 @@ func (t WriteSASTReportTool) Execute(_ context.Context, args json.RawMessage) (s
 	}
 	if err := os.WriteFile(p.OutputPath, []byte(sb.String()), 0644); err != nil {
 		return "", fmt.Errorf("failed to write report: %w", err)
+	}
+
+	if t.OnWritten != nil {
+		t.OnWritten(p.OutputPath)
 	}
 
 	result := map[string]any{

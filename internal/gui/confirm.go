@@ -148,9 +148,13 @@ func applyChoice(
 					case "s", "S":
 						tool.SaveSessionAllowedCommand(params.Command)
 					case "p", "P":
-						_ = tool.SaveAllowedCommand(params.Command, false)
+						if err := tool.SaveAllowedCommand(params.Command, false); err != nil {
+							fyne.LogError("Failed to save allowed command", err)
+						}
 					case "g", "G":
-						_ = tool.SaveAllowedCommand(params.Command, true)
+						if err := tool.SaveAllowedCommand(params.Command, true); err != nil {
+							fyne.LogError("Failed to save global allowed command", err)
+						}
 					}
 				}
 			} else {
@@ -158,9 +162,13 @@ func applyChoice(
 				case "s", "S":
 					tool.SaveSessionAllowedTool(tc.Function.Name)
 				case "p", "P":
-					_ = tool.SaveAllowedTool(tc.Function.Name, false)
+					if err := tool.SaveAllowedTool(tc.Function.Name, false); err != nil {
+						fyne.LogError("Failed to save allowed tool", err)
+					}
 				case "g", "G":
-					_ = tool.SaveAllowedTool(tc.Function.Name, true)
+					if err := tool.SaveAllowedTool(tc.Function.Name, true); err != nil {
+						fyne.LogError("Failed to save global allowed tool", err)
+					}
 				}
 			}
 		}

@@ -33,7 +33,7 @@ type SASTPickerResult struct {
 // This call blocks until the window is closed.
 func (a *App) RunSAST(
 	knownTarget, knownLocalPath, knownRetestPath, knownOutputDir string,
-	setupFn func(SASTPickerResult) (common.Orchestrator, string),
+	setupFn func(SASTPickerResult) (common.Orchestrator, string, error),
 ) {
 	a.fyneApp = fyneapp.NewWithID("io.late.sast")
 	a.fyneApp.Settings().SetTheme(&lateTheme{})
@@ -43,9 +43,29 @@ func (a *App) RunSAST(
 	// transition switches the window from the picker/loading screen to the
 	// main chat layout. It runs setupFn in a background goroutine (it may
 	// do blocking I/O) and then updates the UI via fyne.Do.
-	transition := func(res SASTPickerResult) {
-		rootAgent, initialMsg := setupFn(res)
-		
+	var transition func(SASTPickerResult)
+	transition = func(res SASTPickerResult) {
+		rootAgent, initialMsg, setupErr := setupFn(res)
+		if setupErr != nil {
+			fyne.Do(func() {
+				dialog.ShowError(setupErr, a.window)
+				// Rebuild the picker so the user can correct the input.
+				a.window.Resize(fyne.NewSize(980, 660))
+				a.window.SetContent(a.buildPickerContent(
+					func(r SASTPickerResult) {
+						fyne.Do(func() {
+							a.window.SetContent(container.NewCenter(
+								widget.NewLabel("Setting up scan…"),
+							))
+						})
+						go transition(r)
+					},
+					knownOutputDir,
+				))
+			})
+			return
+		}
+
 		// CRITICAL: Ensure buildMainLayout (which starts the event loop) has
 		// fully executed on the Fyne main goroutine BEFORE submitting the initial
 		// message. Otherwise the event loop may not be running when the agent
@@ -56,12 +76,12 @@ func (a *App) RunSAST(
 			a.window.Resize(fyne.NewSize(1150, 750))
 			a.buildMainLayout(rootAgent, nil)
 			a.window.SetContent(a.tabs)
-			close(layoutReady)  // Signal that buildMainLayout is done
+			close(layoutReady) // Signal that buildMainLayout is done
 		})
-		
+
 		if initialMsg != "" {
 			go func() {
-				<-layoutReady  // Wait for the layout to be fully set up and event loop running
+				<-layoutReady // Wait for the layout to be fully set up and event loop running
 				time.Sleep(300 * time.Millisecond)
 				fyne.Do(func() {
 					a.mainChat.AppendMessage("user", initialMsg)

@@ -63,6 +63,9 @@ type App struct {
 	panelsByOrcID map[string]*ChatPanel
 
 	onQuit func() // optional: called before Fyne quits (e.g. docker cleanup)
+
+	rootAgent common.Orchestrator // stored so NotifyReportWritten can submit
+	rescanBtn *widget.Button      // shown after report is written
 }
 
 // NewApp constructs the App struct (does not start Fyne yet).
@@ -98,6 +101,7 @@ func (a *App) ConfirmMiddleware(reg *common.ToolRegistry, unsupervised bool) com
 // starts the event loop. It does NOT call Show or Run — the caller does that.
 // Must be called from the Fyne main goroutine (or before ShowAndRun).
 func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatMessage) {
+	a.rootAgent = rootAgent
 	a.mainChat = NewChatPanel()
 	for _, msg := range hist {
 		a.mainChat.AppendMessage(msg.Role, messageText(msg))
@@ -151,10 +155,12 @@ func (a *App) buildMainLayout(rootAgent common.Orchestrator, hist []client.ChatM
 	settingsBtn := widget.NewButton("Settings", func() {
 		a.showSettingsDialog()
 	})
+	a.rescanBtn = widget.NewButton("🔄 Rescan", nil)
+	a.rescanBtn.Hide()
 	// Single top bar: controls on the sides, live status in the centre.
 	topBar := container.NewBorder(
 		nil, nil,
-		quitBtn,
+		container.NewHBox(quitBtn, a.rescanBtn),
 		container.NewHBox(a.usageLabel, settingsBtn),
 		container.NewHBox(statusLabel, widget.NewSeparator(), a.currentPhaseLabel),
 	)
@@ -262,11 +268,6 @@ func (a *App) closeSubagentTab(tabItem *container.TabItem, o common.Orchestrator
 	a.tabs.Refresh()
 }
 
-// HighlightNode is a no-op placeholder. Previously used for Project Map visualization.
-func (a *App) HighlightNode(filePath string, isHotspot bool) {
-	// Project Map tab removed; node highlighting disabled
-}
-
 // phaseLabel returns a human-readable tab label with a counter suffix when
 // more than one tab with the same base label is open simultaneously.
 func (a *App) phaseLabel(agentType string) string {
@@ -295,4 +296,41 @@ func (a *App) sendNotification(title, body string) {
 // messageText extracts the string content from a ChatMessage.
 func messageText(msg client.ChatMessage) string {
 	return msg.Content
+}
+
+// NotifyReportWritten is called (from any goroutine) after write_sast_report
+// successfully writes a report.
+func (a *App) NotifyReportWritten(reportPath string) {
+	fyne.Do(func() {
+		if a.mainChat != nil {
+			a.mainChat.AppendMessage("system", fmt.Sprintf("✓ Report written: %s", reportPath))
+		}
+		if a.rescanBtn != nil {
+			a.rescanBtn.OnTapped = func() {
+				a.rescanBtn.Disable()
+				go func() {
+					msg := fmt.Sprintf(
+						"Rescan requested. Search your conversation history for the SETUP_COMPLETE block "+
+							"and extract all fields (Container, Network, RepoPath, IndexPath, etc.). "+
+							"Then spawn_subagent with agent_type=\"scanner\" using those fields as the goal — "+
+							"do NOT re-run bootstrap_scan_toolchain or re-clone the repository. "+
+							"The existing report is at: %s — load it, re-verify every finding, "+
+							"scan for additional vulnerabilities, then write the merged report to the same path.",
+						reportPath,
+					)
+					if a.rootAgent != nil {
+						if err := a.rootAgent.Submit(msg); err != nil {
+							fyne.Do(func() {
+								a.rescanBtn.Enable()
+								if a.mainChat != nil {
+									a.mainChat.AppendMessage("system", fmt.Sprintf("✗ Rescan failed: %v", err))
+								}
+							})
+						}
+					}
+				}()
+			}
+			a.rescanBtn.Show()
+		}
+	})
 }

@@ -130,12 +130,14 @@ type ToolExecutionStats struct {
 }
 
 // ExecuteToolCallsWithStats runs a slice of tool calls and returns execution stats.
+// cache may be nil; when provided, idempotent tool results are served from cache.
 func ExecuteToolCallsWithStats(
 	ctx context.Context,
 	sess *session.Session,
 	toolCalls []client.ToolCall,
 	middlewares []common.ToolMiddleware,
 	onToolState func(toolName string, running bool),
+	cache *ToolResultCache,
 ) (ToolExecutionStats, error) {
 	stats := ToolExecutionStats{}
 
@@ -182,17 +184,40 @@ func ExecuteToolCallsWithStats(
 			}
 		}
 
+		// Serve from cache when possible (idempotent tools only).
+		if cache != nil {
+			if cached, hit := cache.Get(tc.Function.Name, tc.Function.Arguments); hit {
+				sess.LogEvent("TOOL_CACHE_HIT", "Returning cached tool result", map[string]interface{}{
+					"tool": tc.Function.Name,
+					"id":   tc.ID,
+				})
+				sess.LogDebugToolResult(tc.Function.Name, tc.ID, cached, nil, 0)
+				if err := sess.AddToolResultMessage(tc.ID, cached); err != nil {
+					return stats, err
+				}
+				continue
+			}
+		}
+
 		toolStart := time.Now()
 		if onToolState != nil {
 			onToolState(tc.Function.Name, true)
 		}
 		// spawn_subagent manages its own timeout internally; use the parent context
 		// so the per-turn deadline doesn't kill a long-running subagent early.
+		// All other tools get an optional per-tool timeout layered on top of the
+		// per-turn deadline.
+		var toolCancel context.CancelFunc
 		callCtx := turnCtx
 		if tc.Function.Name == "spawn_subagent" {
 			callCtx = ctx
+		} else if td := toolTimeoutFor(tc.Function.Name); td > 0 {
+			callCtx, toolCancel = context.WithTimeout(turnCtx, td)
 		}
 		result, runErr := runner(callCtx, tc)
+		if toolCancel != nil {
+			toolCancel()
+		}
 		if runErr != nil {
 			if callCtx.Err() == context.DeadlineExceeded {
 				stats.TimedOut++
@@ -206,6 +231,10 @@ func ExecuteToolCallsWithStats(
 			}
 			if strings.HasPrefix(result, "Command failed with exit code") || strings.HasPrefix(result, "Error executing command:") {
 				stats.Failures++
+			}
+			// Populate cache for successful idempotent tools.
+			if cache != nil {
+				cache.Set(tc.Function.Name, tc.Function.Arguments, result)
 			}
 		}
 		// Log the final result (after error-wrapping) so the debug log matches what the LLM receives.
@@ -228,7 +257,7 @@ func ExecuteToolCallsWithStats(
 // ExecuteToolCalls runs a slice of tool calls against the session.
 // Results are added to the session history.
 func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []client.ToolCall, middlewares []common.ToolMiddleware) error {
-	_, err := ExecuteToolCallsWithStats(ctx, sess, toolCalls, middlewares, nil)
+	_, err := ExecuteToolCallsWithStats(ctx, sess, toolCalls, middlewares, nil, nil)
 	return err
 }
 
@@ -379,10 +408,15 @@ func RunLoop(
 	onGPUAcquired func(),
 	onGPUReleased func(),
 	onToolState func(toolName string, running bool),
+	sharedCache *ToolResultCache,
 ) (string, error) {
 	var lastContent string
 	var previousToolSig string
 	duplicateToolTurns := 0
+	cache := sharedCache
+	if cache == nil {
+		cache = NewToolResultCache()
+	}
 
 	for i := 0; maxTurns <= 0 || i < maxTurns; i++ {
 		if onStartTurn != nil {
@@ -556,7 +590,7 @@ func RunLoop(
 			onGPUReleased()
 		}
 
-		stats, err := ExecuteToolCallsWithStats(ctx, sess, validCalls, middlewares, onToolState)
+		stats, err := ExecuteToolCallsWithStats(ctx, sess, validCalls, middlewares, onToolState, cache)
 		if err != nil {
 			return "", err
 		}
