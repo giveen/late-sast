@@ -3,7 +3,9 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunSecretsScanner_BasicParsing(t *testing.T) {
@@ -188,5 +190,69 @@ func TestRunSecretsScanner_RequiresContainerName(t *testing.T) {
 	_, err := tool.Execute(context.Background(), args)
 	if err == nil {
 		t.Fatal("expected error for missing container_name")
+	}
+}
+
+func TestRunSecretsScanner_AppliesTimeoutSecondsToScan(t *testing.T) {
+	var scanCtxHasDeadline bool
+	runner := func(ctx context.Context, name string, args ...string) (string, error) {
+		joined := name
+		for _, a := range args {
+			joined += " " + a
+		}
+		if containsStr(joined, "command -v trufflehog") {
+			return "ok", nil
+		}
+		if containsStr(joined, "trufflehog filesystem") {
+			deadline, ok := ctx.Deadline()
+			if ok {
+				scanCtxHasDeadline = time.Until(deadline) > 0
+			}
+			return "", nil
+		}
+		return "", nil
+	}
+
+	tool := RunSecretsScannerTool{Runner: runner}
+	args, _ := json.Marshal(map[string]any{"container_name": "c", "timeout_seconds": 2})
+	_, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !scanCtxHasDeadline {
+		t.Fatal("expected trufflehog scan context to have deadline")
+	}
+}
+
+func TestRunSecretsScanner_QuotesScanPathInShellCommand(t *testing.T) {
+	var scanCmd string
+	runner := func(ctx context.Context, name string, args ...string) (string, error) {
+		joined := name
+		for _, a := range args {
+			joined += " " + a
+		}
+		if containsStr(joined, "command -v trufflehog") {
+			return "ok", nil
+		}
+		if containsStr(joined, "trufflehog filesystem") {
+			if len(args) >= 5 {
+				scanCmd = args[4]
+			}
+			return "", nil
+		}
+		return "", nil
+	}
+
+	tool := RunSecretsScannerTool{Runner: runner}
+	args, _ := json.Marshal(map[string]any{
+		"container_name": "c",
+		"scan_path":      "/app; echo pwned",
+	})
+	_, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(scanCmd, "'/app; echo pwned'") {
+		t.Fatalf("expected scan_path to be shell-quoted, got command: %s", scanCmd)
 	}
 }

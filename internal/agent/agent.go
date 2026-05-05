@@ -355,7 +355,7 @@ func buildSubagentMiddlewares(
 		return append([]common.ToolMiddleware{setupBootstrapFirstMiddleware(), cleanupToolPreferredMiddleware()}, base...)
 	}
 	if agentType == "scanner" || agentType == "binary-scanner" {
-		return append([]common.ToolMiddleware{scannerExploitReplayMiddleware()}, base...)
+		return append([]common.ToolMiddleware{scannerSecretsFirstMiddleware(), scannerExploitReplayMiddleware()}, base...)
 	}
 
 	return base

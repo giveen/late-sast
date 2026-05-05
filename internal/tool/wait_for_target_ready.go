@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -262,7 +263,31 @@ func buildProbeEndpoints(explicitEndpoint, host string, preferredPort int, healt
 			hostPort = containerPort
 		}
 	} else {
-		for k, binds := range ports {
+		keys := make([]string, 0, len(ports))
+		for k := range ports {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			li := strings.SplitN(keys[i], "/", 2)[0]
+			lj := strings.SplitN(keys[j], "/", 2)[0]
+			pi, errI := strconv.Atoi(li)
+			pj, errJ := strconv.Atoi(lj)
+			if errI == nil && errJ == nil {
+				if pi != pj {
+					return pi < pj
+				}
+				return keys[i] < keys[j]
+			}
+			if errI == nil {
+				return true
+			}
+			if errJ == nil {
+				return false
+			}
+			return keys[i] < keys[j]
+		})
+		for _, k := range keys {
+			binds := ports[k]
 			parts := strings.Split(k, "/")
 			if len(parts) > 0 {
 				containerPort = parts[0]

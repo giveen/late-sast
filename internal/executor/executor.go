@@ -235,6 +235,13 @@ func ExecuteToolCallsWithStats(
 			// Populate cache for successful idempotent tools.
 			if cache != nil {
 				cache.Set(tc.Function.Name, tc.Function.Arguments, result)
+				if mutatesWorkspace(tc.Function.Name) {
+					cache.InvalidateAll()
+					sess.LogEvent("TOOL_CACHE_INVALIDATED", "Cache invalidated after workspace mutation", map[string]interface{}{
+						"tool": tc.Function.Name,
+						"id":   tc.ID,
+					})
+				}
 			}
 		}
 		// Log the final result (after error-wrapping) so the debug log matches what the LLM receives.
@@ -252,6 +259,15 @@ func ExecuteToolCallsWithStats(
 
 	stats.DurationMS = time.Since(started).Milliseconds()
 	return stats, nil
+}
+
+func mutatesWorkspace(toolName string) bool {
+	switch toolName {
+	case "write_file", "compose_patch", "implementations", "bash":
+		return true
+	default:
+		return false
+	}
 }
 
 // ExecuteToolCalls runs a slice of tool calls against the session.

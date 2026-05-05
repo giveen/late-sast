@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RunSecretsScannerTool runs TruffleHog inside a scan container and returns
@@ -102,8 +103,10 @@ func (t RunSecretsScannerTool) Execute(ctx context.Context, args json.RawMessage
 	if onlyVerified {
 		verifiedFlag = " --only-verified"
 	}
-	cmd := fmt.Sprintf("trufflehog filesystem --json%s --no-update --fail --results=verified,unknown %s 2>/dev/null", verifiedFlag, p.ScanPath)
-	raw, err := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", cmd)
+	cmd := fmt.Sprintf("trufflehog filesystem --json%s --no-update --fail --results=verified,unknown %s 2>/dev/null", verifiedFlag, shQuote(p.ScanPath))
+	scanCtx, cancel := context.WithTimeout(ctx, time.Duration(p.TimeoutSecs)*time.Second)
+	defer cancel()
+	raw, err := runner(scanCtx, "docker", "exec", p.ContainerName, "sh", "-c", cmd)
 	if err != nil && strings.TrimSpace(raw) == "" {
 		result := map[string]any{
 			"status":   "error",

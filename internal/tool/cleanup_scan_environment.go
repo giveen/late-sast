@@ -163,9 +163,19 @@ func (t CleanupScanEnvironmentTool) Execute(ctx context.Context, args json.RawMe
 	out, err = runner(ctx, "docker", "rmi", imageTag)
 	appendStep("remove_image", fmt.Sprintf("docker rmi %s", imageTag), out, err)
 
-	// Cleanup temp workdir and sast-skill directory.
-	cleanupCmd := fmt.Sprintf("rm -rf %s /tmp/sast-skill", shQuote(p.Workdir))
-	out, err = runner(ctx, "docker", "run", "--rm", "-v", "/tmp:/tmp", "alpine", "sh", "-lc", cleanupCmd)
+	// Cleanup host workdir by mounting its parent directory into the helper container.
+	absWorkdir, absErr := filepath.Abs(p.Workdir)
+	if absErr != nil {
+		appendStep("remove_workdir", "docker run --rm -v <workdir-parent>:<workdir-parent> alpine sh -lc <cleanup>", "", fmt.Errorf("resolve absolute workdir: %w", absErr))
+	} else {
+		parentDir := filepath.Dir(absWorkdir)
+		cleanupWorkdirCmd := fmt.Sprintf("rm -rf %s", shQuote(absWorkdir))
+		out, err = runner(ctx, "docker", "run", "--rm", "-v", parentDir+":"+parentDir, "alpine", "sh", "-lc", cleanupWorkdirCmd)
+		appendStep("remove_workdir", "docker run --rm -v <workdir-parent>:<workdir-parent> alpine sh -lc <cleanup>", out, err)
+	}
+
+	// Cleanup temp sast-skill artifacts under /tmp.
+	out, err = runner(ctx, "docker", "run", "--rm", "-v", "/tmp:/tmp", "alpine", "sh", "-lc", "rm -rf /tmp/sast-skill")
 	appendStep("remove_temp_files", "docker run --rm -v /tmp:/tmp alpine sh -lc <cleanup>", out, err)
 
 	successes := 0

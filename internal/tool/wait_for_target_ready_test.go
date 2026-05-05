@@ -94,3 +94,18 @@ func TestWaitForTargetReadyTool_NotReadyWithoutEndpointOrPorts(t *testing.T) {
 		t.Fatalf("expected endpoint guidance, got: %s", out)
 	}
 }
+
+func TestBuildProbeEndpoints_PicksDeterministicPortWithoutPreference(t *testing.T) {
+	ports := map[string][]map[string]string{
+		"8080/tcp": {{"HostPort": "18080"}},
+		"80/tcp":   {{"HostPort": "10080"}},
+	}
+
+	endpoints, selectedContainerPort := buildProbeEndpoints("", "127.0.0.1", 0, []string{"/health"}, ports)
+	if selectedContainerPort != "80" {
+		t.Fatalf("expected deterministic lowest container port 80, got %q", selectedContainerPort)
+	}
+	if len(endpoints) != 1 || endpoints[0] != "http://127.0.0.1:10080/health" {
+		t.Fatalf("unexpected endpoints: %#v", endpoints)
+	}
+}

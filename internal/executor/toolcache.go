@@ -62,6 +62,13 @@ func (c *ToolResultCache) Set(toolName, args, result string) {
 	c.mu.Unlock()
 }
 
+// InvalidateAll clears all cached entries.
+func (c *ToolResultCache) InvalidateAll() {
+	c.mu.Lock()
+	clear(c.entries)
+	c.mu.Unlock()
+}
+
 // cacheKey returns a stable sha256-based key for the (toolName, args) pair.
 func cacheKey(toolName, args string) string {
 	h := sha256.New()
