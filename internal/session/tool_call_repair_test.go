@@ -63,3 +63,12 @@ func TestAddAssistantMessageWithTools_SkipsUnrepairableJSONArgs(t *testing.T) {
 		t.Fatalf("expected malformed call to be skipped, got %d", len(valid))
 	}
 }
+
+func TestToolRequiresArgs_CurrentToolNames(t *testing.T) {
+	if !toolRequiresArgs("docs_resolve") {
+		t.Fatal("expected docs_resolve to require arguments")
+	}
+	if !toolRequiresArgs("ctx_index") {
+		t.Fatal("expected ctx_index to require arguments")
+	}
+}

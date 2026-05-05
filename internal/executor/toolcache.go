@@ -126,8 +126,10 @@ func toolTimeoutFor(toolName string) time.Duration {
 	switch toolName {
 	case "run_opengrep_scan", "run_semgrep_scan":
 		return 12 * time.Minute
-	case "run_trivy_scan", "run_secrets_scanner", "bootstrap_scan_toolchain":
+	case "run_trivy_scan", "bootstrap_scan_toolchain":
 		return 5 * time.Minute
+	case "run_secrets_scanner":
+		return 10 * time.Minute
 	case "bash":
 		return 5 * time.Minute
 	case "docs_lookup", "docs_read", "docs_search", "docs_resolve",

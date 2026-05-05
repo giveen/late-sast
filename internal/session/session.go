@@ -261,11 +261,11 @@ func toolRequiresArgs(toolName string) bool {
 	case "get_code_snippet", "trace_path",
 		"ctx_search", "search_code", "search_graph",
 		"index_repository", "ctx_fetch_and_index", "ctx_index_file",
-		"docs_lookup", "docs_read", "docs_search",
+		"docs_lookup", "docs_resolve", "docs_read", "docs_search",
 		"cve_search", "vul_cve_search", "vul_vendor_product_cve", "vul_vendor_products",
 		"bash", "write_file", "write_sast_report",
 		"compose_patch", "implementations", "spawn_subagent",
-		"read_file", "get_architecture", "context_index",
+		"read_file", "get_architecture", "context_index", "ctx_index",
 		"search_codebase", "list_files":
 		return true
 	}

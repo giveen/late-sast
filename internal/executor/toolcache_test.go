@@ -1,6 +1,9 @@
 package executor
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestToolResultCacheInvalidateAll(t *testing.T) {
 	cache := NewToolResultCache()
@@ -25,5 +28,11 @@ func TestMutatesWorkspace(t *testing.T) {
 	}
 	if mutatesWorkspace("read_file") {
 		t.Fatal("did not expect read_file to be treated as workspace-mutating")
+	}
+}
+
+func TestToolTimeoutFor_RunSecretsScanner(t *testing.T) {
+	if got := toolTimeoutFor("run_secrets_scanner"); got != 10*time.Minute {
+		t.Fatalf("expected run_secrets_scanner timeout 10m, got %s", got)
 	}
 }

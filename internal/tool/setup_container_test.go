@@ -133,3 +133,78 @@ func TestSetupContainerTool_InstallFailure(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestSetupContainerTool_RecreateFalseReusesExistingRunningContainer(t *testing.T) {
+	calls := make([]setupCall, 0)
+	tool := SetupContainerTool{Runner: func(_ context.Context, name string, args ...string) (string, error) {
+		calls = append(calls, setupCall{name: name, args: append([]string{}, args...)})
+		if len(args) >= 2 && args[0] == "inspect" && len(args) == 2 {
+			return "{}", nil
+		}
+		if len(args) >= 4 && args[0] == "inspect" && args[1] == "-f" && args[2] == "{{.State.Running}}" {
+			return "true\n", nil
+		}
+		if len(args) >= 2 && args[0] == "exec" {
+			return "installed", nil
+		}
+		return "ok", nil
+	}}
+
+	args := json.RawMessage(`{
+		"image":"golang:1.23",
+		"container_name":"sast-reuse",
+		"network_name":"sast-net",
+		"workdir":"/tmp/sast-reuse",
+		"install_command":"echo ok",
+		"recreate":false
+	}`)
+
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, c := range calls {
+		if len(c.args) >= 2 && c.args[0] == "run" && c.args[1] == "-d" {
+			t.Fatal("did not expect docker run for existing container when recreate=false")
+		}
+		if len(c.args) >= 3 && c.args[0] == "rm" && c.args[1] == "-f" && c.args[2] == "sast-reuse" {
+			t.Fatal("did not expect docker rm -f when recreate=false")
+		}
+	}
+}
+
+func TestSetupContainerTool_RecreateFalseStartsExistingStoppedContainer(t *testing.T) {
+	started := false
+	tool := SetupContainerTool{Runner: func(_ context.Context, _ string, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "inspect" && len(args) == 2 {
+			return "{}", nil
+		}
+		if len(args) >= 4 && args[0] == "inspect" && args[1] == "-f" && args[2] == "{{.State.Running}}" {
+			return "false\n", nil
+		}
+		if len(args) >= 2 && args[0] == "start" && args[1] == "sast-reuse" {
+			started = true
+			return "sast-reuse\n", nil
+		}
+		if len(args) >= 2 && args[0] == "exec" {
+			return "installed", nil
+		}
+		return "ok", nil
+	}}
+
+	args := json.RawMessage(`{
+		"image":"golang:1.23",
+		"container_name":"sast-reuse",
+		"network_name":"sast-net",
+		"workdir":"/tmp/sast-reuse",
+		"install_command":"echo ok",
+		"recreate":false
+	}`)
+
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !started {
+		t.Fatal("expected existing stopped container to be started when recreate=false")
+	}
+}

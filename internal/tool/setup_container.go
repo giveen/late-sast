@@ -91,8 +91,13 @@ func (t SetupContainerTool) Execute(ctx context.Context, args json.RawMessage) (
 	if p.Recreate != nil {
 		recreate = *p.Recreate
 	}
+	containerExists := false
 	if recreate {
 		_, _ = runner(ctx, "docker", "rm", "-f", p.ContainerName)
+	} else {
+		if _, inspectErr := runner(ctx, "docker", "inspect", p.ContainerName); inspectErr == nil {
+			containerExists = true
+		}
 	}
 
 	startup := strings.TrimSpace(p.StartupCommand)
@@ -100,16 +105,26 @@ func (t SetupContainerTool) Execute(ctx context.Context, args json.RawMessage) (
 		startup = "tail -f /dev/null"
 	}
 
-	if _, err := runner(ctx,
-		"docker", "run", "-d",
-		"--name", p.ContainerName,
-		"--network", p.NetworkName,
-		"-v", p.Workdir+":/workdir",
-		"-w", "/workdir",
-		p.Image,
-		"sh", "-lc", startup,
-	); err != nil {
-		return "", fmt.Errorf("failed to start container %q: %w", p.ContainerName, err)
+	if !containerExists {
+		if _, err := runner(ctx,
+			"docker", "run", "-d",
+			"--name", p.ContainerName,
+			"--network", p.NetworkName,
+			"-v", p.Workdir+":/workdir",
+			"-w", "/workdir",
+			p.Image,
+			"sh", "-lc", startup,
+		); err != nil {
+			return "", fmt.Errorf("failed to start container %q: %w", p.ContainerName, err)
+		}
+	} else {
+		if runningOut, runErr := runner(ctx, "docker", "inspect", "-f", "{{.State.Running}}", p.ContainerName); runErr != nil {
+			return "", fmt.Errorf("failed to inspect running state for container %q: %w", p.ContainerName, runErr)
+		} else if strings.TrimSpace(runningOut) != "true" {
+			if _, err := runner(ctx, "docker", "start", p.ContainerName); err != nil {
+				return "", fmt.Errorf("failed to start existing container %q: %w", p.ContainerName, err)
+			}
+		}
 	}
 
 	installOut, err := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-lc", p.InstallCommand)
