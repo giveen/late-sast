@@ -10,16 +10,19 @@
 
 ## Highest-Priority Work
 
-### 1. Add full-pipeline regression coverage
+### ~~1. Add full-pipeline regression coverage~~ ✓ DONE
 
-- Build end-to-end coverage for setup -> readiness -> scan -> replay -> report -> cleanup.
-- Add `cmd/late-sast` tests that protect cross-component contracts instead of only isolated tool behavior.
-- Add failure-injection coverage for cleanup, report writing, retest parsing, MCP discovery, and user-visible error paths.
+- ~~Build end-to-end coverage for setup -> readiness -> scan -> replay -> report -> cleanup.~~
+- ~~Add `cmd/late-sast` tests that protect cross-component contracts instead of only isolated tool behavior.~~
+- ~~Add failure-injection coverage for cleanup, report writing, retest parsing, MCP discovery, and user-visible error paths.~~
+
+> Completed: scan assembly extraction with injectable deps, 11 regression tests in `cmd/late-sast/main_test.go` covering core tools registration, report round-trip, retest parsing, blackboard injection, and 4 failure-injection paths (prompt load, mkdirAll, retest readFile, non-existent retest path).  Backend discovery tests added in `internal/client/client_test.go`.
 
 ### 2. Finish incremental rescan architecture
 
-- Implement the lineage-aware rescan design described in `idea.md`.
-- Add stable finding identity, reconciliation, and diff-first reporting.
+- ~~Phase 1: deterministic keys (`HashFile`, `HashBytes`, `TransformKey`), `Store` interface, `FileStore` with atomic writes and reopen safety, `ComputeDeltaScope` — done in `internal/rescan/`.~~
+- Phase 2: add artifact reconciliation and stable finding IDs; update report writer to show new/changed/resolved/unchanged.
+- Phase 3: full lineage edges, scope-aware retest mode.
 - Measure rescan performance and report churn before/after.
 
 ### 3. Standardize operator-visible error handling
@@ -29,8 +32,8 @@
 
 ## Outstanding Issues
 
-- Missing full-pipeline regression coverage is still the biggest practical risk.
-- Incremental rescan design exists in `idea.md` but is not implemented.
+- ~~Missing full-pipeline regression coverage is still the biggest practical risk.~~ ✓ Done.
+- Incremental rescan Phase 1 scaffolded in `internal/rescan/`; Phases 2–3 (reconciliation, lineage, diff-first reports) still needed.
 - Architecture metadata fetch can still be lost too early if fetch timing is wrong.
 - Some failures still log only to stderr/Fyne logs instead of appearing in the operator workflow.
 - Setup/container bootstrap remains expensive.
@@ -51,8 +54,8 @@
 
 ## Recommended Execution Order
 
-1. Add full-pipeline regression tests.
-2. Finish incremental rescan architecture.
+1. ~~Add full-pipeline regression tests.~~ ✓ Done.
+2. Finish incremental rescan architecture (Phases 2–3).
 3. Standardize operator-visible error propagation.
 4. Reduce setup/runtime overhead.
 5. Revisit executor-level parallelism only after the above is protected by tests.
