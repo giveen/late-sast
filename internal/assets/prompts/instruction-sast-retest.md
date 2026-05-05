@@ -79,44 +79,21 @@ Replay the original exploit payload against `http://localhost:<port>`. A `4xx` o
 
 ### Step 4 — Security Policy & Prior Disclosure Check
 
-#### 4a — Security policy file
+Run the deterministic disclosure tool once using the `STILL_PRESENT` findings set:
 
-Before writing the report, check whether the repository has a security policy file:
-
-```bash
-find ${{WORKDIR}}/repo -maxdepth 4 -type f \
-  \( -iname "SECURITY.md" -o -iname "SECURITY.txt" -o -iname "SECURITY" \) \
-  2>/dev/null | head -5
+```json
+assess_disclosure_context({
+  "repo_path": "${{WORKDIR}}/repo",
+  "github_url": "<github-url-or-empty>",
+  "findings": <still-present-findings-array>
+})
 ```
 
-If one or more files are found, read the first result and note any:
-- Scope exclusions or conditions listed as out-of-scope
-- Accepted risks the maintainers have acknowledged
-
-For any `STILL_PRESENT` finding that falls within an explicitly accepted risk or out-of-scope area, add a note beneath it: `> **Note: Acceptable risk acknowledged by maintainer** — <quote the relevant policy excerpt verbatim>`
-
-Do not remove or change the verdict — the note is purely informational. If no security policy exists, skip silently.
-
-#### 4b — GitHub Security Advisories (prior disclosure check)
-
-**Only run this sub-step if the target is a GitHub URL.** Extract `{owner}` and `{repo}` from the GitHub URL.
-
-Query the GitHub Security Advisories API, fetching all pages until the result set is exhausted:
-
-```bash
-# Repeat with ?page=2, ?page=3, ... until response is empty array []
-curl -s --max-time 15 \
-  "https://api.github.com/repos/{owner}/{repo}/security-advisories?per_page=100&page=1" \
-  -H "Accept: application/vnd.github+json" \
-  -H "X-GitHub-Api-Version: 2022-11-28"
-```
-
-**Continue fetching pages until the API returns an empty array `[]`.**
-
-For each `STILL_PRESENT` finding, check if it matches a published advisory (same vuln class + same component/file area, or matching CVE ID). If matched, add a note:
-`> **Previously disclosed** — [GHSA-xxxx-xxxx-xxxx](<html_url>) (<severity>, published <published_at>): <summary>`
-
-If the API returns a non-200 response or the repo has no published advisories, skip silently.
+Apply output rules:
+- For each entry in `policy.matches`, add note: `> **Note: Acceptable risk acknowledged by maintainer** — <excerpt>`.
+- For each entry in `advisories.matches`, add note: `> **Previously disclosed** — [<ghsa_id>](<html_url>) (<severity>, published <published_at>): <summary>`.
+- Keep verdicts unchanged; these are informational annotations only.
+- If no policy/advisory context is available, continue silently.
 
 ### Step 5 — Write the retest report
 
@@ -165,14 +142,17 @@ _Omit any section that has no entries._
 
 ### Step 6 — Cleanup
 
-```bash
-docker stop ${{CONTAINER_NAME}} 2>/dev/null; docker rm -f ${{CONTAINER_NAME}} 2>/dev/null
-docker compose -p ${{COMPOSE_PROJECT}} down -v --remove-orphans 2>/dev/null
-docker ps -aq --filter name=${{CONTAINER_NAME}}- | xargs -r docker rm -f
-docker network rm ${{NETWORK_NAME}} 2>/dev/null
-docker rmi ${{CONTAINER_NAME}}-image 2>/dev/null || true
-docker run --rm -v /tmp:/tmp alpine rm -rf ${{WORKDIR}} /tmp/sast-skill
+```json
+cleanup_scan_environment({
+  "container": "${{CONTAINER_NAME}}",
+  "compose_project": "${{COMPOSE_PROJECT}}",
+  "network": "${{NETWORK_NAME}}",
+  "workdir": "${{WORKDIR}}",
+  "image_tag": "${{CONTAINER_NAME}}-image"
+})
 ```
+
+If cleanup returns `status: partial`, proceed and include one informational note that cleanup was partial.
 
 ---
 

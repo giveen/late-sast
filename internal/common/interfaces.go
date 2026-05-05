@@ -74,6 +74,16 @@ type StatusEvent struct {
 
 func (e StatusEvent) OrchestratorID() string { return e.ID }
 
+// ToolRuntimeEvent is sent when a tool starts/stops execution so the GUI can
+// surface a live runtime indicator.
+type ToolRuntimeEvent struct {
+	ID      string
+	Tool    string
+	Running bool
+}
+
+func (e ToolRuntimeEvent) OrchestratorID() string { return e.ID }
+
 // PhaseEvent is sent when the orchestrator's higher-level state machine
 // transitions between execution phases.
 type PhaseEvent struct {
@@ -86,34 +96,12 @@ type PhaseEvent struct {
 
 func (e PhaseEvent) OrchestratorID() string { return e.ID }
 
-// MissionSnapshotEvent carries strategist-loop state projected from the
-// blackboard for compact live display in the GUI.
-type MissionSnapshotEvent struct {
-	OrcID               string
-	CurrentHypothesis   string
-	LastExecutorOutcome string
-	LastExecutorReason  string
-	ActiveConstraints   []string
-}
-
-func (e MissionSnapshotEvent) OrchestratorID() string { return e.OrcID }
-
 // StopRequestedEvent is sent when a stop is requested for an orchestrator.
 type StopRequestedEvent struct {
 	ID string
 }
 
 func (e StopRequestedEvent) OrchestratorID() string { return e.ID }
-
-// NodeHighlightEvent is sent when an agent accesses a file or graph node,
-// triggering a real-time visual highlight in the Project Map tab.
-type NodeHighlightEvent struct {
-	OrcID     string
-	FilePath  string // The file path or graph node being accessed
-	IsHotspot bool   // Whether this node is a known security hotspot
-}
-
-func (e NodeHighlightEvent) OrchestratorID() string { return e.OrcID }
 
 // ArchitectureCluster represents a logical grouping of files detected by
 // Louvain community detection in codebase-memory-mcp.
@@ -132,16 +120,10 @@ type ArchitectureData struct {
 	FileCount int
 	NodeCount int
 	EdgeCount int
+	// Optional counts when provided by the architecture backend.
+	RouteCount    int
+	EndpointCount int
 }
-
-// ProjectMapLoadedEvent carries the architecture data used to populate the
-// "Project Map" GUI tab. Emitted once per scan after get_architecture succeeds.
-type ProjectMapLoadedEvent struct {
-	OrcID string
-	Data  ArchitectureData
-}
-
-func (e ProjectMapLoadedEvent) OrchestratorID() string { return e.OrcID }
 
 // PromptRequest defines a generic requirement for user input.
 type PromptRequest struct {

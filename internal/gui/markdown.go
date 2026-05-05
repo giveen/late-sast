@@ -3,6 +3,7 @@ package gui
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -16,6 +17,32 @@ import (
 	"github.com/yuin/goldmark/text"
 )
 
+// reHTMLTag matches HTML tags that model output may contain outside of code fences.
+var reHTMLTag = regexp.MustCompile(`</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?>|<!\-\-.*?\-\->`) //nolint:gosec
+
+// sanitiseHTML removes HTML markup from markdown content, preserving code fences.
+// Models sometimes emit <pre>, </pre>, <code>, <br> etc. as prose; this strips them
+// so they do not appear as literal text in the rendered output.
+func sanitiseHTML(src string) string {
+	var out strings.Builder
+	out.Grow(len(src))
+	inFence := false
+	for _, line := range strings.SplitAfter(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			out.WriteString(line)
+			continue
+		}
+		if inFence {
+			out.WriteString(line)
+		} else {
+			out.WriteString(reHTMLTag.ReplaceAllString(line, ""))
+		}
+	}
+	return out.String()
+}
+
 // parseMarkdown converts a Markdown string into Fyne RichTextSegment slices.
 // During streaming (incomplete input), callers should pass plain text and skip
 // this function — use a plain TextSegment instead to avoid parse errors.
@@ -24,6 +51,7 @@ func parseMarkdown(src string) []widget.RichTextSegment {
 		return nil
 	}
 
+	src = sanitiseHTML(src) // strip HTML markup the auditor model may emit
 	source := []byte(src)
 	reader := text.NewReader(source)
 	md := goldmark.New(goldmark.WithExtensions(extension.Table))
@@ -201,8 +229,12 @@ func (w *mdWalker) walk(n ast.Node, entering bool) (ast.WalkStatus, error) {
 			}
 		}
 
+	case *ast.HTMLBlock:
+		// Skip block-level HTML emitted by models (e.g. <pre>…</pre>)
+		return ast.WalkSkipChildren, nil
+
 	case *ast.RawHTML:
-		// Ignore raw HTML in Markdown
+		// Ignore inline raw HTML in Markdown
 		return ast.WalkSkipChildren, nil
 	}
 

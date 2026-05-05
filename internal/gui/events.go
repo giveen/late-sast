@@ -3,6 +3,7 @@ package gui
 import (
 	"fmt"
 	"late/internal/common"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -61,10 +62,62 @@ func (a *App) startEventLoop(
 		var acc string
 		streaming := false
 		thinkingStreaming := false
+		toolRunning := false
+		toolName := ""
+		toolStart := time.Time{}
+		var toolTicker *time.Ticker
+		var toolTickerStop chan struct{}
 		cachedHistoryLen := -1
 		cachedHistoryTokens := 0
 		currentTurn := 0
 		currentMaxTurns := 0
+
+		setMainStatus := func(text string) {
+			if tabItem != nil || a.statusLabel == nil {
+				return
+			}
+			fyne.Do(func() { a.statusLabel.SetText(text) })
+		}
+
+		stopToolTimer := func() {
+			if toolTicker != nil {
+				toolTicker.Stop()
+				toolTicker = nil
+			}
+			if toolTickerStop != nil {
+				close(toolTickerStop)
+				toolTickerStop = nil
+			}
+		}
+
+		startToolTimer := func(name string) {
+			stopToolTimer()
+			toolRunning = true
+			toolName = name
+			toolStart = time.Now()
+			setMainStatus(fmt.Sprintf("● Tool running: %s for %ds", toolName, int(time.Since(toolStart).Seconds())))
+
+			if tabItem != nil {
+				return
+			}
+
+			toolTicker = time.NewTicker(1 * time.Second)
+			toolTickerStop = make(chan struct{})
+			ticker := toolTicker
+			localTool := toolName
+			localStart := toolStart
+			stopCh := toolTickerStop
+			go func() {
+				for {
+					select {
+					case <-ticker.C:
+						setMainStatus(fmt.Sprintf("● Tool running: %s for %ds", localTool, int(time.Since(localStart).Seconds())))
+					case <-stopCh:
+						return
+					}
+				}
+			}()
+		}
 
 		updateUsage := func(e common.ContentEvent) {
 			if onUsage == nil {
@@ -146,10 +199,16 @@ func (a *App) startEventLoop(
 				case "queued":
 					// Agent is waiting for the GPU lock.
 					setTabStatus("⏳ ", currentTurn, currentMaxTurns)
+					if !toolRunning {
+						setMainStatus("● Queued")
+					}
 
 				case "thinking":
 					// Agent is streaming from the LLM (holds GPU lock).
 					setTabStatus("🧠 ", currentTurn, currentMaxTurns)
+					if !toolRunning {
+						setMainStatus("● Thinking")
+					}
 					// Collapse the thinking box between tool calls;
 					// StartThinking will reopen/reuse the same accordion on next chunk.
 					if thinkingStreaming {
@@ -162,9 +221,16 @@ func (a *App) startEventLoop(
 				case "working":
 					// Agent released the GPU and is executing tool calls.
 					setTabStatus("⚙ ", currentTurn, currentMaxTurns)
+					if !toolRunning {
+						setMainStatus("● Working")
+					}
 
 				case "idle":
 					setTabStatus("", 0, 0)
+					stopToolTimer()
+					toolRunning = false
+					toolName = ""
+					setMainStatus("● Ready")
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -183,6 +249,10 @@ func (a *App) startEventLoop(
 
 				case "closed":
 					setTabStatus("", 0, 0)
+					stopToolTimer()
+					toolRunning = false
+					toolName = ""
+					setMainStatus("● Ready")
 					if thinkingStreaming {
 						fyne.Do(func() { panel.FinalizeThinking() })
 					}
@@ -201,6 +271,10 @@ func (a *App) startEventLoop(
 
 				case "error":
 					setTabStatus("", 0, 0)
+					stopToolTimer()
+					toolRunning = false
+					toolName = ""
+					setMainStatus("● Error")
 					if thinkingStreaming {
 						thinkingStreaming = false
 						fyne.Do(func() { panel.FinalizeThinking() })
@@ -234,9 +308,6 @@ func (a *App) startEventLoop(
 					}
 				}
 
-			case common.ProjectMapLoadedEvent:
-				a.SetArchitecture(e.Data)
-
 			case common.PhaseEvent:
 				if a.currentPhaseLabel != nil && o.ID() == "main" {
 					phaseText := "Current Phase: " + e.To
@@ -249,14 +320,6 @@ func (a *App) startEventLoop(
 					setTabStatus("", currentTurn, currentMaxTurns)
 				}
 
-			case common.MissionSnapshotEvent:
-				if o.ID() == "main" {
-					snapshot := e
-					fyne.Do(func() {
-						a.updateMissionSnapshot(snapshot)
-					})
-				}
-
 			case common.ChildAddedEvent:
 				// Wire up a new subagent tab.
 				child := e.Child
@@ -264,8 +327,21 @@ func (a *App) startEventLoop(
 				fyne.Do(func() {
 					a.openSubagentTab(child, agentType)
 				})
+
+			case common.ToolRuntimeEvent:
+				if e.Running {
+					startToolTimer(e.Tool)
+				} else {
+					stopToolTimer()
+					toolRunning = false
+					toolName = ""
+					if tabItem == nil {
+						setMainStatus("● Working")
+					}
+				}
 			}
 		}
+		stopToolTimer()
 	}()
 }
 

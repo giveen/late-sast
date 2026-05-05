@@ -6,127 +6,27 @@ You will be given: either a GitHub URL **or** a Local path (never both), plus co
 
 ## Setup Workflow
 
-### Step 0 — Check for a quick-install path (GitHub URL only)
+### Step 0 — Deterministic install strategy (GitHub URL only)
 
-**Run this step only when a GitHub URL was provided.** Many projects publish a one-line install command in their README that is faster than cloning and building from source. Check before cloning:
+Run this step only when a GitHub URL was provided. This step is **tool-only** and **fail-closed**.
 
-```bash
-mkdir -p ${{WORKDIR}}
-curl -s "https://raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md" 2>/dev/null | head -200
-```
-(Derive `<owner>/<repo>` from the GitHub URL.)
-
-**Scan the README output for a quick-install command — two passes:**
-
----
-
-#### Pass A — Package-manager one-liners
-
-| Language | Recognised patterns | Example |
-|----------|--------------------|---------| 
-| Go | `go install <module>/cmd/<name>@latest` | `go install github.com/danielmiessler/fabric/cmd/fabric@latest` |
-| Python | `pip install <name>` or `pipx install <name>` | `pip install mycli` |
-| Node.js | `npm install -g <name>` or `npx <name>` | `npm install -g @scope/tool` |
-| Rust | `cargo install <name>` | `cargo install ripgrep` |
-| Ruby | `gem install <name>` | `gem install rails` |
-
-**If a Pass A command is found:**
-1. Create the workdir and spin up a minimal container with the relevant toolchain:
-   - Go → `golang:1.23`
-   - Python → `python:3.11-slim`
-   - Node.js → `node:20-slim`
-   - Rust → `rust:1.80-slim`
-2. Run the install command inside the container:
-   ```bash
-   docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
-     -v ${{WORKDIR}}:/workdir -w /workdir <image> tail -f /dev/null
-   docker exec ${{CONTAINER_NAME}} sh -c "<quick-install-command>"
-   ```
-3. Skip Steps 1–4 entirely and jump to **Step 5**. Set `notes: installed via quick-install: <command>` in the summary.
-
----
-
-#### Pass B — Binary release assets (.deb / .AppImage / .snap / .flatpak)
-
-If Pass A found nothing, check whether the README mentions `.deb`, `.AppImage`, `.snap`, `.flatpak`, or links to a GitHub Releases page. These projects ship pre-built binaries rather than source installs.
-
-**Detect release assets from the GitHub API:**
-```bash
-# Fetch the latest release metadata
-curl -s "https://api.github.com/repos/<owner>/<repo>/releases/latest" > /tmp/release.json
-
-# List available Linux asset filenames
-python3 -c "
-import json, sys
-data = json.load(open('/tmp/release.json'))
-assets = [a['name'] for a in data.get('assets', [])]
-print('\n'.join(assets))
-"
+```json
+resolve_install_strategy({
+  "github_url": "<github-url>",
+  "arch": "amd64"
+})
 ```
 
-**Choose the best asset for the container (preference order):**
-1. `.deb` matching `amd64` or `x86_64` (or `arm64` on ARM hosts) — cleanest install, resolves dependencies
-2. `.AppImage` matching `x86_64` / `amd64` — portable, no install needed
-3. `.snap` — try `snap install --dangerous`
-4. `.flatpak` — last resort, needs `flatpak` runtime
+Allowed behavior:
+- `quick_install`: use the returned image/command as a launch hint only. Continue to Step 1 so the source is still cloned into `${{WORKDIR}}/repo`, continue to Step 2 so it is indexed for SAST, then in Step 4 prefer `setup_container(...)` with the returned image/command. After that launch succeeds, call `wait_for_target_ready(...)` immediately before any other tool.
+- `release_asset`: use the returned asset plan as a launch hint only. Continue to Step 1 so the source is still cloned into `${{WORKDIR}}/repo`, continue to Step 2 so it is indexed for SAST, then in Step 4 use the returned release-asset install plan. After that launch succeeds, call `wait_for_target_ready(...)` immediately before any other tool.
+- `source_clone`: continue to Step 1.
 
-**Download and install the chosen asset:**
+Hard-fail rules:
+- If `resolve_install_strategy` fails, returns malformed JSON, omits `strategy`, or returns an unknown strategy value: stop immediately and return summary with `status: failed` and `notes: resolve_install_strategy failed`.
+- Do not manually parse README files, release pages, or GitHub API responses in this step.
 
-*For a `.deb` file:*
-```bash
-# Start a Debian/Ubuntu base container
-docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
-  -v ${{WORKDIR}}:/workdir -w /workdir ubuntu:22.04 tail -f /dev/null
-
-# Get the download URL from the release JSON
-ASSET_URL=$(python3 -c "
-import json
-data = json.load(open('/tmp/release.json'))
-for a in data['assets']:
-    if a['name'].endswith('.deb') and ('amd64' in a['name'] or 'x86_64' in a['name']):
-        print(a['browser_download_url']); break
-")
-
-# Download into the workdir (host-visible) then install inside the container
-curl -L -o ${{WORKDIR}}/app.deb "$ASSET_URL"
-docker exec ${{CONTAINER_NAME}} sh -c "
-  apt-get update -qq 2>/dev/null
-  apt-get install -y -qq /workdir/app.deb 2>/dev/null || \
-  (dpkg -i /workdir/app.deb 2>/dev/null; apt-get install -f -y -qq 2>/dev/null)
-"
-```
-
-*For an `.AppImage` file:*
-```bash
-# Start a minimal Debian container (AppImages need glibc; alpine will NOT work)
-docker run -d --name ${{CONTAINER_NAME}} --network ${{NETWORK_NAME}} \
-  -v ${{WORKDIR}}:/workdir -w /workdir debian:bookworm-slim tail -f /dev/null
-
-ASSET_URL=$(python3 -c "
-import json
-data = json.load(open('/tmp/release.json'))
-for a in data['assets']:
-    if '.AppImage' in a['name'] and ('x86_64' in a['name'] or 'amd64' in a['name']):
-        print(a['browser_download_url']); break
-")
-
-curl -L -o ${{WORKDIR}}/app.AppImage "$ASSET_URL"
-chmod +x ${{WORKDIR}}/app.AppImage
-
-# Extract the AppImage so it can run without FUSE (most containers lack /dev/fuse)
-docker exec ${{CONTAINER_NAME}} sh -c "
-  apt-get update -qq && apt-get install -y -qq libfuse2 2>/dev/null || true
-  cd /workdir && ./app.AppImage --appimage-extract 2>/dev/null || true
-  # squashfs-root/ now contains the extracted app
-  ln -sf /workdir/squashfs-root /workdir/app
-"
-```
-
-After either install, create an empty `${{WORKDIR}}/repo` dir for the indexer, copy or symlink the installed files into it, then skip Steps 1–4 and jump to **Step 5**. Set `notes: installed via release asset: <filename>` in the summary.
-
----
-
-**If neither Pass A nor Pass B apply**, proceed with Step 1 below.
+Source clone + indexing are mandatory for SAST. Do not skip Step 1 or Step 2 just because a faster runtime install path exists.
 
 ### Step 1 — Prepare workspace & obtain source code
 
@@ -173,6 +73,30 @@ docker network create ${{NETWORK_NAME}}
 ```
 
 ### Step 4 — Detect launch strategy
+
+Prefer a **single** deterministic call with `launch_docker(...)` before manual branching. This tool auto-detects compose/Dockerfile and launches in one shot:
+
+```json
+launch_docker({
+  "repo_path": "${{WORKDIR}}/repo",
+  "network_name": "${{NETWORK_NAME}}",
+  "compose_project": "${{COMPOSE_PROJECT}}"
+})
+```
+
+If `launch_docker` returns `status: "ok"`, use its output and continue to Step 5. Only run the manual Path A/B/C logic below when it returns `status: "no_docker_assets"` or explicit failure.
+
+After launch (tool or manual), run a deterministic readiness gate before declaring startup state:
+
+```json
+wait_for_target_ready({
+  "container_name": "<main app container>",
+  "max_wait_seconds": 90,
+  "interval_seconds": 5
+})
+```
+
+Use the returned `status`, `endpoint`, and diagnostics as the source of truth for `app_started` and `port` in `SETUP_COMPLETE`.
 
 Detect compose files and Dockerfiles using a monorepo-aware search (do not assume root-only):
 ```bash
@@ -354,6 +278,17 @@ Set `container` in the summary to `${{CONTAINER_NAME}}`. **Record `${{CONTAINER_
 
 After the container is running (whether via Path A, Path B, or Path C), install build toolchains and the security scanner toolset. Use the container name you identified above. All steps are non-fatal — if any fail, continue.
 
+Prefer this deterministic tool call first:
+
+```json
+bootstrap_scan_toolchain({
+  "container_name": "<container-name>",
+  "repo_path": "/repo"
+})
+```
+
+If this tool call succeeds, use its availability output as evidence and proceed to Output. Only use the manual Step 5a/5b/5c bash fallback below when the tool is unavailable or fails.
+
 ### Step 5a — Core utilities + build essentials
 
 Install only lightweight, universally-needed tools here. **Do NOT install JDK or Node.js in this step** — they are handled conditionally below.
@@ -524,7 +459,7 @@ docker exec <container-name> sh -c "
 ## Constraints
 
 - Fully autonomous — no confirmation prompts
-- Use only: `bash`, `read_file`, `write_file`, `patch_compose_network`, MCP graph tools
+- Use only: `bash`, `read_file`, `write_file`, `setup_container`, `launch_docker`, `wait_for_target_ready`, `bootstrap_scan_toolchain`, `patch_compose_network`, MCP graph tools
 - Do not perform any security analysis
 - Do not pull images from registries other than Docker Hub official images
 

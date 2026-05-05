@@ -43,55 +43,31 @@ ctx_search(query="SSRF server-side request forgery http fetch url parameter")
 Each search returns only the relevant ~400-byte snippet. Reference the returned patterns throughout Steps 2–7.
 
 ### Step 1b — Secrets scan
+Run the built-in secrets scanner backed by TruffleHog. Binary projects often store API keys, TLS private keys, or database passwords in config files or source:
 
-Run the same two-pass secrets grep used by the web scanner. Binary projects frequently store API keys, TLS private keys, or database passwords in config files, `.env` files, or hardcoded in source:
-
-**Pass 1 — quoted values:**
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-grep -rn \
-  --include='*.c' --include='*.cpp' --include='*.h' --include='*.hpp' \
-  --include='*.go' --include='*.rs' \
-  --include='*.env' --include='*.env.*' \
-  --include='*.yml' --include='*.yaml' --include='*.json' --include='*.toml' \
-  --include='*.conf' --include='*.cfg' --include='*.ini' --include='*.properties' \
-  -E '(password|passwd|secret|api.?key|private.?key|access.?key|auth.?token|client.?secret|signing.?key)[[:space:]]*[=:][[:space:]]*[\"'"'"'][^\"'"'"']{8,}[\"'"'"']' \
-  /app 2>/dev/null | grep -v '\.example' | grep -vi 'test\|mock\|fake\|placeholder\|your[_-]' | head -50
-"
+```json
+run_secrets_scanner({
+  "container_name": "${{CONTAINER_NAME}}",
+  "scan_path": "/app",
+  "only_verified": false,
+  "max_findings": 100
+})
 ```
 
-**Pass 2 — bare values in config/env files:**
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-grep -rn \
-  --include='*.env' --include='*.env.*' --include='.env' \
-  --include='*.conf' --include='*.cfg' --include='*.ini' --include='*.properties' \
-  -E '^[[:space:]]*(PASSWORD|PASSWD|SECRET|API_KEY|PRIVATE_KEY|ACCESS_KEY|AUTH_TOKEN|CLIENT_SECRET|SIGNING_KEY|DB_PASS|DB_PASSWORD|DATABASE_PASSWORD)[[:space:]]*=[[:space:]]*[^${\(\"\x27][^\n]{6,}' \
-  /app 2>/dev/null | grep -v '\.example' | grep -vi 'changeme\|replace\|your[_-]' | head -30
-"
-```
-
-Report each confirmed hardcoded secret as a **CRITICAL** finding.
+Use `findings` from this tool as candidate secret exposures. Report each confirmed hardcoded secret as a **CRITICAL** finding.
 
 ### Step 1c — Dependency CVE scan
 
-Run trivy against the repository:
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-  if command -v trivy >/dev/null 2>&1; then
-    trivy fs --quiet --format table /app 2>/dev/null | head -60
-  else
-    echo 'trivy not available — skipping CVE scan'
-  fi
-"
+Use the built-in Trivy tool to scan all dependency files in the container for known CVEs:
+```json
+run_trivy_scan({
+  "container_name": "${{CONTAINER_NAME}}",
+  "scan_path": "/app",
+  "cvss_threshold": 0
+})
 ```
-If trivy is not available, install it and retry:
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin 2>/dev/null
-" || true
-```
-Include any HIGH or CRITICAL CVEs under `## Dependency Vulnerabilities`.
+The tool auto-installs Trivy if absent, returns structured JSON, and deduplicates by CVE ID.
+Store the `findings` array for `write_sast_report`'s `cve_findings` field. Log `skipped_low_cvss` in the Coverage section.
 
 ### Step 1d — CVE lookup
 
@@ -170,26 +146,15 @@ Parse the JSON output. Key fields per binary:
 Record these flags in a `## Binary Hardening` section. Reference them during severity classification in Step 7.
 
 **semgrep — structured SAST (C/C++/Go/Rust rules):**
-```bash
-docker exec ${{CONTAINER_NAME}} sh -c "
-  command -v semgrep >/dev/null 2>&1 || { echo 'semgrep not available'; exit 0; }
-  # Language-specific rule packs: p/golang covers net/http taint + os/exec; p/rust covers unsafe blocks
-  LANG=$(cat /app/go.mod 2>/dev/null | head -1 | grep -q '^module' && echo go || (ls /app/Cargo.toml 2>/dev/null && echo rust || echo c))
-  PACKS="--config=p/c --config=p/default"
-  [ "$LANG" = "go" ] && PACKS="--config=p/golang --config=p/default"
-  [ "$LANG" = "rust" ] && PACKS="--config=p/rust --config=p/default"
-  semgrep $PACKS --json --quiet /app 2>/dev/null \
-  | python3 -c '
-import json, sys
-r = json.load(sys.stdin)
-for f in r.get(\"results\", []):
-    sev = f[\"extra\"].get(\"severity\", \"\")
-    msg = f[\"extra\"][\"message\"][:120]
-    print(f[\"path\"] + \":\" + str(f[\"start\"][\"line\"]) + \" [\" + f[\"check_id\"] + \"] (\" + sev + \") \" + msg)
-' 2>/dev/null | head -60
-" || true
+**semgrep — structured SAST (C/C++/Go/Rust rules):**
+```json
+run_semgrep_scan({
+  "container_name": "${{CONTAINER_NAME}}",
+  "scan_path": "/app",
+  "severity_filter": ["ERROR", "WARNING"]
+})
 ```
-Each line is `path:line [rule_id] (severity) message`. Add any new `file:line` locations to the grep target list in Step 2.
+Language-appropriate rule packs are selected automatically (p/golang, p/rust, p/c, etc.). Each finding includes `check_id`, `path`, `line`, `severity`, `message`, and `cwe`. Add any `path:line` with severity `ERROR` or `WARNING` to the grep target list in Step 2.
 
 **gosec — Go security scanner (Go projects only):**
 ```bash
@@ -575,6 +540,7 @@ Mark each finding with one of:
 - Grep first: `bash` docker exec for dangerous function discovery (Step 2)
 - Graph tools second: `trace_path`, `get_code_snippet`, `query_graph` (Step 3–4)
 - `read_file` only when the graph is insufficient; for files >20 KB use `ctx_index_file` + `ctx_search`
+- `run_secrets_scanner` for deterministic secret exposure discovery
 - `bash` for binary invocation exploit verification (Step 7)
 
 ---

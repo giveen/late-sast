@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
 
 	"late/internal/client"
+	"late/internal/common"
 	"late/internal/orchestrator"
 	"late/internal/session"
 )
@@ -231,6 +233,43 @@ func TestNewSubagentOrchestrator_UnknownAgentTypeErrors(t *testing.T) {
 	}
 }
 
+func TestNewSubagentOrchestrator_NilParentErrors(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:8080"})
+	_, err := NewSubagentOrchestrator(c, "goal", nil, "coder", map[string]bool{"bash": true}, false, false, 10, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error when parent orchestrator is nil")
+	}
+	if !strings.Contains(err.Error(), "parent orchestrator is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildSubagentMiddlewares_FactoryReplacesInherited(t *testing.T) {
+	_, parent := newTestParent(t)
+	parent.SetMiddlewares([]common.ToolMiddleware{
+		func(next common.ToolRunner) common.ToolRunner {
+			return func(_ context.Context, _ client.ToolCall) (string, error) {
+				return "", context.DeadlineExceeded
+			}
+		},
+	})
+
+	reg := common.NewToolRegistry()
+	got := buildSubagentMiddlewares(parent, reg, "coder", func(_ *common.ToolRegistry) []common.ToolMiddleware {
+		return []common.ToolMiddleware{
+			func(next common.ToolRunner) common.ToolRunner {
+				return func(ctx context.Context, tc client.ToolCall) (string, error) {
+					return next(ctx, tc)
+				}
+			},
+		}
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("expected one middleware from factory replacement, got %d", len(got))
+	}
+}
+
 func TestPromptPathForAgentType_NewRoles(t *testing.T) {
 	tests := map[string]string{
 		"strategist": "prompts/instruction-sast-strategist.md",
@@ -302,5 +341,245 @@ func TestNewSubagentOrchestrator_NewRolePromptsLoad(t *testing.T) {
 		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(tt.mustContain)) {
 			t.Fatalf("role %q prompt missing expected text %q", tt.role, tt.mustContain)
 		}
+	}
+}
+
+func TestSetupBootstrapFirstMiddleware_AllowsPreLaunchTools(t *testing.T) {
+	mw := setupBootstrapFirstMiddleware()
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		return "ok", nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "bash"}}); err != nil {
+		t.Fatalf("expected pre-launch tool to be allowed, got: %v", err)
+	}
+}
+
+func TestSetupBootstrapFirstMiddleware_AllowsBootstrapThenOtherTools(t *testing.T) {
+	mw := setupBootstrapFirstMiddleware()
+	called := 0
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		called++
+		return `{"status":"ok","mode_used":"compose"}`, nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "launch_docker"}}); err != nil {
+		t.Fatalf("unexpected error on bootstrap call: %v", err)
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "wait_for_target_ready"}}); err != nil {
+		t.Fatalf("unexpected error on readiness call: %v", err)
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "bash"}}); err != nil {
+		t.Fatalf("unexpected error after bootstrap: %v", err)
+	}
+	if called != 3 {
+		t.Fatalf("expected wrapped runner to be called three times, got %d", called)
+	}
+}
+
+func TestSetupBootstrapFirstMiddleware_RequiresReadinessAfterSetupContainer(t *testing.T) {
+	mw := setupBootstrapFirstMiddleware()
+	runner := mw(func(_ context.Context, tc client.ToolCall) (string, error) {
+		switch tc.Function.Name {
+		case "setup_container":
+			return `{"status":"ok"}`, nil
+		case "wait_for_target_ready":
+			return `{"status":"not_ready"}`, nil
+		default:
+			return "ok", nil
+		}
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "setup_container"}}); err != nil {
+		t.Fatalf("unexpected setup_container error: %v", err)
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "bash"}}); err == nil {
+		t.Fatal("expected bash to be blocked until wait_for_target_ready")
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "wait_for_target_ready"}}); err != nil {
+		t.Fatalf("unexpected readiness tool error: %v", err)
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "bash"}}); err != nil {
+		t.Fatalf("unexpected bash error after readiness tool call: %v", err)
+	}
+}
+
+func TestSetupBootstrapFirstMiddleware_NoAssetsDoesNotRequireReadiness(t *testing.T) {
+	mw := setupBootstrapFirstMiddleware()
+	runner := mw(func(_ context.Context, tc client.ToolCall) (string, error) {
+		if tc.Function.Name == "launch_docker" {
+			return `{"status":"no_docker_assets"}`, nil
+		}
+		return "ok", nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "launch_docker"}}); err != nil {
+		t.Fatalf("unexpected launch_docker error: %v", err)
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "bash"}}); err != nil {
+		t.Fatalf("expected bash to be allowed after no_docker_assets, got: %v", err)
+	}
+}
+
+func TestScannerExploitReplayMiddleware_BlocksRawExploitBeforeReplay(t *testing.T) {
+	mw := scannerExploitReplayMiddleware()
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		return "ok", nil
+	})
+
+	_, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "bash",
+		Arguments: `{"command":"docker exec app sh -lc \"wget -qO- 'http://localhost:8080/vuln?input=test'\""}`,
+	}})
+	if err == nil {
+		t.Fatal("expected raw exploit command to be blocked before replay")
+	}
+	if !strings.Contains(err.Error(), "run_exploit_replay") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestScannerExploitReplayMiddleware_AllowsRawExploitAfterMatchingReplay(t *testing.T) {
+	mw := scannerExploitReplayMiddleware()
+	calls := 0
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		calls++
+		return "ok", nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "run_exploit_replay",
+		Arguments: `{"endpoint":"http://127.0.0.1:8080/vuln?input=test"}`,
+	}}); err != nil {
+		t.Fatalf("unexpected run_exploit_replay error: %v", err)
+	}
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "bash",
+		Arguments: `{"command":"docker exec app sh -lc \"wget -qO- 'http://localhost:8080/vuln?input=test'\""}`,
+	}}); err != nil {
+		t.Fatalf("expected raw exploit command to be allowed after replay: %v", err)
+	}
+
+	if calls != 2 {
+		t.Fatalf("expected wrapped runner to be called twice, got %d", calls)
+	}
+}
+
+func TestScannerExploitReplayMiddleware_BlocksCandidateMismatch(t *testing.T) {
+	mw := scannerExploitReplayMiddleware()
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		return "ok", nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "run_exploit_replay",
+		Arguments: `{"endpoint":"http://127.0.0.1:8080/one?input=test"}`,
+	}}); err != nil {
+		t.Fatalf("unexpected run_exploit_replay error: %v", err)
+	}
+
+	_, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "bash",
+		Arguments: `{"command":"docker exec app sh -lc \"curl -fsS 'http://localhost:8080/two?input=test'\""}`,
+	}})
+	if err == nil {
+		t.Fatal("expected raw exploit command with mismatched candidate to be blocked")
+	}
+	if !strings.Contains(err.Error(), "blocked for candidate") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestScannerExploitReplayMiddleware_AllowsNonExploitBash(t *testing.T) {
+	mw := scannerExploitReplayMiddleware()
+	called := 0
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		called++
+		return "ok", nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "bash",
+		Arguments: `{"command":"echo hello"}`,
+	}}); err != nil {
+		t.Fatalf("expected non-exploit bash command to pass: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected wrapped runner to be called once, got %d", called)
+	}
+}
+
+func TestScannerSecretsFirstMiddleware_BlocksTracePathBeforeSecretsScan(t *testing.T) {
+	mw := scannerSecretsFirstMiddleware()
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		return "ok", nil
+	})
+
+	_, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "trace_path"}})
+	if err == nil {
+		t.Fatal("expected trace_path to be blocked before run_secrets_scanner")
+	}
+	if !strings.Contains(err.Error(), "run_secrets_scanner") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestScannerSecretsFirstMiddleware_AllowsTracePathAfterSecretsScan(t *testing.T) {
+	mw := scannerSecretsFirstMiddleware()
+	called := 0
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		called++
+		return "ok", nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "run_secrets_scanner"}}); err != nil {
+		t.Fatalf("unexpected run_secrets_scanner error: %v", err)
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "trace_path"}}); err != nil {
+		t.Fatalf("expected trace_path to be allowed after run_secrets_scanner: %v", err)
+	}
+	if called != 2 {
+		t.Fatalf("expected wrapped runner to be called twice, got %d", called)
+	}
+}
+
+func TestCleanupToolPreferredMiddleware_BlocksAdHocCleanupBash(t *testing.T) {
+	mw := cleanupToolPreferredMiddleware()
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		return "ok", nil
+	})
+
+	_, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "bash",
+		Arguments: `{"command":"docker compose -p scan down -v --remove-orphans"}`,
+	}})
+	if err == nil {
+		t.Fatal("expected ad-hoc cleanup bash command to be blocked")
+	}
+	if !strings.Contains(err.Error(), "cleanup_scan_environment") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCleanupToolPreferredMiddleware_AllowsCleanupToolThenBash(t *testing.T) {
+	mw := cleanupToolPreferredMiddleware()
+	called := 0
+	runner := mw(func(_ context.Context, _ client.ToolCall) (string, error) {
+		called++
+		return `{"status":"ok"}`, nil
+	})
+
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{Name: "cleanup_scan_environment"}}); err != nil {
+		t.Fatalf("unexpected cleanup_scan_environment error: %v", err)
+	}
+	if _, err := runner(context.Background(), client.ToolCall{Function: client.FunctionCall{
+		Name:      "bash",
+		Arguments: `{"command":"docker compose -p scan down -v --remove-orphans"}`,
+	}}); err != nil {
+		t.Fatalf("expected bash command to be allowed after cleanup_scan_environment: %v", err)
+	}
+	if called != 2 {
+		t.Fatalf("expected wrapped runner to be called twice, got %d", called)
 	}
 }

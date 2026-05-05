@@ -419,7 +419,7 @@ type CtxIndexTool struct{ Index *ContextIndex }
 
 func (t CtxIndexTool) Name() string { return "ctx_index" }
 func (t CtxIndexTool) Description() string {
-	return "Index text content (markdown, documentation, advisories) into the in-session knowledge base. Raw content never enters the context window — follow with ctx_search to retrieve only relevant sections."
+	return "Index arbitrary text content (markdown, docs, advisories, read_file output) into the in-session BM25 knowledge base. Use ctx_* tools for content you already have in memory or want to supply directly — not for named libraries (use docs_resolve for those). Raw content never enters the context window; follow with ctx_search to retrieve only relevant sections."
 }
 func (t CtxIndexTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -464,7 +464,7 @@ type CtxSearchTool struct{ Index *ContextIndex }
 
 func (t CtxSearchTool) Name() string { return "ctx_search" }
 func (t CtxSearchTool) Description() string {
-	return "Search the in-session knowledge base (populated by ctx_index or ctx_fetch_and_index) using BM25 ranking. Returns relevant snippets only — never raw document dumps."
+	return "Search the in-session BM25 knowledge base (populated by ctx_index, ctx_fetch_and_index, or ctx_index_file) using keyword ranking. Returns relevant snippets only — never raw document dumps. Use this after indexing any content you want to query without spending context budget on a full read."
 }
 func (t CtxSearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -521,7 +521,7 @@ type CtxFetchAndIndexTool struct{ Index *ContextIndex }
 
 func (t CtxFetchAndIndexTool) Name() string { return "ctx_fetch_and_index" }
 func (t CtxFetchAndIndexTool) Description() string {
-	return "Fetch a URL (HTML page or plain text), convert to text, and index into the knowledge base. Raw page content never enters context. 24h TTL cache — repeat calls skip the network. Use ctx_search to retrieve relevant sections."
+	return "Fetch any URL (HTML page, advisory, blog post, plain text) and index it into the BM25 knowledge base. Use this for arbitrary web URLs — if you know the library name, use docs_resolve instead (it finds the correct URL for you). Raw page content never enters context. 24h TTL cache — repeat calls skip the network. Follow with ctx_search to retrieve relevant sections."
 }
 func (t CtxFetchAndIndexTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -563,7 +563,7 @@ type CtxIndexFileTool struct{ Index *ContextIndex }
 
 func (t CtxIndexFileTool) Name() string { return "ctx_index_file" }
 func (t CtxIndexFileTool) Description() string {
-	return "Read a local file from disk and index it into the BM25 knowledge base. The file's raw content never enters the conversation context — only search results (via ctx_search) do. Use instead of read_file for large files (source code, logs, configs, lockfiles) you need to analyse without spending context budget."
+	return "Read a local file from disk and index it into the BM25 knowledge base. Use instead of read_file for large files (source code, logs, configs, lockfiles) you need to analyse without spending context budget — the file's raw content never enters the conversation. Follow with ctx_search to query it."
 }
 func (t CtxIndexFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

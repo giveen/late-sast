@@ -105,143 +105,100 @@ If the auditor returns no `AUDIT_COMPLETE` block (ran out of turns), proceed wit
 
 ### Step 3 — Security Policy & Prior Disclosure Check
 
-#### 3a — Security policy file
+Run the deterministic disclosure tool once using the merged findings set:
 
-Before writing the report, check whether the repository has a security policy file:
-
-```bash
-find ${{WORKDIR}}/repo -maxdepth 4 -type f \
-  \( -iname "SECURITY.md" -o -iname "SECURITY.txt" -o -iname "SECURITY" \) \
-  2>/dev/null | head -5
+```json
+assess_disclosure_context({
+  "repo_path": "${{WORKDIR}}/repo",
+  "github_url": "<github-url-or-empty>",
+  "findings": <merged-findings-array>
+})
 ```
 
-If one or more files are found, read the first result:
-
-```bash
-cat <path from find output>
-```
-
-Parse the security policy for:
-- **Scope exclusions** — features, attack classes, or conditions explicitly listed as out-of-scope or accepted risks (e.g. "self-hosted deployments are considered trusted", "physical access is out of scope", "admin-only issues are accepted")
-- **Accepted risks** — issues the maintainers have explicitly acknowledged and chosen not to fix (e.g. "SSRF mitigated to acceptable levels")
-- **Reporting preferences** — severity thresholds for what the project considers worth reporting
-
-For every finding in the merged scanner + auditor results, cross-reference against the policy:
-- If a finding falls entirely within an explicitly stated **accepted risk or out-of-scope** area, add a note to that finding: `> **Note: Acceptable risk acknowledged by maintainer** — <quote the relevant policy excerpt verbatim>`
-- Do **not** remove or downgrade the finding's severity — keep it as-is so the reader has full context. The note is purely informational.
-- If no security policy file exists, skip this step silently.
-
-#### 3b — GitHub Security Advisories (prior disclosure check)
-
-**Only run this sub-step if the target is a GitHub URL.** Extract `{owner}` and `{repo}` from the GitHub URL.
-
-Query the GitHub Security Advisories API, fetching all pages until the result set is exhausted (empty array = done):
-
-```bash
-# Page 1 — repeat with ?page=2, ?page=3, ... until the response is an empty array []
-curl -s --max-time 15 \
-  "https://api.github.com/repos/{owner}/{repo}/security-advisories?per_page=100&page=1" \
-  -H "Accept: application/vnd.github+json" \
-  -H "X-GitHub-Api-Version: 2022-11-28"
-```
-
-For each advisory returned, capture:
-- `ghsa_id` (e.g. `GHSA-xxxx-xxxx-xxxx`)
-- `cve_id` (may be null)
-- `summary` (short description)
-- `severity` (`critical`, `high`, `medium`, `low`)
-- `published_at`
-- `html_url`
-- `vulnerabilities[].package.name` and `vulnerabilities[].vulnerable_version_range` if present
-
-**Continue fetching pages until the API returns an empty array `[]`.** Do not stop at page 1 — projects like Directus have 6+ pages of advisories.
-
-Once all pages are fetched, cross-reference each advisory against your findings:
-- Match on **vulnerability class** (e.g. both are SQL injection), **affected file or component** (e.g. same module name, route, or function), or **CVE ID** if both carry one
-- A match requires **at least two** of: same vuln class, same component/file area, similar attack vector — do not match on broad categories alone (e.g. "XSS" alone is not enough without a component match)
-
-For each finding that matches a prior advisory, add a note:
-`> **Previously disclosed** — [GHSA-xxxx-xxxx-xxxx](<html_url>) (<severity>, published <published_at>): <summary>`
-
-For each finding that matches a CVE already in your **CVE Findings** table, cross-link them.
-
-If the API returns a non-200 response or the repo has no published advisories, skip silently.
+Apply output rules:
+- For each entry in `policy.matches`, add finding note: `> **Note: Acceptable risk acknowledged by maintainer** — <excerpt>`.
+- For each entry in `advisories.matches`, add finding note: `> **Previously disclosed** — [<ghsa_id>](<html_url>) (<severity>, published <published_at>): <summary>`.
+- Never remove findings due to policy/advisory context; add informational notes only.
+- If the tool reports `policy.status=not_found` or `advisories.checked=false`, continue silently.
 
 ### Step 4 — Report & cleanup
 
-Write `${{OUTPUT_DIR}}/sast_report_${{REPO_NAME}}.md` using the findings merged from the scanner + auditor, then clean up:
+Call `write_sast_report` with the structured findings merged from the scanner + auditor to produce the normalized report file. **Do not write the report file manually** — always use the tool so that empty sections are omitted, findings are deduplicated, field values are normalized, and the CVE table is emitted exactly once.
 
-```bash
-# Stop the main app container
-docker stop ${{CONTAINER_NAME}} 2>/dev/null; docker rm -f ${{CONTAINER_NAME}} 2>/dev/null
-# If compose was used, tear down the full stack
-docker compose -p ${{COMPOSE_PROJECT}} down -v --remove-orphans 2>/dev/null
-# Remove any manually-started sidecar containers (named ${{CONTAINER_NAME}}-*)
-docker ps -aq --filter name=${{CONTAINER_NAME}}- | xargs -r docker rm -f
-# Remove the shared network
-docker network rm ${{NETWORK_NAME}} 2>/dev/null
-# If a custom image was built from a Dockerfile (Path C), remove it
-# The image tag is recorded as "<container-name>-image" in the setup notes field
-docker rmi ${{CONTAINER_NAME}}-image 2>/dev/null || true
-# Remove temp files (use alpine for root-owned repo dirs)
-docker run --rm -v /tmp:/tmp alpine rm -rf ${{WORKDIR}} /tmp/sast-skill
+```json
+write_sast_report({
+  "output_path": "${{OUTPUT_DIR}}/sast_report_${{REPO_NAME}}.md",
+  "target": "<github-url or local path>",
+  "repo_name": "${{REPO_NAME}}",
+  "app_version": "<scanned app version>",
+  "analyzer_version": "${{VERSION}}",
+  "findings": [
+    {
+      "id": "H1",
+      "title": "<Vulnerability Class — Component>",
+      "location": "<file>:<line> — <function>",
+      "cwe": <CWE number>,
+      "auditor_verdict": "CONFIRMED | LIKELY | NEEDS_CONTEXT",
+      "taint_path": "<source → sink or N/A>",
+      "severity": "CRITICAL | HIGH | MEDIUM | LOW",
+      "exploit_status": "EXPLOITED | BLOCKED | UNREACHABLE | INCONCLUSIVE",
+      "replay_verdict": "<verdict from run_exploit_replay if called>",
+      "impact": "<one sentence>",
+      "reproduce": "<exact bash command from run_exploit_replay evidence>",
+      "vulnerable_code": "<exact source lines>",
+      "vulnerable_code_lang": "<go|java|cs|py|…>",
+      "fix": "<remediation>"
+    }
+  ],
+  "cve_findings": [
+    {
+      "cve": "CVE-YYYY-XXXXX",
+      "package": "package@version",
+      "cvss": 8.5,
+      "severity": "HIGH",
+      "description": "Brief description",
+      "link": "https://nvd.nist.gov/vuln/detail/CVE-YYYY-XXXXX"
+    }
+  ],
+  "informational": ["Note 1", "Note 2"],
+  "previously_disclosed": ["**Previously disclosed** — [GHSA-xxxx](...) (HIGH, published YYYY-MM-DD): summary"],
+  "scan_coverage": {
+    "languages": "<detected>",
+    "entry_points": <N>,
+    "functions_analysed": <N>
+  }
+})
 ```
+
+Rules for populating `write_sast_report` fields:
+- Set `auditor_verdict` to `NEEDS_CONTEXT` (not `NOT_CONFIRMED`) for findings that could not be fully evaluated — they will appear only in the "Unverifiable Findings" section.
+- Set `replay_verdict` to the exact string returned by `run_exploit_replay` (e.g. `"unreachable"`) — the tool normalizes it to uppercase automatically.
+- The `reproduce` field must contain the exact command from the scanner's Reproduce block or the `run_exploit_replay` evidence — never pseudocode.
+- Include all CVEs discovered from Trivy / lockfile analysis in `cve_findings`; the tool deduplicates by CVE ID.
+- Omit `remediation_priority` to let the tool auto-generate it ordered by severity.
+
+Then clean up scan resources with one deterministic tool call:
+
+```json
+cleanup_scan_environment({
+  "container": "${{CONTAINER_NAME}}",
+  "compose_project": "${{COMPOSE_PROJECT}}",
+  "network": "${{NETWORK_NAME}}",
+  "workdir": "${{WORKDIR}}",
+  "image_tag": "${{CONTAINER_NAME}}-image"
+})
+```
+
+If cleanup returns `status: partial`, continue and include one informational note in the report summary that cleanup was partial.
 
 ---
 
 ## Output Format
 
-Each finding section uses this structure. **The `Reproduce` block is mandatory for every finding — copy it verbatim from the scanner's `Reproduce` block.** Do not paraphrase, omit, or replace with pseudocode. For UNREACHABLE findings where the app was not running, prefix the command with `# App was not running — verify manually after startup`.
+Each finding passed to `write_sast_report` uses this structure. **The `reproduce` field is mandatory for every finding — copy it verbatim from the scanner's `Reproduce` block or from `run_exploit_replay` evidence.** Do not paraphrase, omit, or replace with pseudocode. For UNREACHABLE findings where the app was not running, prefix the command with `# App was not running — verify manually after startup`.
 
-```markdown
-### <Vulnerability Class> — <location> (CWE-NNN)
-- **Location:** `file:line` — function/handler
-- **Auditor Verdict:** CONFIRMED | LIKELY | NOT_CONFIRMED
-- **Taint Path:** `source → sink` or N/A
-- **Severity:** CRITICAL | HIGH | MEDIUM | LOW
-- **Exploit Status:** EXPLOITED | BLOCKED | UNREACHABLE
-- **Impact:** <one sentence>
-- **Reproduce:**
-  ```bash
-  # Copy-paste to verify — real container name, port, endpoint, payload
-  <exact docker exec / curl / wget command from scanner>
-  # Expected: <response or indicator of successful exploitation>
-  ```
-- **Fix:** <remediation>
-```
-
-```markdown
-# SAST Security Report — <repo-name>
-Date: <date>
-Target: <github-url>
-Analyzer: late-sast ${{VERSION}} (llm-sast-scanner + live verification)
-
-## Executive Summary
-<2-3 sentences: findings by severity, most critical issue, exploit success rate>
-
-## Critical Findings
-## High Findings
-## Medium Findings
-## Low Findings
-## Dependency Vulnerabilities
-(Trivy/lockfile findings)
-
-## CVE Findings
-| CVE | Package | CVSS | Severity | Description | Link |
-|-----|---------|------|----------|-------------|------|
-| CVE-YYYY-XXXXX | package@version | N.N | CRITICAL/HIGH | Brief description | [NVD](https://nvd.nist.gov/vuln/detail/CVE-YYYY-XXXXX) |
-
-_Omit this section if no CVEs with CVSS ≥ 7.0 were confirmed for the installed versions._
-## Informational
-## Unverifiable Findings (NEEDS CONTEXT)
-
-## Remediation Priority
-<ordered fix list with effort estimates>
-
-## Scan Coverage
-Languages: <detected>
-Entry points: <count>
-Functions analysed: <count>
-Findings: <N critical / N high / N medium / N low>
-Exploited: <N> / <N total>
-```
+Valid values (the tool validates and normalizes these):
+- `auditor_verdict`: `CONFIRMED` | `LIKELY` | `NEEDS_CONTEXT`
+- `severity`: `CRITICAL` | `HIGH` | `MEDIUM` | `LOW`
+- `exploit_status`: `EXPLOITED` | `BLOCKED` | `UNREACHABLE` | `INCONCLUSIVE`
+- `replay_verdict`: lowercase string returned by `run_exploit_replay` (e.g. `"unreachable"`) — normalized to uppercase automatically

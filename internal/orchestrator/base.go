@@ -37,6 +37,10 @@ type BaseOrchestrator struct {
 	turnCurrent int64
 
 	stateMachine *StateMachine
+
+	// sharedCache is an optional scan-session-level tool result cache shared
+	// across the root orchestrator and all subagents in the same scan.
+	sharedCache *executor.ToolResultCache
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
@@ -50,6 +54,14 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		maxTurns:     maxTurns,
 		stateMachine: NewStateMachine(PhaseStop),
 	}
+}
+
+// SetSharedCache injects a scan-session-level cache that will be passed to
+// RunLoop so tool results can be reused across all turns and subagents.
+func (o *BaseOrchestrator) SetSharedCache(c *executor.ToolResultCache) {
+	o.mu.Lock()
+	o.sharedCache = c
+	o.mu.Unlock()
 }
 
 func (o *BaseOrchestrator) switchPhase(to Phase, reason string, turn int) {
@@ -285,6 +297,10 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		o.Coordinator(),
 		onGPUAcquired,
 		onGPUReleased,
+		func(toolName string, running bool) {
+			o.eventCh <- common.ToolRuntimeEvent{ID: o.id, Tool: toolName, Running: running}
+		},
+		o.sharedCache,
 	)
 
 	if err != nil {
@@ -352,6 +368,10 @@ func (o *BaseOrchestrator) run() {
 		o.Coordinator(),
 		onGPUAcquired,
 		onGPUReleased,
+		func(toolName string, running bool) {
+			o.eventCh <- common.ToolRuntimeEvent{ID: o.id, Tool: toolName, Running: running}
+		},
+		o.sharedCache,
 	)
 
 	// Reset accumulator after finished or ready for next turn

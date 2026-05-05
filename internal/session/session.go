@@ -17,6 +17,7 @@ import (
 )
 
 var shellExitCodeRe = regexp.MustCompile(`^Command failed with exit code\s+(-?\d+)`)
+var trailingCommaJSONRe = regexp.MustCompile(`,\s*([}\]])`)
 
 const (
 	historyRecentWindow              = 8
@@ -198,13 +199,36 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 	for _, tc := range toolCalls {
 		// Validate that arguments are parseable JSON
 		if !json.Valid([]byte(tc.Function.Arguments)) {
-			if s.debugLogger != nil && s.debugLogger.Enabled() {
-				preview := tc.Function.Arguments
-				if len(preview) > 100 {
-					preview = preview[:100] + "..."
+			if repaired, ok := repairToolCallArguments(tc.Function.Arguments); ok {
+				// If the repair produced an empty object `{}` for a tool that
+				// requires arguments, running it would silently produce wrong
+				// results (e.g. get_code_snippet with no project/qualified_name).
+				// Drop these instead of executing them with empty args.
+				if repaired == "{}" && toolRequiresArgs(tc.Function.Name) {
+					if s.debugLogger != nil && s.debugLogger.Enabled() {
+						s.debugLogger.LogEvent("MALFORMED_TOOL_CALL_DROPPED", fmt.Sprintf("Dropping malformed tool call %q: repaired to empty args", tc.Function.Name),
+							map[string]interface{}{
+								"tool":              tc.Function.Name,
+								"arguments_preview": previewToolCallArgs(tc.Function.Arguments),
+							})
+					}
+					continue
 				}
+				if s.debugLogger != nil && s.debugLogger.Enabled() {
+					s.debugLogger.LogEvent("MALFORMED_TOOL_CALL_REPAIRED", fmt.Sprintf("Repaired malformed tool call %q arguments", tc.Function.Name),
+						map[string]interface{}{
+							"tool":                  tc.Function.Name,
+							"arguments_preview_old": previewToolCallArgs(tc.Function.Arguments),
+							"arguments_preview_new": previewToolCallArgs(repaired),
+						})
+				}
+				tc.Function.Arguments = repaired
+				validCalls = append(validCalls, tc)
+				continue
+			}
+			if s.debugLogger != nil && s.debugLogger.Enabled() {
 				s.debugLogger.LogEvent("MALFORMED_TOOL_CALL", fmt.Sprintf("Skipping tool call %q: invalid JSON arguments", tc.Function.Name),
-					map[string]interface{}{"tool": tc.Function.Name, "arguments_preview": preview})
+					map[string]interface{}{"tool": tc.Function.Name, "arguments_preview": previewToolCallArgs(tc.Function.Arguments)})
 			}
 			continue
 		}
@@ -218,6 +242,128 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 		ToolCalls:        validCalls,
 	})
 	return validCalls, s.saveAndNotify()
+}
+
+func previewToolCallArgs(args string) string {
+	preview := args
+	if len(preview) > 120 {
+		preview = preview[:120] + "..."
+	}
+	return preview
+}
+
+// toolRequiresArgs returns true for tools that are known to have required
+// parameters.  A call to such a tool with an empty `{}` argument object would
+// fail or produce garbage results, so malformed repairs that land on `{}` are
+// dropped rather than executed.
+func toolRequiresArgs(toolName string) bool {
+	switch toolName {
+	case "get_code_snippet", "trace_path",
+		"ctx_search", "search_code", "search_graph",
+		"index_repository", "ctx_fetch_and_index", "ctx_index_file",
+		"docs_lookup", "docs_resolve", "docs_read", "docs_search",
+		"cve_search", "vul_cve_search", "vul_vendor_product_cve", "vul_vendor_products",
+		"bash", "write_file", "write_sast_report",
+		"compose_patch", "implementations", "spawn_subagent",
+		"read_file", "get_architecture", "context_index", "ctx_index",
+		"search_codebase", "list_files":
+		return true
+	}
+	return false
+}
+
+func repairToolCallArguments(raw string) (string, bool) {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" {
+		return "", false
+	}
+
+	if compact, ok := compactJSON(candidate); ok {
+		return compact, true
+	}
+
+	if !(strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[")) {
+		return "", false
+	}
+
+	// Common minor damage: trailing commas and truncated closes.
+	candidate = trailingCommaJSONRe.ReplaceAllString(candidate, "$1")
+	candidate = closeOpenJSONStructures(candidate)
+
+	if compact, ok := compactJSON(candidate); ok {
+		return compact, true
+	}
+
+	return "", false
+}
+
+func compactJSON(raw string) (string, bool) {
+	var v interface{}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return "", false
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+func closeOpenJSONStructures(in string) string {
+	var b strings.Builder
+	stack := make([]rune, 0, 8)
+	inString := false
+	escaped := false
+
+	for _, r := range in {
+		b.WriteRune(r)
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if inString && r == '\\' {
+			escaped = true
+			continue
+		}
+
+		if r == '"' {
+			inString = !inString
+			continue
+		}
+
+		if inString {
+			continue
+		}
+
+		switch r {
+		case '{', '[':
+			stack = append(stack, r)
+		case '}':
+			if len(stack) > 0 && stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			}
+		case ']':
+			if len(stack) > 0 && stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+
+	if inString {
+		b.WriteRune('"')
+	}
+
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			b.WriteRune('}')
+		} else {
+			b.WriteRune(']')
+		}
+	}
+
+	return b.String()
 }
 
 func (s *Session) GetToolDefinitions() []client.ToolDefinition {

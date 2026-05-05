@@ -245,6 +245,13 @@ Context and sink together determine whether execution occurs. Encode precisely f
 ### FALSE POSITIVE: JSON-only responses
 - `@RestController` responses, Jackson JSON serialization, or `application/json` echoes are not XSS by themselves because they are not HTML or JavaScript rendering sinks.
 - Do not report XSS when the only server-side behavior shown is returning JSON or plain data with no browser rendering step.
+
+### FALSE POSITIVE: Email template variables
+- Server-side email templates (`.html`, `.jinja2`, `.mjml` in `templates/email/`, `smtp/templates/`) are rendered to **string bodies, not browser contexts**.
+- Template variables in email href/src/content are safe because emails are plaintext or MIME-encoded (not DOM-executed).
+- Email SMTP payloads do not execute JavaScript; header injection or email client-specific markup is a separate threat class.
+- Do not report XSS for `<a href="{{ token_url }}">` in email templates — this is safe. Flag only if the template string itself is user-controlled (SSTI, not XSS).
+
 ## Python/JS/PHP Source Detection Rules
 
 ### Python (Jinja2 / Flask)

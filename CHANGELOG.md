@@ -6,14 +6,140 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ---
 
-## [v1.8.4] — 2026-05-03
+## [v2.0.1] — 2026-05-05
 
 ### Added
+
+- **Rescan button** (`internal/gui/app.go`):
+  - New `rescanBtn *widget.Button` field on `App`; initially hidden.
+  - `buildMainLayout` stores the root orchestrator in a new `rootAgent common.Orchestrator` field.
+  - `NotifyReportWritten` shows the Rescan button and wires it to re-submit the root orchestrator on click.
+  - Rescan errors are surfaced in the main chat as `✗ Rescan failed: <reason>` rather than being silently dropped.
+
+### Fixed
+
+- **Nil panic in MCP client on process kill** (`internal/mcp/client.go`): the context-cancel goroutine called `cmd.Process.Kill()` unconditionally. If the subprocess failed to start, `cmd.Process` is nil and the call panics. Now guarded with `if cmd.Process != nil`.
+- **`DiscoverBackend` probe failure was silent** (`internal/mcp/client.go`): when the HTTP probe for context size failed, the error was discarded. Now logs to stderr: `[client] DiscoverBackend: probe failed (<err>), context size unknown`.
+- **Allowlist persistence errors silently discarded** (`internal/gui/confirm.go`): `SaveAllowedCommand` and `SaveAllowedTool` errors were assigned to `_`. Now passed to `fyne.LogError` so failures are surfaced in the Fyne log.
+- **`cleanup_scan_environment` duplicated in `cmd/late-sast/main.go`**: the `cleanupContainer()` helper reimplemented ~30 lines of manual `docker rm/kill` exec calls that `CleanupScanEnvironmentTool` already handles correctly. Replaced with a single `tool.CleanupScanEnvironmentTool{}.Execute(...)` delegation.
+- **`cmd/run-tools/main.go` build broken**: `tool.NewAssessDisclosureContextTool()` constructor does not exist; corrected to `tool.AssessDisclosureContextTool{}`.
+
+### Removed
+
+- **`App.HighlightNode()` dead method** (`internal/gui/app.go`): exported no-op with no live Go callers; removed.
+
+### Changed
+
+- **`FormatSessionDisplay` simplified** (`internal/session/ttystyle.go`): removed an intermediate `result` variable and a redundant `len([]rune(last)) > 50` check; now calls `truncateUTF8` directly. Also fixed a misaligned `return` that appeared to be outside the `if verbose` block.
+- **`spawn_subagent` stale TODO removed** (`internal/tool/subagent.go`): `// TODO: add reviewer, committer` comment removed from `Parameters()`. The `reviewer` and `committer` agent types have no instruction files, no dispatch in `buildMissionTurnGoal`, and no runner config; the comment was aspirational and stale.
+- **`docs_*` vs `ctx_*` tool descriptions clarified** (`internal/tool/docs_lookup.go`, `internal/tool/context_index.go`): all six description strings now state the decision rule explicitly — `docs_resolve/read/search` for named libraries via the ProContext registry; `ctx_fetch_and_index` for arbitrary URLs; `ctx_index` for content already in memory; `ctx_index_file` for large local files; `ctx_search` for querying anything previously indexed.
+
+---
+
+## [v2.0.0] — 2026-05-04
+
+### Removed
+
+- **Bubble Tea TUI** — the `--tui` flag and all terminal UI code have been deleted from both `cmd/late` and `cmd/late-sast`. The Fyne v2 GUI is now the sole interface. The `internal/tui` package (`model.go`, `view.go`, `update.go`, `state.go`, `keys.go`, `theme.go`, `styles.go`, `interactions.go`) has been deleted; `charm.land/bubbletea/v2` and `charm.land/glamour/v2` are no longer imported by either binary.
+- **`ForwardOrchestratorEvents` helper** removed from both entry points (was TUI-only bridge between orchestrator event stream and Bubble Tea program).
+- **`docs/gui_porting_plan.md`** removed — planning document describing the TUI → GUI migration, now superseded and obsolete.
+
+### Added
+
+- **GUI report-written hook** (`internal/gui/app.go`, `internal/tool/write_sast_report.go`, `cmd/late-sast/main.go`):
+  - `write_sast_report` now exposes an `OnWritten` callback; `late-sast` wires this to a buffered channel and notifies the GUI whenever a report is written.
+  - Added `NotifyReportWritten(...)` in the GUI so successful report writes are surfaced in-chat with the latest report path.
+  - This provides a deterministic handoff point for follow-up scan actions while preserving the current run state.
+
+- **Tool result cache** (`internal/executor/toolcache.go`):
+  - SHA-256-keyed, TTL-based in-process cache for idempotent tool calls. Created once per scan session and shared across the root orchestrator plus all spawned subagents.
+  - TTLs by tool: `run_opengrep_scan` / `run_semgrep_scan` / `run_trivy_scan` / `run_secrets_scanner` → 10 min; `docs_lookup` / `docs_read` / `docs_search` / `docs_resolve` / `cve_search` / `get_architecture` → 15 min; `ctx_search` / `search_code` / `search_graph` / `get_code_snippet` / `trace_path` / `list_files` / `read_file` / `search_codebase` / `context_index` → 5 min; `index_repository` / `index_status` / `list_projects` → 3 min.
+  - Side-effectful tools (`bash`, `write_file`, `spawn_subagent`, `compose_patch`, `write_sast_report`, `implementations`, `ctx_fetch_and_index`, `ctx_index_file`) are never cached.
+  - Cache hits emit a `TOOL_CACHE_HIT` debug event and serve the stored result with zero execution overhead.
+  - Eliminates repeat re-execution of expensive tools (observed 895 `TOOL_CALL` events vs ~300–400 expected in baseline debug logs).
+
+- **Per-tool execution timeouts** (`internal/executor/toolcache.go`, `internal/executor/executor.go`):
+  - Each tool call now receives an additional `context.WithTimeout` layered on top of the per-turn deadline.
+  - Timeouts: `run_opengrep_scan` / `run_semgrep_scan` → 12 min; `run_trivy_scan` / `run_secrets_scanner` / `bootstrap_scan_toolchain` / `bash` → 5 min; `docs_lookup` / `docs_read` / `docs_search` / `docs_resolve` / CVE lookup tools → 45 s; `ctx_search` / `search_code` / `search_graph` / `get_code_snippet` / `trace_path` → 30 s; `get_architecture` → 60 s; `index_repository` → 3 min.
+  - `spawn_subagent` is exempt (it manages its own internal deadline).
+  - Cancel function is called immediately after the runner returns — no per-iteration defer-accumulation in the tool loop.
+
+- **Subagent heartbeat throttle** (`internal/tool/subagent.go`):
+  - New `HeartbeatThrottle int` field on `SpawnSubagentTool`. Default value is 10, meaning the `Heartbeat` callback fires once every 10 ticker ticks rather than every tick.
+  - Reduces `SUBAGENT_HEARTBEAT` debug events from ~267 per scan to ~27, eliminating log noise that was masking real events.
+
+- **Subagent stall warning** (`internal/tool/subagent.go`):
+  - `runAttempt` now emits a single `SUBAGENT_STALL_WARNING` event when a subagent has consumed ≥ 80% of its allowed timeout without completing.
+  - Event includes `elapsed_ms`, `timeout_ms`, and `pct_elapsed` for diagnostics.
+  - Fires at most once per attempt (guarded by `stallWarned bool`), so it does not add further noise on healthy short-lived agents.
+
+- **Subagent retry telemetry** (`internal/tool/subagent.go`):
+  - `SUBAGENT_RETRY_ATTEMPT` — emitted at the start of every execution attempt, including first.
+  - `SUBAGENT_RETRY_BACKOFF` — emitted when an empty-stream retry is scheduled, with `retry_backoff_ms` and `trigger` fields.
+  - `SUBAGENT_RETRY_FINAL` — emitted when the subagent loop exits for any reason (`success`, `error`, `retry_exhausted`, `canceled`, `completed_non_retryable`).
+  - All events wired to `RetryLog SubagentRetryLogger` callback; `late-sast` forwards them to the debug logger.
+
+- **JSON tool-call argument repair** (`internal/session/session.go`):
+  - `AddAssistantMessageWithTools` attempts to repair truncated/invalid JSON tool-call arguments before discarding them.
+  - `repairToolCallArguments` applies heuristics: trailing-comma removal, unclosed string/array/object completion.
+  - Successfully repaired calls emit a `MALFORMED_TOOL_CALL_REPAIRED` debug event; irreparable calls are dropped and logged as `MALFORMED_TOOL_CALL`.
+
+- **`run_trivy_scan` tool** (`internal/tool/run_trivy_scan.go`):
+  - Structured Trivy SCA/CVE scanning inside scan containers — replaces ad-hoc `bash` `trivy fs --format table | head -60` patterns in scanner prompts.
+  - Auto-installs Trivy via the official install script when absent; no manual pre-install required.
+  - Returns full JSON output (no `head -60` truncation), parsed into typed `[]TrivyFinding` records with `cve`, `package`, `installed_version`, `fixed_version`, `cvss`, `severity`, `description`, and `link` fields.
+  - Deduplicates by CVE ID + package pair; sorts findings by CVSS score descending.
+  - Supports `cvss_threshold` filtering (e.g. `7.0` for HIGH+ only) and explicit `severity_filter`.
+  - Output `findings` array matches `write_sast_report`'s `cve_findings` schema for direct pass-through.
+  - Uses CVSS V3 score, falling back to V2 when V3 is absent.
+  - Returns `status: skipped` (non-fatal) when Trivy is unavailable and cannot be installed.
+  - Registered in `cmd/late-sast/main.go`. Added 9 tests in `internal/tool/run_trivy_scan_test.go`.
+
+- **`run_semgrep_scan` / `run_opengrep_scan` tool** (`internal/tool/run_semgrep_scan.go`):
+  - Structured SAST scanning inside scan containers — replaces ad-hoc `bash` semgrep blocks with inline Python JSON parsing in scanner prompts.
+  - Auto-detects project language (Go, Rust, Python, JavaScript, TypeScript, Java, C/C++, Ruby, PHP) and selects appropriate rule packs.
+  - Explicit `rule_packs` parameter overrides auto-selection.
+  - Returns structured findings with `check_id`, `path`, `line`, `col`, `severity`, `message`, `cwe`, `owasp`, `fix`, and `rule_url` fields.
+  - Supports `severity_filter` (default: `ERROR`, `WARNING`) and `max_findings` cap.
+  - Originally shipped as semgrep-backed; subsequently switched to OpenGrep (see Changed section). All 9 scanner tests updated and passing.
+
+- **`run_secrets_scanner` tool** (`internal/tool/run_secrets_scanner.go`):
+  - Structured TruffleHog-powered secrets scanning inside scan containers — replaces ad-hoc two-pass grep blocks in scanner prompts.
+  - Auto-installs TruffleHog via the upstream install script when absent; no manual pre-install required.
+  - Returns normalized findings with `detector`, `verified`, `file`, `line`, `redacted`, `source`, and `category` fields.
+  - Supports `only_verified`, `max_findings`, and bounded execution timeout controls.
+  - Deduplicates repeated detector/path/line matches and reports verified vs unverified counts.
+  - Returns `status: skipped` (non-fatal) when TruffleHog is unavailable and cannot be installed.
+  - Registered in `cmd/late-sast/main.go`. Added tests in `internal/tool/run_secrets_scanner_test.go`.
+
+- **`bootstrap_scan_toolchain` tool** (`internal/tool/bootstrap_scan_toolchain.go`):
+  - New deterministic setup primitive to install scan/build essentials in one call after container launch.
+  - Bootstraps core utilities, conditionally installs JDK/Node based on repo markers, and attempts scanner installs (Trivy, Semgrep/OpenGrep, Checksec, Gosec, cargo-audit).
+  - Returns structured package-manager detection, language-marker detection, and post-install tool availability summary.
+  - Registered in `cmd/late-sast/main.go`. Added tests in `internal/tool/bootstrap_scan_toolchain_test.go`.
+
+- **`resolve_install_strategy` tool** (`internal/tool/resolve_install_strategy.go`):
+  - New deterministic Step 0 setup resolver for GitHub targets that inspects README quick-install commands and latest release assets.
+  - Returns one of three strategies: `quick_install`, `release_asset`, or `source_clone`.
+  - `quick_install` includes normalized `ecosystem`, `image`, and `command` for direct `setup_container(...)` use.
+  - `release_asset` returns the best Linux asset match for architecture (`.deb` → `.AppImage` → `.snap` → `.flatpak`) plus install command plan.
+  - Registered in `cmd/late-sast/main.go` and enabled by default in SAST tool policy. Added tests in `internal/tool/resolve_install_strategy_test.go`.
+
+- **`assess_disclosure_context` tool** (`internal/tool/assess_disclosure_context.go`):
+  - New deterministic disclosure context primitive that combines local security policy scanning with paginated GitHub Security Advisory correlation.
+  - Inputs: `repo_path`, optional `github_url`, and current `findings` array.
+  - Outputs structured `policy.matches` and `advisories.matches` for direct report annotation.
+  - Advisories are fetched across pages until empty response, then matched against findings using multi-signal correlation (class/component/CVE).
+  - Registered in `cmd/late-sast/main.go` and enabled by default in SAST tool policy. Added tests in `internal/tool/assess_disclosure_context_test.go`.
+
+- **`cleanup_scan_environment` tool** (`internal/tool/cleanup_scan_environment.go`):
+  - New deterministic teardown primitive replacing repeated multi-command cleanup shell blocks.
+  - Handles container remove, compose down, sidecar cleanup, network removal, image removal, and temp workdir cleanup in one call.
+  - Returns structured per-step results with `status: ok|partial` so agents can proceed safely when some resources are already absent.
+  - Registered in `cmd/late-sast/main.go` and enabled by default in SAST tool policy. Added tests in `internal/tool/cleanup_scan_environment_test.go`.
+
 - **Strategist/Explorer/Executor role system**:
-  - New subagent role prompts:
-    - `instruction-sast-strategist.md`
-    - `instruction-sast-explorer.md`
-    - `instruction-sast-executor.md`
+  - New subagent role prompts: `instruction-sast-strategist.md`, `instruction-sast-explorer.md`, `instruction-sast-executor.md`.
   - `spawn_subagent` `agent_type` enum extended to include `strategist`, `explorer`, and `executor`.
   - Role-specific prompt resolution and strict tool allowlists in `internal/agent/agent.go`:
     - Strategist: `read_file` only
@@ -21,110 +147,142 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
     - Executor: `bash` + `read_file`
 
 - **Orchestrator phase state machine + events**:
-  - New `StateMachine` with explicit phases and validated transitions in `internal/orchestrator/state_machine.go`:
-    - `PLAN`, `EXPLORE`, `EXECUTE`, `FEEDBACK`, `STOP`
-  - New `PhaseEvent` in `internal/common/interfaces.go` emitted from `BaseOrchestrator` real runtime transition points:
-    - submit/execute/start turn/GPU acquired/GPU released/end turn/idle-closed-error
+  - New `StateMachine` with explicit phases and validated transitions in `internal/orchestrator/state_machine.go`: `PLAN`, `EXPLORE`, `EXECUTE`, `FEEDBACK`, `STOP`.
+  - New `PhaseEvent` in `internal/common/interfaces.go` emitted from `BaseOrchestrator` at real runtime transition points: submit/execute/start turn/GPU acquired/GPU released/end turn/idle-closed-error.
   - Added comprehensive tests in `internal/orchestrator/state_machine_test.go`.
 
 - **Typed blackboard exploit-history contract** (`internal/orchestrator/blackboard.go`):
-  - Structured keys:
-    - `exploit_history`, `strategist_constraints`, `current_hypothesis`, `explorer_evidence`, `latest_executor_attempt`
+  - Structured keys: `exploit_history`, `strategist_constraints`, `current_hypothesis`, `explorer_evidence`, `latest_executor_attempt`.
   - `ExploitHistoryEntry` contract type.
-  - Helper APIs:
-    - `AppendExploitHistory`, `ExploitHistory`, `LatestExecutorAttempt`
-    - `AddStrategistConstraint`, `StrategistConstraints`
-    - `SetCurrentHypothesis`, `CurrentHypothesis`
-    - `SetExplorerEvidence`, `ExplorerEvidence`
-    - `ResetExploitState`
+  - Helper APIs: `AppendExploitHistory`, `ExploitHistory`, `LatestExecutorAttempt`, `AddStrategistConstraint`, `StrategistConstraints`, `SetCurrentHypothesis`, `CurrentHypothesis`, `SetExplorerEvidence`, `ExplorerEvidence`, `ResetExploitState`.
   - Added tests in `internal/orchestrator/blackboard_test.go`.
 
-- **Mission snapshot GUI panel**:
-  - New `MissionSnapshotEvent` in `internal/common/interfaces.go`.
-  - `late-sast` emits snapshot events from the root orchestrator after mission-turn persistence.
-  - Main GUI now renders a compact Mission Snapshot card in `internal/gui/app.go`:
-    - Current hypothesis
-    - Last executor outcome (+ reason)
-    - Active constraints
-  - `internal/gui/events.go` handles `MissionSnapshotEvent` for live updates.
+- **`wait_for_target_ready` tool** (`internal/tool/wait_for_target_ready.go`):
+  - New one-call runtime gate to verify container readiness before scanner/exploit phases.
+  - Bounded polling with structured checks (container state, TCP, HTTP), explicit statuses (`ready`, `not_ready`, `crashed`), endpoint discovery from Docker inspect, and log-tail diagnostics.
+  - Registered by default in `cmd/late-sast/main.go` and enabled in tool policy. Added tests in `internal/tool/wait_for_target_ready_test.go`.
 
-### Changed
-- **Mission-turn orchestration now actively reads/writes blackboard contract state** (`cmd/late-sast/main.go`):
-  - Before spawning `strategist` / `explorer` / `executor`, goals are enriched with current blackboard context.
-  - After each role completes, JSON output is parsed and persisted back into blackboard.
-  - Root scan startup now resets exploit mission state via `GlobalBlackboard.ResetExploitState()`.
-  - Shared JSON extraction helper introduced and reused by architecture JSON parsing.
+- **`run_exploit_replay` tool** (`internal/tool/run_exploit_replay.go`):
+  - New one-call replay primitive for live PoC verification with bounded retries/timeouts.
+  - Supports request shaping (method/path/query/headers/body), success/block indicators, and optional in-container side-effect checks.
+  - Returns normalized verdicts (`exploited`, `blocked`, `unreachable`, `inconclusive`) with structured evidence payloads.
+  - Registered by default in `cmd/late-sast/main.go` and enabled in tool policy. Added tests in `internal/tool/run_exploit_replay_test.go`.
 
-- **GUI phase visibility improvements**:
-  - Child tabs now include live phase labels (`... · PLAN/EXPLORE/EXECUTE/FEEDBACK/STOP`) derived from `PhaseEvent` transitions.
-  - Main footer now shows `Current Phase` from real orchestrator state transitions.
+- **`write_sast_report` tool** (`internal/tool/write_sast_report.go`):
+  - New first-class tool that accepts normalized finding records and produces a consistently structured Markdown SAST report every time. Manual freeform markdown report writing is now prohibited by prompt.
+  - Enforced invariants: empty section suppression (severity headers only emitted when findings exist); `NEEDS_CONTEXT` deduplication; enum normalization; finding deduplication by (location, CWE); CVE deduplication; auto-generated Executive Summary and Remediation Priority.
+  - Returns structured JSON: `{ "status": "ok", "output_path": "...", "findings": N, "needs_context": N, "cve_findings": N, "counts": {...}, "exploited": N }`.
+  - Registered in `cmd/late-sast/main.go` as a first-class tool; enabled by default. Added 10 tests in `internal/tool/write_sast_report_test.go`.
 
-- **Project Map event delivery reliability**:
-  - `ProjectMapLoadedEvent` is now emitted whenever architecture metadata is fetched, even when cluster list is empty.
-
-- **SAST setup launch detection updated for monorepos** (`instruction-sast-setup.md`):
-  - Compose/Dockerfile detection changed from root-only to bounded recursive search.
-  - Selection rules now prefer the service directory found by monorepo entrypoint analysis.
-  - Path A uses detected compose path; Path C uses detected Dockerfile path + directory context.
-  - Prevents false "no docker" conclusions when Docker assets live in subdirectories.
-
-### Fixed
-- **Scanner/setup long-wait behavior hardened**:
-  - Added bounded readiness-polling guidance in prompts (`instruction-sast-scanner.md`, `instruction-sast-setup.md`).
-  - Runtime SAST shell policy now blocks:
-    - single `sleep` > 15s
-    - cumulative sleep > 90s
-  - New tests in `internal/tool/sast_tools_test.go` cover long-sleep and cumulative-sleep blocks.
-
-- **Empty-output diagnostics no longer claim context overflow by default**:
-  - `spawn_subagent` empty output message now reports likely early termination/empty stream without asserting overflow.
-  - Added regression test for wording.
-
-- **Executor observability and failure classification**:
-  - Added explicit debug events:
-    - `CONTEXT_LIMIT`
-    - `OUTPUT_BUDGET_HIT`
-    - `EMPTY_STREAM`
-  - Turn summaries now include token accounting and `n_ctx`.
-  - Duplicate-plan reset logic now also resets after policy-blocked turns.
-
-
-## [v1.8.3] — 2026-05-03
-
-### Added
 - **Language-weighted resource heuristics** (`internal/orchestrator/limits.go`):
-  - `LanguageMultiplier(language string) float64` — per-language turn-budget multiplier applied to the base `CalculateTurns` formula.
-  - Multipliers: C / C++ → 1.5× (deep call stacks, manual memory); Rust → 1.3×; Go / Java / C# / Kotlin / Swift → 1.0×; TypeScript → 0.9×; Python / JavaScript / PHP / Ruby → 0.8×. Unknown languages default to 1.0×.
+  - `LanguageMultiplier(language string) float64` — per-language turn-budget multiplier: C/C++ → 1.5×; Rust → 1.3×; Go/Java/C#/Kotlin/Swift → 1.0×; TypeScript → 0.9×; Python/JavaScript/PHP/Ruby → 0.8×.
   - `ComplexityMeta.PrimaryLanguage` field carries the detected language through the heuristic pipeline.
   - `--max-turns-ceiling` (default 500) and `--max-timeout-ceiling` (default 60m) CLI flags to cap the dynamic budget.
-  - **CLI override precedence**: explicitly supplied `--subagent-max-turns` / `--subagent-timeout` always win over dynamic values (`flag.Visit` detection).
+  - CLI override precedence: explicitly supplied `--subagent-max-turns` / `--subagent-timeout` always win over dynamic values (`flag.Visit` detection).
   - Language multiplier and `primary_language` written to `GlobalBlackboard` at first subagent spawn.
 
 - **Dynamic Resource Allocator — `get_architecture` integration** (`cmd/late-sast/main.go`):
   - `fetchComplexityMeta` helper calls the `get_architecture` MCP tool with the cloned repo path and parses the response JSON (handles multiple field-name variants across codebase-memory-mcp versions).
   - `sync.Once` lazy-fetch: called on the first `SpawnSubagentTool.Runner` invocation; result cached for all subsequent subagents in the same scan.
-  - `resolveBudget()` returns `(turns, timeout)` respecting CLI override precedence, dynamic value, or static fallback (`FallbackSubagentTurns` / `FallbackSubagentTimeout`).
-
-- **"Project Map" tab** (`internal/gui/project_map.go`, `internal/gui/app.go`):
-  - New `ProjectMapPanel` Fyne widget showing a 3-column adaptive grid of cluster cards sourced from `get_architecture` `clusters` + `communities`.
-  - Each card shows the cluster label, file count, and a hotspot indicator (`⚠ HOTSPOT`).
-  - Hotspot clusters use a red background (`color.RGBA{180,40,40,220}`); normal clusters use the theme button color.
-  - **Real-time agent tracker**: when any subagent calls `read_file`, `search_graph`, `get_code_snippet`, or `trace_path`, `NodeHighlightMiddleware` calls `guiApp.HighlightNode(filePath, isHotspot)` → `ProjectMapPanel.HighlightFile` → 1.5-second color-fade animation (`canvas.NewColorRGBAAnimation`) on the owning cluster card.
-  - Permanent red marking when a file is flagged as a hotspot.
-  - Header bar shows language, total file count, node count, cluster count, and hotspot count.
-  - Tab is added to the main `AppTabs` alongside the "Main" tab; always visible, updates lazily once `ProjectMapLoadedEvent` is received.
-
-- **`ProjectMapLoadedEvent` and `NodeHighlightEvent`** (`internal/common/interfaces.go`):
-  - New event types carrying `ArchitectureData` (clusters, hotspots, language, file/node/edge counts) and per-file highlight requests respectively.
-  - `ArchitectureData` and `ArchitectureCluster` shared data types.
+  - `resolveBudget()` returns `(turns, timeout)` respecting CLI override precedence, dynamic value, or static fallback.
 
 - **Turn-progress counter in tab labels** (`internal/orchestrator/base.go`, `internal/gui/events.go`):
-  - `StatusEvent.Turn` / `StatusEvent.MaxTurns` fields (already added in prior session) now populated by `onStartTurn` via an atomic counter (`turnCurrent int64`) reset at each `Submit`/`Execute` call.
-  - `setTabStatus` in the GUI event loop tracks `currentTurn` / `currentMaxTurns` and renders `"🧠 Testing Codebase (42/150)"` whenever `Turn > 0`.
+  - `StatusEvent.Turn` / `StatusEvent.MaxTurns` populated by `onStartTurn` via an atomic counter reset at each `Submit`/`Execute`.
+  - `setTabStatus` renders `"🧠 Testing Codebase (42/150)"` whenever `Turn > 0`.
 
 - **`BaseOrchestrator.MaxTurns() int`** — satisfies updated `common.Orchestrator` interface (was missing, causing build failure).
-- **`BaseOrchestrator.PushEvent(Event)`** — non-blocking external event injection used by `main.go` to deliver `ProjectMapLoadedEvent` into the root orchestrator's event channel.
-- **`NodeHighlightMiddleware`** (`internal/orchestrator/highlight_middleware.go`) — tool middleware that intercepts `read_file` / `search_graph` / `get_code_snippet` / `trace_path` calls, extracts the path argument, and calls a provided callback. Applied to all GUI-path subagents.
+- **`BaseOrchestrator.PushEvent(Event)`** — non-blocking external event injection for orchestrator event channel integration points.
+
+### Changed
+
+- **SAST scanner switched from semgrep to OpenGrep** (`internal/tool/run_semgrep_scan.go`):
+  - `ensureSemgrep()` replaced with `ensureOpenGrep()` — downloads the prebuilt musl static binary from `github.com/opengrep/opengrep/releases/download/v1.20.0/opengrep-1.20.0-x86_64-unknown-linux-musl` via `curl -sSfL`. No Python, pip, or pipx dependency.
+  - Invocation changed from `semgrep --json` to `opengrep scan --json`. Output schema is identical — zero changes to the finding parser.
+  - JSON parser renamed `parseOpenGrepJSON` (was `parseSemgrepJSON`).
+  - Eliminates Python version conflicts and pip failure modes in minimal scan containers.
+
+- **`ExecuteToolCallsWithStats` signature** (`internal/executor/executor.go`):
+  - Added `cache *ToolResultCache` parameter (last argument). Existing callers passing `nil` are unaffected.
+  - `ExecuteToolCalls` wrapper updated to pass `nil`.
+
+- **Scanner prompts updated for structured tool calls**:
+  - `instruction-sast-scanner.md` Steps 1c (CVE scan) and 1f (SAST) now use `run_trivy_scan(...)` and `run_semgrep_scan(...)` / `run_opengrep_scan(...)` respectively, replacing bash blocks with inline Python JSON parsing.
+  - Step 1b (secrets discovery) now uses `run_secrets_scanner(...)` in both `instruction-sast-scanner.md` and `instruction-sast-scanner-binary.md`.
+  - `instruction-sast-scanner-binary.md` Steps 1c and 2a updated to use `run_trivy_scan(...)` and `run_semgrep_scan(...)`.
+  - `instruction-sast-setup.md` Step 5 now prefers `bootstrap_scan_toolchain(...)` as the first deterministic tool call for build/scanner bootstrap.
+  - `instruction-sast-setup.md` Step 0 now uses `resolve_install_strategy(...)` as a strict tool-only gate (no manual README/release parsing fallback).
+  - `instruction-sast.md` Step 3 and `instruction-sast-retest.md` Step 4 now call `assess_disclosure_context(...)` instead of inline shell/API loops.
+  - Cleanup sections in `instruction-sast.md` and `instruction-sast-retest.md` replaced with a single `cleanup_scan_environment(...)` call.
+  - `instruction-sast.md` Step 4 updated to use `write_sast_report(...)` — manual freeform markdown report writing is prohibited.
+  - `instruction-sast-scanner.md` Step 7 now prefers `run_exploit_replay(...)` for live exploit attempts and replay evidence capture.
+
+- **Scanner/setup orchestration middleware** (`internal/agent/agent.go`, `cmd/late-sast/main.go`):
+  - Scanner and binary-scanner subagents are nudged to run `run_secrets_scanner` before `trace_path` taint tracing.
+  - Scanner and binary-scanner subagents block raw localhost `bash` exploit PoCs (`docker exec` + `wget/curl`) unless a matching `run_exploit_replay(...)` attempt exists for the same normalized finding candidate.
+  - Cleanup preference middleware nudges setup/root flows to call `cleanup_scan_environment` instead of ad-hoc docker cleanup bash.
+
+- **Mission-turn orchestration now actively reads/writes blackboard contract state** (`cmd/late-sast/main.go`):
+  - Before spawning `strategist` / `explorer` / `executor`, goals are enriched with current blackboard context.
+  - After each role completes, JSON output is parsed and persisted back into blackboard.
+  - Root scan startup resets exploit mission state via `GlobalBlackboard.ResetExploitState()`.
+
+- **GUI phase visibility improvements**:
+  - Child tabs now include live phase labels (`... · PLAN/EXPLORE/EXECUTE/FEEDBACK/STOP`) derived from `PhaseEvent` transitions.
+  - Main footer shows `Current Phase` from real orchestrator state transitions.
+
+- **SAST setup launch detection updated for monorepos** (`instruction-sast-setup.md`):
+  - Compose/Dockerfile detection changed from root-only to bounded recursive search.
+  - Selection rules prefer the service directory found by monorepo entrypoint analysis; prevents false "no docker" conclusions when Docker assets live in subdirectories.
+
+- **Setup/scanner readiness flow now uses a dedicated tool**:
+  - `instruction-sast-setup.md` gates startup state through `wait_for_target_ready(...)` after launch.
+  - `instruction-sast-scanner.md` prefers `wait_for_target_ready(...)` for bounded readiness evidence over ad-hoc shell polling loops.
+
+- **Report-write lifecycle is now visible in the GUI** (`internal/gui/app.go`, `cmd/late-sast/main.go`):
+  - Successful `write_sast_report(...)` calls now emit a user-visible confirmation line in the main chat.
+  - This makes report completion explicit during long scans/retests and improves operator feedback while testing.
+
+### Fixed
+
+- **Scan-session cache reuse and malformed empty-arg execution** (`internal/executor/executor.go`, `internal/orchestrator/base.go`, `cmd/late-sast/main.go`, `internal/session/session.go`):
+  - MCP-backed codebase tools such as `ctx_search`, `search_graph`, `search_code`, `get_code_snippet`, `trace_path`, `index_repository`, `index_status`, `list_projects`, and `get_architecture` are now covered by the cache/timeout tables instead of falling through to uncached defaults.
+  - The tool cache is now reused across root and child orchestrators in a single scan, eliminating repeated cold-cache subagent loops.
+  - Repairs that collapse malformed tool-call arguments to `{}` are now dropped for tools with required parameters, with `MALFORMED_TOOL_CALL_DROPPED` logged instead of executing a broken empty-argument call.
+
+- **Retest crash on invalid report file** (`cmd/late-sast/main.go`, `internal/gui/sast_picker.go`):
+  - Previously, `buildScan` called `os.Exit(1)` for user-triggered errors (bad report path, missing `Target:` header, unreadable file). When called from a GUI goroutine, this killed the entire process with no dialog — the program just vanished.
+  - `buildScan` now returns `(sessionResult, error)`. All `os.Exit(1)` calls within it are replaced with `return sessionResult{}, fmt.Errorf(...)`.
+  - `setupFn` updated to `func(SASTPickerResult) (common.Orchestrator, string, error)`.
+  - `RunSAST` / `transition` in `sast_picker.go`: on a non-nil error, a Fyne error dialog is shown and the picker is re-rendered so the user can correct the selection and try again without relaunching the app.
+
+- **Retest report header parser rejected valid reports** (`cmd/late-sast/main.go`):
+  - `parseReportHeader` only matched the bare prefix `Target: `. Reports generated by `late-sast` use bold markdown `**Target:** <url>`, which was never matched.
+  - Parser now tries both `"Target: "` and `"**Target:** "` prefixes.
+
+- **`launch_docker` host-port conflict hardening** (`internal/tool/launch_docker.go`, `cmd/late-sast/main.go`):
+  - Added reserved host-port protection so scan launches avoid clobbering local model endpoints (e.g. llama-swap on `localhost:8080`).
+  - Tool now accepts `reserved_host_ports` and returns structured `status: port_conflict` when a launched target binds a reserved port; on conflict the launched target is cleaned up automatically.
+  - `late-sast` auto-populates default reserved ports from configured OpenAI/Subagent/Auditor base URLs.
+  - Docker asset discovery now performs a broader nested sweep and detects variant filenames (`docker/compose.dev.yaml`, `Dockerfile.dev`, `Containerfile*`) before launch selection.
+  - Added regression tests for compose and Dockerfile conflict paths in `internal/tool/launch_docker_test.go`.
+
+- **Setup primitive registration in scan sessions** (`cmd/late-sast/main.go`):
+  - Explicitly registers `setup_container`, `launch_docker`, `wait_for_target_ready`, and `bootstrap_scan_toolchain` in the SAST session registry.
+  - Prevents setup flows from falling back to brittle ad-hoc shell paths when these tools were previously unavailable.
+
+- **Scanner/setup long-wait behavior hardened**:
+  - Added bounded readiness-polling guidance in prompts (`instruction-sast-scanner.md`, `instruction-sast-setup.md`).
+  - Runtime SAST shell policy now blocks: single `sleep` > 15 s; cumulative sleep > 90 s.
+  - New tests in `internal/tool/sast_tools_test.go` cover long-sleep and cumulative-sleep blocks.
+
+- **Empty-output diagnostics no longer claim context overflow by default**:
+  - `spawn_subagent` empty output message reports likely early termination/empty stream without asserting overflow.
+  - Added regression test for wording.
+
+- **Executor observability and failure classification**:
+  - Added explicit debug events: `CONTEXT_LIMIT`, `OUTPUT_BUDGET_HIT`, `EMPTY_STREAM`.
+  - Turn summaries now include token accounting and `n_ctx`.
+  - Duplicate-plan reset logic now also resets after policy-blocked turns.
 
 ---
 
@@ -251,7 +409,7 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 ## [v1.8.0] — 2026-05-01
 
 ### Added
-- **Graphical user interface (Fyne v2)** — a full desktop GUI replaces the terminal as the default interface. Launch without `--tui` to open the GUI; use `--tui` to keep the original Bubble Tea terminal experience.
+- **Graphical user interface (Fyne v2)** — a full desktop GUI replaces the terminal as the primary interface.
   - **Target picker screen** — on first launch with no flags, a compact window lets you enter a GitHub URL, browse for a local repository, and choose an output directory before starting the scan. Supplying `--target` / `--path` / `--output` via CLI skips the picker as before.
   - **Streaming chat panel** — assistant messages render incrementally as they stream. Markdown is parsed with goldmark (bold, italic, headings, code blocks, lists, horizontal rules) and displayed as `widget.RichText` segments using a custom dark amethyst theme.
   - **Per-subagent tabs** — each spawned subagent (Setup, Testing Codebase, Live Exploit, Making Report) opens in its own tab with a dedicated **■ Stop** button and a live token counter (`used / max`) in the tab header. Completed tabs close automatically.
@@ -262,7 +420,7 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
   - **Custom dark theme** — amethyst palette (`#9B59B6`), near-black background (`#191919`), `ECF0F1` text. Applied globally via a `fyne.Theme` implementation.
   - **Window icon** — purple shield-and-bug SVG icon embedded in the binary and set as the window icon (`window.SetIcon`). Displays in title bar and taskbar while the app is running.
 - **`make install-desktop`** — installs a `.desktop` launcher entry and the SVG icon to `~/.local/share/applications` and `~/.local/share/icons/hicolor/scalable/apps` so `late-sast` appears in the system application launcher.
-- **GUI log file** — when running in GUI mode, all stdout/stderr (including Fyne internals, docker output, and agent logs) is redirected to `~/.cache/late-sast/late-sast.log` so the launching terminal stays silent. Use `--tui` to keep output in the terminal.
+- **GUI log file** — all stdout/stderr (including Fyne internals, docker output, and agent logs) is redirected to `~/.cache/late-sast/late-sast.log` so the launching terminal stays silent.
 
 ### Fixed
 - **`LANG=C` locale error** — Fyne's locale parser rejects the `C` and `POSIX` pseudo-locales. `$LANG` is now normalised to `en_US.UTF-8` at startup when it is empty, `C`, or `POSIX`.
@@ -298,9 +456,7 @@ All notable changes to **late-sast** ([giveen/late-sast](https://github.com/give
 
 ### Added
 - **Help overlay (`?`)** — pressing `?` when the input field is empty opens a full-screen key binding reference rendered with the `bubbles/v2/help` bubble. Lists all shortcuts (send, stop, tab, back, allow-once/session/project/global, deny, quit) in two columns styled with the app's amethyst palette. `?` or `Esc` closes the overlay.
-- **Typed `KeyMap`** (`internal/tui/keys.go`) — all TUI key bindings are now declared as `key.Binding` entries, replacing the scattered hard-coded string literals. Implements `help.KeyMap` (`ShortHelp`/`FullHelp`) so the help bubble renders them automatically.
-- **Dynamic terminal window title** — `View()` now sets `view.WindowTitle` based on agent state: `late`, `late — thinking…`, `late — streaming…`, or `late — confirm tool`. Updates live as the agent works.
-- **`? Help` hint in status bar** — a `? Help` key hint is now shown in the status bar alongside `Ctrl+g Stop`.
+- **Key bindings** — all key bindings declared as typed `key.Binding` entries with `ShortHelp`/`FullHelp` support.
 
 ---
 

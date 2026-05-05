@@ -3,10 +3,6 @@ module late
 go 1.25.8
 
 require (
-	charm.land/bubbles/v2 v2.1.0
-	charm.land/bubbletea/v2 v2.0.6
-	charm.land/glamour/v2 v2.0.0
-	charm.land/lipgloss/v2 v2.0.3
 	fyne.io/fyne/v2 v2.7.3
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/yuin/goldmark v1.8.2
@@ -17,10 +13,12 @@ require (
 )
 
 require (
+	charm.land/bubbletea/v2 v2.0.6 // indirect
+	charm.land/glamour/v2 v2.0.0 // indirect
+	charm.land/lipgloss/v2 v2.0.0 // indirect
 	fyne.io/systray v1.12.0 // indirect
 	github.com/BurntSushi/toml v1.5.0 // indirect
-	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
-	github.com/atotto/clipboard v0.1.4 // indirect
+	github.com/alecthomas/chroma/v2 v2.14.0 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468 // indirect
@@ -32,7 +30,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/dlclark/regexp2 v1.11.5 // indirect
+	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/fredbi/uri v1.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fyne-io/gl-js v0.2.0 // indirect
@@ -66,8 +64,7 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	github.com/yuin/goldmark-emoji v1.0.6 // indirect
-	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 // indirect
+	github.com/yuin/goldmark-emoji v1.0.5 // indirect
 	golang.org/x/image v0.38.0 // indirect
 	golang.org/x/net v0.45.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect

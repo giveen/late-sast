@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -162,9 +163,100 @@ func TestSpawnSubagentTool_Execute_NoCtxFiles(t *testing.T) {
 }
 
 func TestSpawnSubagentTool_Execute_EmptyOutputDiagnostic(t *testing.T) {
+	calls := 0
 	tool := SpawnSubagentTool{
 		Runner: func(_ context.Context, _ string, _ []string, _ string) (string, error) {
+			calls++
 			return "", nil
+		},
+		EmptyRetryBackoff: time.Millisecond,
+	}
+
+	got, err := tool.Execute(context.Background(), json.RawMessage(`{"goal":"scan","agent_type":"scanner"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected one retry (2 attempts), got %d", calls)
+	}
+	if !strings.Contains(got, "returned empty output") || !strings.Contains(got, "after 2 attempts") {
+		t.Fatalf("expected empty-output diagnostic, got: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "overflow") {
+		t.Fatalf("diagnostic should not claim overflow, got: %q", got)
+	}
+}
+
+func TestSpawnSubagentTool_Execute_RetryAfterEmptyStreamError(t *testing.T) {
+	calls := 0
+	tool := SpawnSubagentTool{
+		Runner: func(_ context.Context, _ string, _ []string, _ string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "", fmt.Errorf("model returned empty response on turn 7")
+			}
+			return "ok", nil
+		},
+		EmptyRetryBackoff: time.Millisecond,
+	}
+
+	got, err := tool.Execute(context.Background(), json.RawMessage(`{"goal":"scan","agent_type":"scanner"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("expected successful retry output, got: %q", got)
+	}
+	if calls != 2 {
+		t.Fatalf("expected one retry (2 attempts), got %d", calls)
+	}
+}
+
+func TestSpawnSubagentTool_Execute_RetryAfterEmptyOutput(t *testing.T) {
+	calls := 0
+	tool := SpawnSubagentTool{
+		Runner: func(_ context.Context, _ string, _ []string, _ string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "", nil
+			}
+			return "retry ok", nil
+		},
+		EmptyRetryBackoff: time.Millisecond,
+	}
+
+	got, err := tool.Execute(context.Background(), json.RawMessage(`{"goal":"scan","agent_type":"scanner"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "retry ok" {
+		t.Fatalf("expected successful retry output, got: %q", got)
+	}
+	if calls != 2 {
+		t.Fatalf("expected one retry (2 attempts), got %d", calls)
+	}
+}
+
+func TestSpawnSubagentTool_Execute_RetryLogMetadata(t *testing.T) {
+	type event struct {
+		typeName string
+		message  string
+		fields   map[string]interface{}
+	}
+
+	events := make([]event, 0)
+	calls := 0
+	tool := SpawnSubagentTool{
+		Runner: func(_ context.Context, _ string, _ []string, _ string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "", nil
+			}
+			return "ok", nil
+		},
+		EmptyRetryBackoff: time.Millisecond,
+		RetryLog: func(eventType string, message string, fields map[string]interface{}) {
+			events = append(events, event{typeName: eventType, message: message, fields: fields})
 		},
 	}
 
@@ -172,11 +264,38 @@ func TestSpawnSubagentTool_Execute_EmptyOutputDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(got, "returned empty output") {
-		t.Fatalf("expected empty-output diagnostic, got: %q", got)
+	if got != "ok" {
+		t.Fatalf("expected successful retry output, got: %q", got)
 	}
-	if strings.Contains(strings.ToLower(got), "overflow") {
-		t.Fatalf("diagnostic should not claim overflow, got: %q", got)
+
+	if len(events) < 3 {
+		t.Fatalf("expected retry telemetry events, got %d", len(events))
+	}
+
+	foundBackoff := false
+	foundFinal := false
+	for _, e := range events {
+		switch e.typeName {
+		case "SUBAGENT_RETRY_BACKOFF":
+			foundBackoff = true
+			if _, ok := e.fields["attempt"]; !ok {
+				t.Fatalf("backoff event missing attempt: %#v", e.fields)
+			}
+			if _, ok := e.fields["retry_backoff_ms"]; !ok {
+				t.Fatalf("backoff event missing retry_backoff_ms: %#v", e.fields)
+			}
+		case "SUBAGENT_RETRY_FINAL":
+			if outcome, _ := e.fields["outcome"].(string); outcome == "success" {
+				foundFinal = true
+			}
+		}
+	}
+
+	if !foundBackoff {
+		t.Fatal("expected SUBAGENT_RETRY_BACKOFF event")
+	}
+	if !foundFinal {
+		t.Fatal("expected SUBAGENT_RETRY_FINAL success event")
 	}
 }
 
