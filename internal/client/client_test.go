@@ -203,6 +203,62 @@ func TestChatCompletionStream_RetriesOnceOnParse500(t *testing.T) {
 	}
 }
 
+func TestDiscoverBackend_LlamaCPPPropsSetsContextSize(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/props" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"default_generation_settings":{"n_ctx":8192}}`)
+	}))
+	defer server.Close()
+
+	c := NewClient(Config{BaseURL: server.URL})
+	backend := c.DiscoverBackend(context.Background())
+	if backend != BackendLlamaCPP {
+		t.Fatalf("expected llama.cpp backend, got %q", backend)
+	}
+	if got := c.ContextSize(); got != 8192 {
+		t.Fatalf("expected context size 8192, got %d", got)
+	}
+}
+
+func TestDiscoverBackend_NonPropsResponseFallsBackToGenericOpenAI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/props" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	c := NewClient(Config{BaseURL: server.URL})
+	backend := c.DiscoverBackend(context.Background())
+	if backend != BackendGenericOpenAI {
+		t.Fatalf("expected generic openai backend, got %q", backend)
+	}
+	if got := c.ContextSize(); got != -1 {
+		t.Fatalf("expected unknown context size, got %d", got)
+	}
+}
+
+func TestDiscoverBackend_ConnectionFailureStaysUnknown(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	baseURL := server.URL
+	server.Close()
+
+	c := NewClient(Config{BaseURL: baseURL})
+	backend := c.DiscoverBackend(context.Background())
+	if backend != BackendUnknown {
+		t.Fatalf("expected unknown backend after connection failure, got %q", backend)
+	}
+	if got := c.ContextSize(); got != -1 {
+		t.Fatalf("expected context size to remain unknown, got %d", got)
+	}
+}
+
 type errString string
 
 func (e errString) Error() string { return string(e) }
