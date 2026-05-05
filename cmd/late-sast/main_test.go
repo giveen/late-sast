@@ -347,3 +347,71 @@ func TestBuildScanSession_InvalidRetestReportFails(t *testing.T) {
 		t.Fatalf("unexpected retest error: %v", err)
 	}
 }
+
+func TestBuildScanSession_NonExistentRetestPathFails(t *testing.T) {
+	cfg := testScanBuildConfig(t)
+	cfg.pickedRetestPath = filepath.Join(t.TempDir(), "does_not_exist.md")
+
+	_, err := buildScanSessionWithDeps(cfg, testScanBuildDeps(t))
+	if err == nil {
+		t.Fatal("expected non-existent retest path to fail session build")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildScanSession_ReadPromptFileFails(t *testing.T) {
+	cfg := testScanBuildConfig(t)
+	deps := testScanBuildDeps(t)
+	deps.readPromptFile = func(name string) ([]byte, error) {
+		return nil, errors.New("embedded FS missing")
+	}
+
+	_, err := buildScanSessionWithDeps(cfg, deps)
+	if err == nil {
+		t.Fatal("expected prompt file read failure to fail session build")
+	}
+	if !strings.Contains(err.Error(), "error loading SAST system prompt") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildScanSession_MkdirAllFails(t *testing.T) {
+	cfg := testScanBuildConfig(t)
+	deps := testScanBuildDeps(t)
+	deps.mkdirAll = func(path string, perm os.FileMode) error {
+		return errors.New("read-only filesystem")
+	}
+
+	_, err := buildScanSessionWithDeps(cfg, deps)
+	if err == nil {
+		t.Fatal("expected mkdirAll failure to fail session build")
+	}
+	if !strings.Contains(err.Error(), "error creating output directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildScanSession_RetestReadFileFails(t *testing.T) {
+	// Create a real file so os.Stat passes, then inject readFile to fail.
+	reportPath := filepath.Join(t.TempDir(), "report.md")
+	if err := os.WriteFile(reportPath, []byte("Target: https://example.com"), 0644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	cfg := testScanBuildConfig(t)
+	cfg.pickedRetestPath = reportPath
+	deps := testScanBuildDeps(t)
+	deps.readFile = func(name string) ([]byte, error) {
+		return nil, errors.New("disk I/O error")
+	}
+
+	_, err := buildScanSessionWithDeps(cfg, deps)
+	if err == nil {
+		t.Fatal("expected retest readFile failure to fail session build")
+	}
+	if !strings.Contains(err.Error(), "error reading retest report") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
