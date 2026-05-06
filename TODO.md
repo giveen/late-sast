@@ -18,11 +18,11 @@
 
 > Completed: scan assembly extraction with injectable deps, 11 regression tests in `cmd/late-sast/main_test.go` covering core tools registration, report round-trip, retest parsing, blackboard injection, and 4 failure-injection paths (prompt load, mkdirAll, retest readFile, non-existent retest path).  Backend discovery tests added in `internal/client/client_test.go`.
 
-### ~~2. Finish incremental rescan architecture~~ (Phases 1–2 done)
+### ~~2. Finish incremental rescan architecture~~ ✓ DONE
 
 - ~~Phase 1: deterministic keys (`HashFile`, `HashBytes`, `TransformKey`), `Store` interface, `FileStore` with atomic writes and reopen safety, `ComputeDeltaScope` — done in `internal/rescan/`.~~
 - ~~Phase 2: stable `FindingID` (CWE+location+title SHA-256), `FindingRecord` model, `FindingStatus` enum, `GetFinding`/`PutFinding`/`ListFindings` on `Store` + `FileStore`, `Reconcile()` with insert/update/resolve/unchanged logic, 14 new tests — done.~~
-- Phase 3: full lineage edges, scope-aware retest mode.
+- ~~Phase 3: full lineage edges (`LineageEdge`, `PutLineageEdge`, `ListEdgesFrom`/`To`/`All`, persisted in `storeState`), scope-aware retest (`RetestScope` — triggers on changed source, unconfirmed exploit, new/updated status, or lineage ancestor needing retest), 16 new tests — done.~~
 - Measure rescan performance and report churn before/after.
 
 ### ~~CVE search quality fix~~ ✓ DONE
@@ -38,7 +38,8 @@
 
 - ~~Missing full-pipeline regression coverage is still the biggest practical risk.~~ ✓ Done.
 - ~~CVE tools returned raw API JSON causing `unknown:unknown` packages and `0.0` CVSS scores.~~ ✓ Fixed.
-- Incremental rescan Phases 1–2 done; Phase 3 (lineage edges, scope-aware retest) still needed.
+- ~~Incremental rescan Phases 1–2 done; Phase 3 (lineage edges, scope-aware retest) still needed.~~ ✓ Done.
+- Architecture metadata fetch can still be lost too early if fetch timing is wrong.
 - Architecture metadata fetch can still be lost too early if fetch timing is wrong.
 - Some failures still log only to stderr/Fyne logs instead of appearing in the operator workflow.
 - Setup/container bootstrap remains expensive.
@@ -61,7 +62,8 @@
 
 1. ~~Add full-pipeline regression tests.~~ ✓ Done.
 2. ~~CVE search quality fix (parse CVE 5.x format).~~ ✓ Done.
-3. Finish incremental rescan Phase 3 (lineage edges, scope-aware retest).
+3. ~~Finish incremental rescan (Phases 1–3).~~ ✓ Done.
 4. Standardize operator-visible error propagation.
+5. Reduce setup/runtime overhead.
 4. Reduce setup/runtime overhead.
 5. Revisit executor-level parallelism only after the above is protected by tests.
