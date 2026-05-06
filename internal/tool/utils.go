@@ -9,8 +9,8 @@ import (
 	"late/internal/common"
 )
 
-// getToolParam extracts a string parameter from tool arguments
-func getToolParam(args json.RawMessage, key string) string {
+// GetToolParam extracts a string parameter from tool arguments
+func GetToolParam(args json.RawMessage, key string) string {
 	var params map[string]any
 	if err := json.Unmarshal(args, &params); err != nil {
 		// Fallback for partial JSON during streaming where the unmarshal fails
@@ -28,8 +28,8 @@ func getToolParam(args json.RawMessage, key string) string {
 	return val
 }
 
-// truncate shortens a string to maxLen characters, adding "..." if truncated
-func truncate(s string, maxLen int) string {
+// Truncate shortens a string to maxLen characters, adding "..." if truncated
+func Truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}

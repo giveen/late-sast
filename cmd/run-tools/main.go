@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-
-	"late/internal/tool"
+	"late/internal/tool/docker"
+	"late/internal/tool/exploit"
+	"late/internal/tool/sast"
 )
 
 func main() {
@@ -33,11 +34,11 @@ func main() {
 
 	switch *toolName {
 	case "assess_disclosure_context":
-		result, err = tool.AssessDisclosureContextTool{}.Execute(ctx, raw)
+		result, err = exploit.AssessDisclosureContextTool{}.Execute(ctx, raw)
 	case "cleanup_scan_environment":
-		result, err = tool.CleanupScanEnvironmentTool{}.Execute(ctx, raw)
+		result, err = docker.CleanupScanEnvironmentTool{}.Execute(ctx, raw)
 	case "write_sast_report":
-		result, err = tool.WriteSASTReportTool{}.Execute(ctx, raw)
+		result, err = sast.WriteSASTReportTool{}.Execute(ctx, raw)
 	default:
 		fmt.Printf("ERROR: unsupported --tool %q\n", *toolName)
 		return

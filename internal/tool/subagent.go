@@ -343,9 +343,9 @@ func (t SpawnSubagentTool) emitRetryLog(eventType string, message string, fields
 func (t SpawnSubagentTool) RequiresConfirmation(args json.RawMessage) bool { return false }
 
 func (t SpawnSubagentTool) CallString(args json.RawMessage) string {
-	goal := getToolParam(args, "goal")
+	goal := GetToolParam(args, "goal")
 	if goal == "" {
 		goal = "unknown goal"
 	}
-	return fmt.Sprintf("Spawning subagent for: %s", truncate(goal, 50))
+	return fmt.Sprintf("Spawning subagent for: %s", Truncate(goal, 50))
 }

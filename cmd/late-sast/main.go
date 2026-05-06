@@ -36,6 +36,8 @@ import (
 	"late/internal/pathutil"
 	"late/internal/session"
 	"late/internal/tool"
+	"late/internal/tool/docker"
+	"late/internal/tool/knowledge"
 )
 
 func main() {
@@ -210,7 +212,7 @@ func main() {
 				"network":         networkName,
 				"workdir":         workDir,
 			})
-			out, err := tool.CleanupScanEnvironmentTool{}.Execute(context.Background(), cleanupArgs)
+			out, err := docker.CleanupScanEnvironmentTool{}.Execute(context.Background(), cleanupArgs)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[late-sast] Cleanup error: %v\n", err)
 			} else {
@@ -294,7 +296,9 @@ func main() {
 	// Ensure codebase-memory-mcp is available, downloading if needed.
 	// Capture the path so we can auto-inject it into the MCP config below.
 	var cbmBinPath string
-	if cbmPath, cbmErr := ensureCBM(); cbmErr != nil {
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer dlCancel()
+	if cbmPath, cbmErr := ensureCBM(dlCtx); cbmErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: codebase-memory-mcp unavailable (%v) — graph intelligence disabled\n", cbmErr)
 	} else {
 		cbmBinPath = cbmPath
@@ -587,7 +591,7 @@ func reservedPortsFromBaseURLs(baseURLs ...string) []int {
 // ensureCBM ensures codebase-memory-mcp is available on the system.
 // When built with -tags cbm_embedded the binary is extracted from the baked-in
 // cbmBinaryData; otherwise it is downloaded from GitHub Releases.
-func ensureCBM() (string, error) {
+func ensureCBM(ctx context.Context) (string, error) {
 	const binaryName = "codebase-memory-mcp"
 
 	home, err := os.UserHomeDir()
@@ -639,7 +643,11 @@ func ensureCBM() (string, error) {
 	fmt.Printf("[late-sast] Downloading codebase-memory-mcp (%s/%s)...\n", goos, arch)
 
 	//nolint:gosec // URL is constructed from a fixed base and runtime constants only
-	resp, err := http.Get(tarURL) //nolint:noctx
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tarURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build HTTP request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request failed: %w", err)
 	}
@@ -674,15 +682,23 @@ func ensureCBM() (string, error) {
 		if base != binaryName {
 			continue
 		}
+		// 512 MB cap guards against decompression bombs when hdr.Size is
+		// zero or falsified; legitimate binaries well under this threshold.
+		const maxBinarySize = 512 << 20
 		f, err := os.OpenFile(localBin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 		if err != nil {
 			return "", fmt.Errorf("create binary: %w", err)
 		}
-		if _, err := io.Copy(f, tr); err != nil { //nolint:gosec
+		written, err := io.Copy(f, io.LimitReader(tr, maxBinarySize))
+		if err != nil {
 			f.Close()
 			return "", fmt.Errorf("write binary: %w", err)
 		}
 		f.Close()
+		if hdr.Size > 0 && written != hdr.Size {
+			os.Remove(localBin)
+			return "", fmt.Errorf("binary %q: wrote %d of %d bytes (truncated)", binaryName, written, hdr.Size)
+		}
 		installed = true
 		break
 	}
@@ -716,7 +732,7 @@ func extractSASTSkill(destDir string) error {
 // fetchAndIndexSemgrepSkills downloads the semgrep/skills code-security zip
 // (if not already cached at the persistent cache dir), extracts it, and indexes
 // all rule markdown files into the BM25 index. Non-fatal — caller logs the error.
-func fetchAndIndexSemgrepSkills(ctx context.Context, idx *tool.ContextIndex, destDir string) error {
+func fetchAndIndexSemgrepSkills(ctx context.Context, idx *knowledge.ContextIndex, destDir string) error {
 	const zipURL = "https://github.com/semgrep/skills/raw/main/skills/code-security.zip"
 	rulesDir := filepath.Join(destDir, "code-security", "rules")
 
@@ -796,7 +812,7 @@ func fetchAndIndexSemgrepSkills(ctx context.Context, idx *tool.ContextIndex, des
 	return indexRulesDir(idx, rulesDir)
 }
 
-func indexRulesDir(idx *tool.ContextIndex, rulesDir string) error {
+func indexRulesDir(idx *knowledge.ContextIndex, rulesDir string) error {
 	entries, err := os.ReadDir(rulesDir)
 	if err != nil {
 		return err
@@ -982,7 +998,7 @@ func persistMissionTurnResult(agentType, raw string) {
 // indexSASTReferences pre-loads the SAST vulnerability reference library into
 // the shared BM25 index so the scanner subagent never needs to read these files
 // into its conversation context (~128 KB for a typical scan).
-func indexSASTReferences(idx *tool.ContextIndex, dir string) {
+func indexSASTReferences(idx *knowledge.ContextIndex, dir string) {
 	// Index SKILL.md (Judge protocol + vulnerability class list)
 	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err == nil {
 		idx.IndexText("SKILL", string(b))

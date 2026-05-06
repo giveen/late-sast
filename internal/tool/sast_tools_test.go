@@ -406,15 +406,19 @@ func TestSpawnSubagentTool_Execute_Timeout(t *testing.T) {
 }
 
 func TestSpawnSubagentTool_Execute_Heartbeat(t *testing.T) {
-	heartbeats := 0
+	heartbeatCh := make(chan struct{}, 10)
 	tool := SpawnSubagentTool{
 		DefaultTimeout:    250 * time.Millisecond,
-		HeartbeatInterval: 10 * time.Millisecond,
+		HeartbeatInterval: 1 * time.Millisecond,
+		HeartbeatThrottle: 1, // fire every tick so the test is not timing-sensitive
 		Heartbeat: func(_ string, _ string, _ time.Duration) {
-			heartbeats++
+			select {
+			case heartbeatCh <- struct{}{}:
+			default:
+			}
 		},
 		Runner: func(_ context.Context, _ string, _ []string, _ string) (string, error) {
-			time.Sleep(35 * time.Millisecond)
+			<-heartbeatCh // block until at least one heartbeat has fired
 			return "ok", nil
 		},
 	}
@@ -422,7 +426,8 @@ func TestSpawnSubagentTool_Execute_Heartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if heartbeats == 0 {
-		t.Fatal("expected at least one heartbeat callback")
+	// If heartbeatCh still has items the callback fired at least once before the runner returned.
+	if len(heartbeatCh) == 0 {
+		t.Fatal("expected at least one heartbeat callback before runner completed")
 	}
 }

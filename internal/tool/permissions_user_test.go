@@ -36,27 +36,27 @@ func TestRequiresConfirmation_RelativePath(t *testing.T) {
 	fmt.Printf("TargetEditTool.RequiresConfirmation(abs in cwd) = %v (want false)\n", result3)
 
 	// Test what getToolParam actually returns
-	fmt.Printf("getToolParam(args2, 'file') = %q\n", getToolParam(args2, "file"))
-	fmt.Printf("getToolParam(args, 'path') = %q\n", getToolParam(args, "path"))
+	fmt.Printf("getToolParam(args2, 'file') = %q\n", GetToolParam(args2, "file"))
+	fmt.Printf("getToolParam(args, 'path') = %q\n", GetToolParam(args, "path"))
 
 	// Test IsSafePath directly
 	fmt.Printf("IsSafePath('src/lib/pages/Chat.svelte') = %v\n", IsSafePath("src/lib/pages/Chat.svelte"))
 	fmt.Printf("IsSafePath('./src/lib/pages/Chat.svelte') = %v\n", IsSafePath("./src/lib/pages/Chat.svelte"))
 
 	// Test what the middleware would see
-	// The middleware calls reg.Get(tc.Function.Name) - if the tool is NOT in the registry, 
+	// The middleware calls reg.Get(tc.Function.Name) - if the tool is NOT in the registry,
 	// it falls through to confirmation. Let's verify the registry lookup.
 	fmt.Println("\n--- Registry test ---")
 	reg := NewRegistry()
 	reg.Register(wt)
 	reg.Register(te)
-	
+
 	if tool := reg.Get("write_file"); tool != nil {
 		fmt.Printf("Registry found write_file: RequiresConfirmation = %v\n", tool.RequiresConfirmation(args))
 	} else {
 		fmt.Println("Registry: write_file NOT FOUND")
 	}
-	
+
 	if tool := reg.Get("target_edit"); tool != nil {
 		fmt.Printf("Registry found target_edit: RequiresConfirmation = %v\n", tool.RequiresConfirmation(args2))
 	} else {

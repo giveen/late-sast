@@ -58,7 +58,7 @@ func (PatchComposeNetworkTool) Execute(_ context.Context, args json.RawMessage) 
 		return "", fmt.Errorf("cannot read compose file %q: %w", p.FilePath, err)
 	}
 
-	patched, services, err := patchComposeNetwork(raw, p.NetworkName)
+	patched, services, err := PatchComposeNetwork(raw, p.NetworkName)
 	if err != nil {
 		return "", fmt.Errorf("patch failed: %w", err)
 	}
@@ -71,9 +71,9 @@ func (PatchComposeNetworkTool) Execute(_ context.Context, args json.RawMessage) 
 		p.FilePath, p.NetworkName, len(services), services), nil
 }
 
-// patchComposeNetwork is the pure logic — separated for testability.
+// PatchComposeNetwork is the pure logic — separated for testability.
 // It returns the patched YAML bytes and the names of services that were updated.
-func patchComposeNetwork(src []byte, networkName string) ([]byte, []string, error) {
+func PatchComposeNetwork(src []byte, networkName string) ([]byte, []string, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(src, &doc); err != nil {
 		return nil, nil, fmt.Errorf("invalid YAML: %w", err)
