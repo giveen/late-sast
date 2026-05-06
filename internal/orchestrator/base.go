@@ -164,6 +164,14 @@ func (o *BaseOrchestrator) Submit(text string) error {
 	if o.ctx.Err() != nil {
 		o.ctx = o.rootCtx
 	}
+	// Drain any residual stop signal left by a Cancel() that arrived after the
+	// previous run had already completed. Without this, IsStopRequested() at
+	// the end of the new run would consume the stale signal and emit a
+	// spurious StopRequestedEvent for a run that was never cancelled.
+	select {
+	case <-o.stopCh:
+	default:
+	}
 	o.mu.Unlock()
 
 	if err := o.sess.AddUserMessage(text); err != nil {

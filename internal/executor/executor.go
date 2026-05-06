@@ -313,7 +313,7 @@ func ExecuteToolCallsWithStats(
 
 func mutatesWorkspace(toolName string) bool {
 	switch toolName {
-	case "write_file", "compose_patch", "implementations", "bash":
+	case "write_file", "patch_compose_network", "target_edit", "bash":
 		return true
 	default:
 		return false

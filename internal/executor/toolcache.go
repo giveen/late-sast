@@ -120,7 +120,7 @@ func cacheTTLFor(toolName string) time.Duration {
 
 	// Side-effectful or write operations — never cache.
 	case "spawn_subagent", "bash", "write_file", "write_sast_report",
-		"compose_patch", "implementations",
+		"patch_compose_network", "target_edit",
 		"ctx_fetch_and_index", "ctx_index_file", "ctx_index":
 		return 0
 	default:

@@ -21,7 +21,7 @@ func TestToolResultCacheInvalidateAll(t *testing.T) {
 }
 
 func TestMutatesWorkspace(t *testing.T) {
-	for _, toolName := range []string{"write_file", "compose_patch", "implementations", "bash"} {
+	for _, toolName := range []string{"write_file", "patch_compose_network", "target_edit", "bash"} {
 		if !mutatesWorkspace(toolName) {
 			t.Fatalf("expected %q to be treated as workspace-mutating", toolName)
 		}
@@ -79,7 +79,7 @@ func TestCacheTTLFor_CodebaseMemoryTools(t *testing.T) {
 func TestCacheTTLFor_WriteToolsZero(t *testing.T) {
 	for _, name := range []string{
 		"spawn_subagent", "bash", "write_file", "write_sast_report",
-		"compose_patch", "implementations",
+		"patch_compose_network", "target_edit",
 		"ctx_fetch_and_index", "ctx_index_file", "ctx_index",
 	} {
 		if ttl := cacheTTLFor(name); ttl != 0 {
