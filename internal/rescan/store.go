@@ -31,6 +31,19 @@ type Store interface {
 	// SaveRunSummary persists the summary for a completed scan run.
 	SaveRunSummary(ctx context.Context, summary RunSummary) error
 
+	// PutLineageEdge persists a directed relationship between two findings.
+	// Idempotent: calling it again with the same parent+child pair is a no-op.
+	PutLineageEdge(ctx context.Context, edge LineageEdge) error
+
+	// ListEdgesFrom returns all lineage edges whose ParentID equals parentID.
+	ListEdgesFrom(ctx context.Context, parentID string) ([]LineageEdge, error)
+
+	// ListEdgesTo returns all lineage edges whose ChildID equals childID.
+	ListEdgesTo(ctx context.Context, childID string) ([]LineageEdge, error)
+
+	// ListAllEdges returns every lineage edge in the store.
+	ListAllEdges(ctx context.Context) ([]LineageEdge, error)
+
 	// Close flushes any pending writes and releases resources held by the store.
 	Close() error
 }

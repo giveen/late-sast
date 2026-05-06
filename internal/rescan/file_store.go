@@ -17,6 +17,7 @@ type fileStore struct {
 	sources  map[string]SourceItem      // key: sourceKey(repo, path)
 	records  map[string]TransformRecord // key: transform key
 	findings map[string]FindingRecord   // key: FindingID
+	edges    map[string]LineageEdge     // key: edgeKey(parentID, childID)
 }
 
 // storeState is the on-disk JSON envelope.
@@ -24,6 +25,7 @@ type storeState struct {
 	Sources  map[string]SourceItem      `json:"sources"`
 	Records  map[string]TransformRecord `json:"records"`
 	Findings map[string]FindingRecord   `json:"findings"`
+	Edges    map[string]LineageEdge     `json:"edges,omitempty"`
 }
 
 // NewFileStore opens (or creates) a file-based Store rooted at dir.
@@ -38,6 +40,7 @@ func NewFileStore(dir string) (Store, error) {
 		sources:  make(map[string]SourceItem),
 		records:  make(map[string]TransformRecord),
 		findings: make(map[string]FindingRecord),
+		edges:    make(map[string]LineageEdge),
 	}
 	_ = s.load() // ignore "file not found" on first run
 	return s, nil
@@ -106,6 +109,33 @@ func (s *fileStore) ListFindings(_ context.Context) ([]FindingRecord, error) {
 	return out, nil
 }
 
+func (s *fileStore) PutLineageEdge(ctx context.Context, edge LineageEdge) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := putLineageEdgeCtx(ctx, s.edges, edge); err != nil {
+		return err
+	}
+	return s.save()
+}
+
+func (s *fileStore) ListEdgesFrom(ctx context.Context, parentID string) ([]LineageEdge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return listEdgesFromCtx(ctx, s.edges, parentID)
+}
+
+func (s *fileStore) ListEdgesTo(ctx context.Context, childID string) ([]LineageEdge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return listEdgesToCtx(ctx, s.edges, childID)
+}
+
+func (s *fileStore) ListAllEdges(ctx context.Context) ([]LineageEdge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return listAllEdgesCtx(ctx, s.edges)
+}
+
 func (s *fileStore) SaveRunSummary(_ context.Context, summary RunSummary) error {
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
@@ -136,6 +166,9 @@ func (s *fileStore) load() error {
 	if st.Findings != nil {
 		s.findings = st.Findings
 	}
+	if st.Edges != nil {
+		s.edges = st.Edges
+	}
 	return nil
 }
 
@@ -145,6 +178,7 @@ func (s *fileStore) save() error {
 		Sources:  s.sources,
 		Records:  s.records,
 		Findings: s.findings,
+		Edges:    s.edges,
 	})
 	if err != nil {
 		return err

@@ -582,3 +582,190 @@ func TestReconcile_MixedOutcomes(t *testing.T) {
 		t.Fatalf("expected 0 inserted, got %d", len(result.Inserted))
 	}
 }
+
+// ── LineageEdge / fileStore ────────────────────────────────────────────────────
+
+func TestFileStore_LineageEdgeRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	parentID := rescan.FindingID(918, "Api.cs:42", "SSRF")
+	childID := rescan.FindingID(284, "Api.cs:42", "Privilege escalation via SSRF")
+
+	edge := rescan.LineageEdge{
+		ParentID: parentID,
+		ChildID:  childID,
+		Kind:     rescan.EdgeEscalated,
+		RunID:    "run-2",
+	}
+	if err := s.PutLineageEdge(ctx, edge); err != nil {
+		t.Fatalf("PutLineageEdge: %v", err)
+	}
+	from, err := s.ListEdgesFrom(ctx, parentID)
+	if err != nil {
+		t.Fatalf("ListEdgesFrom: %v", err)
+	}
+	if len(from) != 1 || from[0].ChildID != childID {
+		t.Fatalf("expected 1 edge from parent, got %+v", from)
+	}
+	to, err := s.ListEdgesTo(ctx, childID)
+	if err != nil {
+		t.Fatalf("ListEdgesTo: %v", err)
+	}
+	if len(to) != 1 || to[0].ParentID != parentID {
+		t.Fatalf("expected 1 edge to child, got %+v", to)
+	}
+}
+
+func TestFileStore_LineageEdgeIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	parentID := rescan.FindingID(79, "x.go:1", "XSS")
+	childID := rescan.FindingID(352, "x.go:1", "CSRF")
+	edge := rescan.LineageEdge{ParentID: parentID, ChildID: childID, Kind: rescan.EdgeChained, RunID: "run-1"}
+
+	// Inserting the same edge twice should not duplicate it.
+	_ = s.PutLineageEdge(ctx, edge)
+	_ = s.PutLineageEdge(ctx, edge)
+
+	all, err := s.ListAllEdges(ctx)
+	if err != nil {
+		t.Fatalf("ListAllEdges: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 edge after duplicate insert, got %d", len(all))
+	}
+}
+
+func TestFileStore_LineageEdgesPersistedAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	s1, _ := rescan.NewFileStore(dir)
+	parentID := rescan.FindingID(918, "api.go:10", "SSRF")
+	childID := rescan.FindingID(502, "api.go:10", "Deserialization")
+	edge := rescan.LineageEdge{ParentID: parentID, ChildID: childID, Kind: rescan.EdgeConfirmed, RunID: "r1"}
+	_ = s1.PutLineageEdge(ctx, edge)
+	_ = s1.Close()
+
+	s2, _ := rescan.NewFileStore(dir)
+	all, err := s2.ListAllEdges(ctx)
+	if err != nil {
+		t.Fatalf("ListAllEdges after reopen: %v", err)
+	}
+	if len(all) != 1 || all[0].Kind != rescan.EdgeConfirmed {
+		t.Fatalf("edge did not survive reopen: got %+v", all)
+	}
+}
+
+func TestFileStore_ListEdgesFrom_EmptyWhenNone(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	edges, err := s.ListEdgesFrom(ctx, "no-such-id")
+	if err != nil {
+		t.Fatalf("ListEdgesFrom: %v", err)
+	}
+	if len(edges) != 0 {
+		t.Fatalf("expected empty, got %+v", edges)
+	}
+}
+
+// ── RetestScope ────────────────────────────────────────────────────────────────
+
+func makeRecord(id string, status rescan.FindingStatus, exploitStatus, loc string) rescan.FindingRecord {
+	return rescan.FindingRecord{
+		ID:            id,
+		Location:      loc,
+		ExploitStatus: exploitStatus,
+		Status:        status,
+	}
+}
+
+func TestRetestScope_ChangedSourceTriggersRetest(t *testing.T) {
+	id := rescan.FindingID(89, "repo.go:5", "SQLi")
+	findings := []rescan.FindingRecord{makeRecord(id, rescan.FindingUnchanged, "confirmed", "repo.go:5")}
+	delta := rescan.DeltaScope{ChangedSources: []rescan.SourceItem{{Path: "repo.go"}}}
+
+	scope := rescan.RetestScope(findings, delta, nil)
+	if len(scope) != 1 {
+		t.Fatalf("expected 1 finding to retest (source changed), got %d", len(scope))
+	}
+}
+
+func TestRetestScope_UnconfirmedExploitTriggersRetest(t *testing.T) {
+	id := rescan.FindingID(79, "view.go:20", "XSS")
+	findings := []rescan.FindingRecord{makeRecord(id, rescan.FindingUnchanged, "inconclusive", "view.go:20")}
+	delta := rescan.DeltaScope{} // no source changes
+
+	scope := rescan.RetestScope(findings, delta, nil)
+	if len(scope) != 1 {
+		t.Fatalf("expected 1 finding to retest (unconfirmed exploit), got %d", len(scope))
+	}
+}
+
+func TestRetestScope_ConfirmedUnchangedSourceSkipped(t *testing.T) {
+	id := rescan.FindingID(918, "api.go:42", "SSRF")
+	// Confirmed + unchanged + source not changed → should NOT be retested.
+	findings := []rescan.FindingRecord{makeRecord(id, rescan.FindingUnchanged, "confirmed", "api.go:42")}
+	delta := rescan.DeltaScope{ChangedSources: []rescan.SourceItem{{Path: "other.go"}}}
+
+	scope := rescan.RetestScope(findings, delta, nil)
+	if len(scope) != 0 {
+		t.Fatalf("expected 0 findings to retest (confirmed + source unchanged), got %d", len(scope))
+	}
+}
+
+func TestRetestScope_NewFindingAlwaysRetested(t *testing.T) {
+	id := rescan.FindingID(22, "upload.go:7", "Path traversal")
+	findings := []rescan.FindingRecord{makeRecord(id, rescan.FindingNew, "confirmed", "upload.go:7")}
+	delta := rescan.DeltaScope{}
+
+	scope := rescan.RetestScope(findings, delta, nil)
+	if len(scope) != 1 {
+		t.Fatalf("expected 1 finding (new status always retested), got %d", len(scope))
+	}
+}
+
+func TestRetestScope_LineagePropagation(t *testing.T) {
+	// Parent: confirmed + unchanged source → would normally be skipped.
+	// Child: same. But if parent needs retest due to lineage propagation from
+	// a grandparent that does need retest, child also gets pulled in.
+	grandparentID := rescan.FindingID(918, "api.go:1", "SSRF")
+	parentID := rescan.FindingID(284, "api.go:1", "Privesc")
+	childID := rescan.FindingID(502, "api.go:1", "Deser")
+
+	grandparent := makeRecord(grandparentID, rescan.FindingUnchanged, "inconclusive", "api.go:1")
+	parent := makeRecord(parentID, rescan.FindingUnchanged, "confirmed", "other.go:1")
+	child := makeRecord(childID, rescan.FindingUnchanged, "confirmed", "other.go:1")
+
+	edges := []rescan.LineageEdge{
+		{ParentID: grandparentID, ChildID: parentID, Kind: rescan.EdgeEscalated},
+		{ParentID: parentID, ChildID: childID, Kind: rescan.EdgeChained},
+	}
+	delta := rescan.DeltaScope{}
+
+	scope := rescan.RetestScope([]rescan.FindingRecord{grandparent, parent, child}, delta, edges)
+	if len(scope) != 3 {
+		t.Fatalf("expected all 3 findings via lineage propagation, got %d", len(scope))
+	}
+}
+
+func TestRetestScope_LineageDoesNotPropagateFromSkipped(t *testing.T) {
+	// Parent: confirmed + unchanged → skipped.
+	// Child: also confirmed + unchanged.
+	// Edge from parent → child. Neither needs retest.
+	parentID := rescan.FindingID(918, "api.go:1", "SSRF")
+	childID := rescan.FindingID(284, "api.go:2", "Privesc")
+
+	parent := makeRecord(parentID, rescan.FindingUnchanged, "confirmed", "api.go:1")
+	child := makeRecord(childID, rescan.FindingUnchanged, "confirmed", "api.go:2")
+
+	edges := []rescan.LineageEdge{{ParentID: parentID, ChildID: childID, Kind: rescan.EdgeChained}}
+	delta := rescan.DeltaScope{ChangedSources: []rescan.SourceItem{{Path: "unrelated.go"}}}
+
+	scope := rescan.RetestScope([]rescan.FindingRecord{parent, child}, delta, edges)
+	if len(scope) != 0 {
+		t.Fatalf("expected 0 findings (no retest triggers), got %d: %+v", len(scope), scope)
+	}
+}

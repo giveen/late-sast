@@ -18,12 +18,16 @@
 
 > Completed: scan assembly extraction with injectable deps, 11 regression tests in `cmd/late-sast/main_test.go` covering core tools registration, report round-trip, retest parsing, blackboard injection, and 4 failure-injection paths (prompt load, mkdirAll, retest readFile, non-existent retest path).  Backend discovery tests added in `internal/client/client_test.go`.
 
-### 2. Finish incremental rescan architecture
+### ~~2. Finish incremental rescan architecture~~ (Phases 1–2 done)
 
 - ~~Phase 1: deterministic keys (`HashFile`, `HashBytes`, `TransformKey`), `Store` interface, `FileStore` with atomic writes and reopen safety, `ComputeDeltaScope` — done in `internal/rescan/`.~~
 - ~~Phase 2: stable `FindingID` (CWE+location+title SHA-256), `FindingRecord` model, `FindingStatus` enum, `GetFinding`/`PutFinding`/`ListFindings` on `Store` + `FileStore`, `Reconcile()` with insert/update/resolve/unchanged logic, 14 new tests — done.~~
 - Phase 3: full lineage edges, scope-aware retest mode.
 - Measure rescan performance and report churn before/after.
+
+### ~~CVE search quality fix~~ ✓ DONE
+
+> Parse CVE 5.x API format in Go (`parseCVE5SearchResponse`, `parseCVE5SingleResponse`, `parseCVE5LastResponse`); return `ParsedCVEFinding` records with real `cvss`, `package`, `severity`, `description`, `affected_versions`; added `min_cvss` and `limit` params to `vul_vendor_product_cve`; updated SAST scanner prompts to document structured output and forbid inventing CVE IDs.
 
 ### 3. Standardize operator-visible error handling
 
@@ -33,7 +37,8 @@
 ## Outstanding Issues
 
 - ~~Missing full-pipeline regression coverage is still the biggest practical risk.~~ ✓ Done.
-- Incremental rescan Phase 1 scaffolded in `internal/rescan/`; Phases 2–3 (reconciliation, lineage, diff-first reports) still needed.
+- ~~CVE tools returned raw API JSON causing `unknown:unknown` packages and `0.0` CVSS scores.~~ ✓ Fixed.
+- Incremental rescan Phases 1–2 done; Phase 3 (lineage edges, scope-aware retest) still needed.
 - Architecture metadata fetch can still be lost too early if fetch timing is wrong.
 - Some failures still log only to stderr/Fyne logs instead of appearing in the operator workflow.
 - Setup/container bootstrap remains expensive.
@@ -55,7 +60,8 @@
 ## Recommended Execution Order
 
 1. ~~Add full-pipeline regression tests.~~ ✓ Done.
-2. Finish incremental rescan architecture (Phases 2–3).
-3. Standardize operator-visible error propagation.
+2. ~~CVE search quality fix (parse CVE 5.x format).~~ ✓ Done.
+3. Finish incremental rescan Phase 3 (lineage edges, scope-aware retest).
+4. Standardize operator-visible error propagation.
 4. Reduce setup/runtime overhead.
 5. Revisit executor-level parallelism only after the above is protected by tests.
