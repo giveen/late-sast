@@ -41,10 +41,10 @@
 - ~~Missing full-pipeline regression coverage is still the biggest practical risk.~~ ✓ Done.
 - ~~CVE tools returned raw API JSON causing `unknown:unknown` packages and `0.0` CVSS scores.~~ ✓ Fixed.
 - ~~Incremental rescan Phases 1–2 done; Phase 3 (lineage edges, scope-aware retest) still needed.~~ ✓ Done.
-- Architecture metadata fetch can still be lost too early if fetch timing is wrong.
+- ~~Architecture metadata fetch can still be lost too early if fetch timing is wrong.~~ ✓ Fixed.
 - ~~Some failures still log only to stderr/Fyne logs instead of appearing in the operator workflow.~~ ✓ Fixed.
-- Setup/container bootstrap remains expensive.
-- The lingering `--tui` behavior in `cmd/late-sast/main.go` should be made explicit or removed.
+- ~~Setup/container bootstrap remains expensive.~~ ✓ Partially addressed (bootstrap batch execs + docker inspect merge).
+- ~~The lingering `--tui` behavior in `cmd/late-sast/main.go` should be made explicit or removed.~~ ✓ Fixed (flag description updated to reflect actual behavior).
 
 ## Performance Opportunities
 
