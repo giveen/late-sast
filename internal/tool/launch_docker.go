@@ -232,11 +232,9 @@ func launchCompose(
 		}
 	}
 	if containerID != "" {
-		nameOut, err := runner(ctx, "docker", "inspect", "-f", "{{.Name}}", containerID)
-		if err == nil {
-			containerName = strings.TrimPrefix(strings.TrimSpace(nameOut), "/")
-		}
-		portInfo = inspectPortInfo(ctx, runner, containerID)
+		// Merge the name-lookup and port-lookup into a single docker inspect
+		// call to halve the number of docker exec round-trips.
+		containerName, portInfo = inspectNameAndPorts(ctx, runner, containerID)
 	}
 	if hostPort, ok := extractHostPort(portInfo); ok && isReservedPort(hostPort, reservedHostPorts) {
 		if cleanupOnConflict {
@@ -309,9 +307,8 @@ func launchDockerfile(
 		return "", fmt.Errorf("docker run failed: %w", err)
 	}
 
-	idOut, _ := runner(ctx, "docker", "inspect", "-f", "{{.Id}}", containerName)
-	containerID := strings.TrimSpace(idOut)
-	portInfo := inspectPortInfo(ctx, runner, containerName)
+	// Merge the id-lookup and port-lookup into a single docker inspect call.
+	containerID, portInfo := inspectIDAndPorts(ctx, runner, containerName)
 	if hostPort, ok := extractHostPort(portInfo); ok && isReservedPort(hostPort, reservedHostPorts) {
 		if cleanupOnConflict {
 			_, _ = runner(ctx, "docker", "rm", "-f", containerName)
@@ -499,6 +496,77 @@ func inspectPortInfo(ctx context.Context, runner setupCommandRunner, target stri
 		return map[string]any{}
 	}
 	raw := strings.TrimSpace(out)
+	if raw == "" || raw == "null" {
+		return map[string]any{}
+	}
+	ports := make(map[string][]map[string]string)
+	if err := json.Unmarshal([]byte(raw), &ports); err != nil {
+		return map[string]any{"raw": truncate(raw, 500)}
+	}
+	for k, binds := range ports {
+		containerPort := strings.Split(k, "/")[0]
+		cp, _ := strconv.Atoi(containerPort)
+		if len(binds) > 0 {
+			hp, _ := strconv.Atoi(binds[0]["HostPort"])
+			return map[string]any{
+				"container_port": cp,
+				"host_port":      hp,
+				"raw":            ports,
+			}
+		}
+		return map[string]any{
+			"container_port": cp,
+			"raw":            ports,
+		}
+	}
+	return map[string]any{"raw": ports}
+}
+
+// inspectNameAndPorts fetches the container name and port bindings in a single
+// docker inspect round-trip using a delimited format template.
+func inspectNameAndPorts(ctx context.Context, runner setupCommandRunner, target string) (string, map[string]any) {
+	const sep = "||LATE_SEP||"
+	out, err := runner(ctx, "docker", "inspect", "-f",
+		"{{.Name}}"+sep+"{{json .NetworkSettings.Ports}}", target)
+	if err != nil {
+		return "", map[string]any{}
+	}
+	parts := strings.SplitN(strings.TrimSpace(out), sep, 2)
+	name := ""
+	if len(parts) >= 1 {
+		name = strings.TrimPrefix(strings.TrimSpace(parts[0]), "/")
+	}
+	portInfo := map[string]any{}
+	if len(parts) == 2 {
+		portInfo = parsePortsJSON(strings.TrimSpace(parts[1]))
+	}
+	return name, portInfo
+}
+
+// inspectIDAndPorts fetches the container ID and port bindings in a single
+// docker inspect round-trip using a delimited format template.
+func inspectIDAndPorts(ctx context.Context, runner setupCommandRunner, target string) (string, map[string]any) {
+	const sep = "||LATE_SEP||"
+	out, err := runner(ctx, "docker", "inspect", "-f",
+		"{{.Id}}"+sep+"{{json .NetworkSettings.Ports}}", target)
+	if err != nil {
+		return "", map[string]any{}
+	}
+	parts := strings.SplitN(strings.TrimSpace(out), sep, 2)
+	id := ""
+	if len(parts) >= 1 {
+		id = strings.TrimSpace(parts[0])
+	}
+	portInfo := map[string]any{}
+	if len(parts) == 2 {
+		portInfo = parsePortsJSON(strings.TrimSpace(parts[1]))
+	}
+	return id, portInfo
+}
+
+// parsePortsJSON converts a raw docker NetworkSettings.Ports JSON blob into the
+// portInfo map used by the rest of the launch helpers.
+func parsePortsJSON(raw string) map[string]any {
 	if raw == "" || raw == "null" {
 		return map[string]any{}
 	}

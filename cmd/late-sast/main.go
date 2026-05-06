@@ -57,7 +57,7 @@ func main() {
 
 	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")
 	retestReq := flag.String("retest", "", "Path to a previous SAST report — retests all confirmed findings to check if they have been fixed")
-	useTUIReq := flag.Bool("tui", false, "Use terminal UI instead of the graphical interface")
+	useTUIReq := flag.Bool("tui", false, "Keep stdout/stderr on the terminal instead of redirecting to ~/.cache/late-sast/late-sast.log (GUI always launches)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: late-sast [flags]\n\n")
@@ -365,8 +365,15 @@ func main() {
 	// Lazily fetch architecture metadata from get_architecture on each subagent
 	// spawn until one succeeds. Uses a mutex so a failed fetch can be retried
 	// (e.g. if MCP hadn't finished connecting on the first spawn). Once a fetch
-	// succeeds it is cached and GlobalBlackboard is updated; subsequent spawns
-	// are no-ops.
+	// succeeds AND returns non-empty data it is cached and GlobalBlackboard is
+	// updated; subsequent spawns are no-ops.
+	//
+	// Two failure modes handled:
+	//   1. MCP not ready yet (tool not found / connection error) — retried on
+	//      next subagent spawn.
+	//   2. Repo not yet indexed — get_architecture returns success with all-zero
+	//      metrics. We detect this and keep retrying instead of locking in a
+	//      zero budget.
 	var (
 		cachedMeta  orchestrator.ComplexityMeta
 		metaFetched bool
@@ -378,9 +385,34 @@ func main() {
 		if metaFetched {
 			return
 		}
-		meta, _, err := fetchComplexityMeta(context.Background(), mcpClient, repoPath)
+		// Retry up to 3 times with a short delay to absorb brief MCP startup
+		// lag. Retries are bounded so we don't block subagent spawning for long.
+		const (
+			maxAttempts = 3
+			retryDelay  = 200 * time.Millisecond
+		)
+		var (
+			meta orchestrator.ComplexityMeta
+			err  error
+		)
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			if attempt > 0 {
+				time.Sleep(retryDelay)
+			}
+			meta, _, err = fetchComplexityMeta(context.Background(), mcpClient, repoPath)
+			if err == nil {
+				break
+			}
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget unavailable (%v) — will retry on next subagent\n", err)
+			return
+		}
+		// Guard against an empty response (repo not yet indexed by
+		// codebase-memory-mcp). All-zero metrics would produce an incorrect
+		// budget; keep retrying on subsequent subagent spawns instead.
+		if meta.FileCount == 0 && meta.RouteCount == 0 && meta.HotspotCount == 0 {
+			fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget: architecture data is empty (repo not indexed yet?) — will retry on next subagent\n")
 			return
 		}
 		cachedMeta = meta
@@ -419,7 +451,7 @@ func main() {
 		return turns, timeout
 	}
 	// --------------------------------------------------------------------------
-	// ── GUI path — always use Fyne GUI (TUI mode removed) ────────────────────
+	// ── GUI ──────────────────────────────────────────────────────────────────
 	guiApp := gui.NewApp()
 	guiApp.SetConfigDir(sastCfgDir)
 	guiApp.SetOnQuit(cleanupContainer)

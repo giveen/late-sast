@@ -192,10 +192,8 @@ func TestLaunchDockerTool_ComposePortConflictTriggersCleanup(t *testing.T) {
 			return "web\n", nil
 		case strings.Contains(joined, "compose") && strings.Contains(joined, "ps -q web"):
 			return "abc123\n", nil
-		case len(args) >= 3 && args[0] == "inspect" && args[1] == "-f" && args[2] == "{{.Name}}":
-			return "/conflict-web-1\n", nil
-		case len(args) >= 3 && args[0] == "inspect" && args[1] == "-f" && args[2] == "{{json .NetworkSettings.Ports}}":
-			return `{"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}` + "\n", nil
+		case len(args) >= 3 && args[0] == "inspect" && args[1] == "-f" && strings.HasPrefix(args[2], "{{.Name}}"):
+			return "/conflict-web-1||LATE_SEP||" + `{"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}` + "\n", nil
 		default:
 			return "ok", nil
 		}
@@ -247,8 +245,8 @@ func TestLaunchDockerTool_DockerfilePortConflictRemovesContainer(t *testing.T) {
 			return "ok", nil
 		case strings.Contains(joined, "build -t"):
 			return "built", nil
-		case len(args) >= 3 && args[0] == "inspect" && args[1] == "-f" && args[2] == "{{json .NetworkSettings.Ports}}":
-			return `{"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}` + "\n", nil
+		case len(args) >= 3 && args[0] == "inspect" && args[1] == "-f" && strings.HasPrefix(args[2], "{{.Id}}"):
+			return "containerabc123||LATE_SEP||" + `{"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}` + "\n", nil
 		default:
 			return "ok", nil
 		}
