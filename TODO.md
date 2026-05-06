@@ -48,11 +48,13 @@
 
 ## Performance Opportunities
 
-### Best near-term wins
+### ~~5. Reduce setup/runtime overhead~~ ✓ DONE
 
-- Reduce setup overhead in `internal/tool/bootstrap_scan_toolchain.go`, `internal/tool/setup_container.go`, and `internal/tool/launch_docker.go`.
-- Fix/revisit architecture metadata fetch retry behavior in `cmd/late-sast/main.go`.
-- Benchmark cache-hit ratio and tool/runtime distribution before optimizing execution ordering.
+- ~~Reduce setup overhead in `internal/tool/bootstrap_scan_toolchain.go`, `internal/tool/setup_container.go`, and `internal/tool/launch_docker.go`.~~
+- ~~Fix/revisit architecture metadata fetch retry behavior in `cmd/late-sast/main.go`.~~
+- ~~Benchmark cache-hit ratio and tool/runtime distribution before optimizing execution ordering.~~
+
+> `bootstrap_scan_toolchain` batches 12 serial `commandAvailable` docker execs into one (`batchAvailabilityCmd`/`parseBatchAvailability`) and collapses PM detection + node/go/cargo presence + project marker scans into one more (`batchProbeCmd`/`parseBatchProbe`) — ~18-20 exec calls → ~9-11 per invocation. Architecture metadata fetch replaced `sync.Once` with `sync.Mutex + bool` so failed fetches (e.g. MCP not yet connected) are retried on subsequent subagent spawns.
 
 ### Later performance work
 
@@ -65,5 +67,5 @@
 2. ~~CVE search quality fix (parse CVE 5.x format).~~ ✓ Done.
 3. ~~Finish incremental rescan (Phases 1–3).~~ ✓ Done.
 4. ~~Standardize operator-visible error propagation.~~ ✓ Done.
-5. Reduce setup/runtime overhead.
+5. ~~Reduce setup/runtime overhead.~~ ✓ Done.
 6. Revisit executor-level parallelism only after the above is protected by tests.
