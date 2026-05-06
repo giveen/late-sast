@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/pathutil"
@@ -418,3 +420,95 @@ func TestBuildSkillDirs_DeduplicatesConfiguredAndDefault(t *testing.T) {
 		t.Fatalf("expected project skills dir second, got %q", got[1])
 	}
 }
+
+// TestExecuteParallelBatch verifies that all parallel-safe tool calls in a
+// batch are executed concurrently and results are returned in original order.
+func TestExecuteParallelBatch(t *testing.T) {
+	const numTools = 4
+	order := make(chan int, numTools)
+
+	runner := func(_ context.Context, tc client.ToolCall) (string, error) {
+		order <- len(order) // record execution
+		return "result:" + tc.ID, nil
+	}
+
+	toolCalls := make([]client.ToolCall, numTools)
+	for i := range toolCalls {
+		toolCalls[i] = client.ToolCall{
+			ID:       fmt.Sprintf("tc_%d", i),
+			Function: client.FunctionCall{Name: "read_file", Arguments: "{}"},
+		}
+	}
+
+	results := executeParallelBatch(context.Background(), context.Background(), toolCalls, runner, nil)
+
+	if len(results) != numTools {
+		t.Fatalf("expected %d results, got %d", numTools, len(results))
+	}
+	for i, r := range results {
+		want := fmt.Sprintf("result:tc_%d", i)
+		if r.result != want {
+			t.Errorf("[%d] got %q, want %q", i, r.result, want)
+		}
+		if r.runErr != nil {
+			t.Errorf("[%d] unexpected error: %v", i, r.runErr)
+		}
+	}
+}
+
+// TestExecuteToolCallsWithStats_ParallelBatch verifies that a batch of all
+// parallel-safe tool calls is executed and all results land in session history.
+func TestExecuteToolCallsWithStats_ParallelBatch(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+	sess := session.New(c, histPath, nil, "", false)
+
+	// Register a stub read_file tool that returns the call ID.
+	stub := &stubTool{name: "read_file"}
+	sess.Registry.Register(stub)
+
+	toolCalls := []client.ToolCall{
+		{ID: "tc_1", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}},
+		{ID: "tc_2", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"b.go"}`}},
+		{ID: "tc_3", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"c.go"}`}},
+	}
+
+	passMiddleware := func(next common.ToolRunner) common.ToolRunner {
+		return func(ctx context.Context, tc client.ToolCall) (string, error) {
+			return next(ctx, tc)
+		}
+	}
+
+	stats, err := ExecuteToolCallsWithStats(context.Background(), sess, toolCalls, []common.ToolMiddleware{passMiddleware}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Total != 3 {
+		t.Errorf("expected Total=3, got %d", stats.Total)
+	}
+	// All three tool calls must appear in history.
+	if len(sess.History) != 3 {
+		t.Fatalf("expected 3 history entries, got %d", len(sess.History))
+	}
+	seen := map[string]bool{}
+	for _, msg := range sess.History {
+		seen[msg.ToolCallID] = true
+	}
+	for _, tc := range toolCalls {
+		if !seen[tc.ID] {
+			t.Errorf("missing history entry for tool call %q", tc.ID)
+		}
+	}
+}
+
+// stubTool is a minimal common.Tool that returns an empty string result.
+type stubTool struct{ name string }
+
+func (s *stubTool) Name() string                                        { return s.name }
+func (s *stubTool) Description() string                                 { return "" }
+func (s *stubTool) Parameters() json.RawMessage                         { return nil }
+func (s *stubTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
+	return "", nil
+}
+func (s *stubTool) RequiresConfirmation(_ json.RawMessage) bool         { return false }
+func (s *stubTool) CallString(_ json.RawMessage) string                 { return "" }

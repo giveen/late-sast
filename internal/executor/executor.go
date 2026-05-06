@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -165,6 +166,54 @@ func ExecuteToolCallsWithStats(
 		runner = middlewares[i](common.ToolRunner(runner))
 	}
 
+	// Fast path: when all tool calls in this turn are parallel-safe and there
+	// are at least two of them, run them concurrently then commit results in
+	// order. This avoids sequential round-trips for common read batches (e.g.
+	// the model reading 3 files at once).
+	if len(toolCalls) >= 2 {
+		allSafe := true
+		for _, tc := range toolCalls {
+			if !isParallelSafe(tc.Function.Name) {
+				allSafe = false
+				break
+			}
+		}
+		if allSafe {
+			parallelResults := executeParallelBatch(ctx, turnCtx, toolCalls, runner, cache)
+			for i, pr := range parallelResults {
+				tc := toolCalls[i]
+				stats.Total++
+				result := pr.result
+				if pr.fromCache {
+					sess.LogEvent("TOOL_CACHE_HIT", "Returning cached tool result", map[string]interface{}{
+						"tool": tc.Function.Name,
+						"id":   tc.ID,
+					})
+					sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, nil, 0)
+				} else {
+					if pr.runErr != nil {
+						if pr.elapsed > 0 && turnCtx.Err() == context.DeadlineExceeded {
+							stats.TimedOut++
+						} else {
+							stats.Failures++
+						}
+						result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, pr.runErr)
+					} else {
+						if cache != nil {
+							cache.Set(tc.Function.Name, tc.Function.Arguments, result)
+						}
+					}
+					sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, pr.runErr, pr.elapsed)
+				}
+				if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
+					return stats, err
+				}
+			}
+			stats.DurationMS = time.Since(started).Milliseconds()
+			return stats, nil
+		}
+	}
+
 	for _, tc := range toolCalls {
 		stats.Total++
 
@@ -268,6 +317,84 @@ func mutatesWorkspace(toolName string) bool {
 	default:
 		return false
 	}
+}
+
+// isParallelSafe returns true for deterministic, read-only tools that can be
+// safely executed concurrently within a single LLM turn. Conservative: only
+// explicit allowlist; unknown tools default to sequential.
+func isParallelSafe(toolName string) bool {
+	switch toolName {
+	case "read_file",
+		"context_index",
+		"docs_resolve", "docs_read", "docs_search",
+		"cve_search",
+		"vul_cve_search", "vul_vendor_product_cve", "vul_vendor_products", "vul_last_cves",
+		"assess_disclosure_context":
+		return true
+	default:
+		return false
+	}
+}
+
+// maxParallelToolCalls is the bounded concurrency limit for parallel-safe tool
+// calls within a single LLM turn.
+const maxParallelToolCalls = 4
+
+// parallelToolResult holds the outcome of one tool call executed concurrently.
+type parallelToolResult struct {
+	result    string
+	runErr    error
+	start     time.Time
+	elapsed   time.Duration
+	fromCache bool
+}
+
+// executeParallelBatch runs all calls concurrently (up to maxParallelToolCalls)
+// and returns results in the same order as toolCalls. Results are NOT yet added
+// to the session; the caller must do that sequentially.
+func executeParallelBatch(
+	ctx context.Context,
+	turnCtx context.Context,
+	toolCalls []client.ToolCall,
+	runner func(context.Context, client.ToolCall) (string, error),
+	cache *ToolResultCache,
+) []parallelToolResult {
+	out := make([]parallelToolResult, len(toolCalls))
+	sem := make(chan struct{}, maxParallelToolCalls)
+	var wg sync.WaitGroup
+
+	for i, tc := range toolCalls {
+		wg.Add(1)
+		go func(idx int, call client.ToolCall) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			start := time.Now()
+			if cache != nil {
+				if cached, hit := cache.Get(call.Function.Name, call.Function.Arguments); hit {
+					out[idx] = parallelToolResult{result: cached, fromCache: true, start: start}
+					return
+				}
+			}
+
+			callCtx := turnCtx
+			var cancel context.CancelFunc
+			if td := toolTimeoutFor(call.Function.Name); td > 0 {
+				callCtx, cancel = context.WithTimeout(turnCtx, td)
+				defer cancel()
+			}
+			result, runErr := runner(callCtx, call)
+			out[idx] = parallelToolResult{
+				result:  result,
+				runErr:  runErr,
+				start:   start,
+				elapsed: time.Since(start),
+			}
+		}(i, tc)
+	}
+	wg.Wait()
+	return out
 }
 
 // ExecuteToolCalls runs a slice of tool calls against the session.
