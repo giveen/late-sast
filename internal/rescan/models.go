@@ -31,14 +31,14 @@ type TransformRecord struct {
 
 // RunSummary records high-level metrics for a single scan run.
 type RunSummary struct {
-	RunID              string    `json:"run_id"`
-	StartedAt          time.Time `json:"started_at"`
-	FinishedAt         time.Time `json:"finished_at"`
-	SourcesTotal       int       `json:"sources_total"`
-	SourcesChanged     int       `json:"sources_changed"`
-	TransformsTotal    int       `json:"transforms_total"`
-	TransformsSkipped  int       `json:"transforms_skipped"`
-	TransformsRun      int       `json:"transforms_run"`
+	RunID             string    `json:"run_id"`
+	StartedAt         time.Time `json:"started_at"`
+	FinishedAt        time.Time `json:"finished_at"`
+	SourcesTotal      int       `json:"sources_total"`
+	SourcesChanged    int       `json:"sources_changed"`
+	TransformsTotal   int       `json:"transforms_total"`
+	TransformsSkipped int       `json:"transforms_skipped"`
+	TransformsRun     int       `json:"transforms_run"`
 }
 
 // DeltaScope describes which sources and transforms need to be reprocessed
@@ -46,4 +46,39 @@ type RunSummary struct {
 type DeltaScope struct {
 	ChangedSources     []SourceItem
 	AffectedTransforms []string
+}
+
+// FindingStatus records how a finding's state changed relative to the last run.
+type FindingStatus string
+
+const (
+	FindingNew      FindingStatus = "new"
+	FindingUpdated  FindingStatus = "updated"   // severity or verdict changed
+	FindingResolved FindingStatus = "resolved"  // present before, absent now
+	FindingUnchanged FindingStatus = "unchanged" // identical to prior run
+)
+
+// FindingRecord is the persisted representation of a security finding.
+// Its identity is the stable ID returned by FindingID(cwe, location, title).
+type FindingRecord struct {
+	ID             string        `json:"id"`              // FindingID(cwe, location, title)
+	Title          string        `json:"title"`
+	Location       string        `json:"location"`
+	CWE            int           `json:"cwe"`
+	Severity       string        `json:"severity"`
+	AuditorVerdict string        `json:"auditor_verdict"`
+	ExploitStatus  string        `json:"exploit_status"`
+	FirstSeenRunID string        `json:"first_seen_run_id"`
+	LastSeenRunID  string        `json:"last_seen_run_id"`
+	Status         FindingStatus `json:"status"`
+	ResolvedRunID  string        `json:"resolved_run_id,omitempty"`
+}
+
+// ReconcileResult summarizes the outcome of reconciling a new finding set
+// against the prior persisted state.
+type ReconcileResult struct {
+	Inserted  []FindingRecord // brand-new findings not seen in prior state
+	Updated   []FindingRecord // severity or verdict changed from prior state
+	Resolved  []FindingRecord // present in prior state, absent from current run
+	Unchanged []FindingRecord // identical to prior state
 }

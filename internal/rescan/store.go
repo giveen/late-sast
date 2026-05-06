@@ -18,6 +18,16 @@ type Store interface {
 	// PutTransformRecord stores or updates a transform record under the given key.
 	PutTransformRecord(ctx context.Context, key string, rec TransformRecord) error
 
+	// GetFinding retrieves a persisted finding by its stable FindingID.
+	// Returns (nil, nil) when no prior record exists.
+	GetFinding(ctx context.Context, id string) (*FindingRecord, error)
+
+	// PutFinding stores or updates a finding record.
+	PutFinding(ctx context.Context, rec FindingRecord) error
+
+	// ListFindings returns all persisted findings regardless of status.
+	ListFindings(ctx context.Context) ([]FindingRecord, error)
+
 	// SaveRunSummary persists the summary for a completed scan run.
 	SaveRunSummary(ctx context.Context, summary RunSummary) error
 

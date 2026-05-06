@@ -370,7 +370,7 @@ func main() {
 		metaFetchErr error
 		metaOnce     sync.Once
 	)
-	fetchMetaOnce := func(repoPath string, notifyRootAgent *orchestrator.BaseOrchestrator) {
+	fetchMetaOnce := func(repoPath string, _ *orchestrator.BaseOrchestrator) {
 		metaOnce.Do(func() {
 			cachedMeta, _, metaFetchErr = fetchComplexityMeta(
 				context.Background(), mcpClient, repoPath,

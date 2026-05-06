@@ -237,7 +237,7 @@ func isEmptyStreamLike(out string, err error) bool {
 	return false
 }
 
-func emptyLikeTrigger(out string, err error) string {
+func emptyLikeTrigger(_ string, err error) string {
 	if err == nil {
 		return "empty_output"
 	}

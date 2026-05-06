@@ -21,7 +21,7 @@
 ### 2. Finish incremental rescan architecture
 
 - ~~Phase 1: deterministic keys (`HashFile`, `HashBytes`, `TransformKey`), `Store` interface, `FileStore` with atomic writes and reopen safety, `ComputeDeltaScope` — done in `internal/rescan/`.~~
-- Phase 2: add artifact reconciliation and stable finding IDs; update report writer to show new/changed/resolved/unchanged.
+- ~~Phase 2: stable `FindingID` (CWE+location+title SHA-256), `FindingRecord` model, `FindingStatus` enum, `GetFinding`/`PutFinding`/`ListFindings` on `Store` + `FileStore`, `Reconcile()` with insert/update/resolve/unchanged logic, 14 new tests — done.~~
 - Phase 3: full lineage edges, scope-aware retest mode.
 - Measure rescan performance and report churn before/after.
 

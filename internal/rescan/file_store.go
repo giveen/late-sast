@@ -12,16 +12,18 @@ import (
 // State is loaded once on open and written atomically after every mutation.
 // It is safe for concurrent use within a single process.
 type fileStore struct {
-	mu      sync.Mutex
-	dir     string
-	sources map[string]SourceItem      // key: sourceKey(repo, path)
-	records map[string]TransformRecord // key: transform key
+	mu       sync.Mutex
+	dir      string
+	sources  map[string]SourceItem      // key: sourceKey(repo, path)
+	records  map[string]TransformRecord // key: transform key
+	findings map[string]FindingRecord   // key: FindingID
 }
 
 // storeState is the on-disk JSON envelope.
 type storeState struct {
-	Sources map[string]SourceItem      `json:"sources"`
-	Records map[string]TransformRecord `json:"records"`
+	Sources  map[string]SourceItem      `json:"sources"`
+	Records  map[string]TransformRecord `json:"records"`
+	Findings map[string]FindingRecord   `json:"findings"`
 }
 
 // NewFileStore opens (or creates) a file-based Store rooted at dir.
@@ -32,9 +34,10 @@ func NewFileStore(dir string) (Store, error) {
 		return nil, err
 	}
 	s := &fileStore{
-		dir:     dir,
-		sources: make(map[string]SourceItem),
-		records: make(map[string]TransformRecord),
+		dir:      dir,
+		sources:  make(map[string]SourceItem),
+		records:  make(map[string]TransformRecord),
+		findings: make(map[string]FindingRecord),
 	}
 	_ = s.load() // ignore "file not found" on first run
 	return s, nil
@@ -76,6 +79,33 @@ func (s *fileStore) PutTransformRecord(_ context.Context, key string, rec Transf
 	return s.save()
 }
 
+func (s *fileStore) GetFinding(_ context.Context, id string) (*FindingRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec, ok := s.findings[id]; ok {
+		cp := rec
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (s *fileStore) PutFinding(_ context.Context, rec FindingRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.findings[rec.ID] = rec
+	return s.save()
+}
+
+func (s *fileStore) ListFindings(_ context.Context) ([]FindingRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]FindingRecord, 0, len(s.findings))
+	for _, f := range s.findings {
+		out = append(out, f)
+	}
+	return out, nil
+}
+
 func (s *fileStore) SaveRunSummary(_ context.Context, summary RunSummary) error {
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
@@ -103,12 +133,19 @@ func (s *fileStore) load() error {
 	if st.Records != nil {
 		s.records = st.Records
 	}
+	if st.Findings != nil {
+		s.findings = st.Findings
+	}
 	return nil
 }
 
 // save writes current state to disk atomically. Must be called under s.mu.
 func (s *fileStore) save() error {
-	data, err := json.Marshal(storeState{Sources: s.sources, Records: s.records})
+	data, err := json.Marshal(storeState{
+		Sources:  s.sources,
+		Records:  s.records,
+		Findings: s.findings,
+	})
 	if err != nil {
 		return err
 	}

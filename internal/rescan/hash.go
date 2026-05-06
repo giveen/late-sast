@@ -3,8 +3,10 @@ package rescan
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // HashFile returns the SHA-256 hex digest of a file's content.
@@ -32,5 +34,18 @@ func HashBytes(b []byte) string {
 // that the concatenation is unambiguous.
 func TransformKey(transformName, transformVersionHash, inputHash string) string {
 	raw := transformName + "\x00" + transformVersionHash + "\x00" + inputHash
+	return HashBytes([]byte(raw))
+}
+
+// FindingID returns a stable identity key for a security finding.
+// The key is derived from CWE, the normalized location (lowercased), and the
+// normalized title (lowercased) so it remains stable across runs even when the
+// LLM produces minor textual variations in non-key fields.
+func FindingID(cwe int, location, title string) string {
+	raw := fmt.Sprintf("%d\x00%s\x00%s",
+		cwe,
+		strings.ToLower(strings.TrimSpace(location)),
+		strings.ToLower(strings.TrimSpace(title)),
+	)
 	return HashBytes([]byte(raw))
 }
