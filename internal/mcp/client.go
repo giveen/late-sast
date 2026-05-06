@@ -148,7 +148,7 @@ func (c *Client) GetTool(name string) tool.Tool {
 func (c *Client) Close() error {
 	for name, session := range c.sessions {
 		if err := session.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error closing MCP session '%s': %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "[operator-error] mcp: failed to close session %q: %v\n", name, err)
 		}
 	}
 	return nil

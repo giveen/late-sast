@@ -312,7 +312,7 @@ func main() {
 
 	mcpConfig, err := mcp.LoadMCPConfigFromDir(sastCfgDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to load MCP config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[operator-error] mcp: failed to load MCP config: %v\n", err)
 	}
 	if mcpConfig == nil {
 		mcpConfig = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
@@ -332,7 +332,7 @@ func main() {
 	if len(mcpConfig.McpServers) > 0 {
 		fmt.Println("Connecting to MCP servers...")
 		if err := mcpClient.ConnectFromConfig(context.Background(), mcpConfig); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: MCP connection error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[operator-error] mcp: connection failed: %v\n", err)
 		}
 	}
 

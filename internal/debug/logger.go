@@ -162,6 +162,35 @@ func (l *Logger) LogError(message string, err error, context map[string]interfac
 	})
 }
 
+// LogOperatorError logs an operator-visible error — a failure that the user
+// running the scan needs to know about (e.g. MCP discovery, report write,
+// cleanup, allowlist persistence).  The entry is written as an OPERATOR_ERROR
+// event with a "component" tag so it can be grepped from debug logs.
+// It also writes a one-line summary to stderr so the error is visible even
+// when debug logging is disabled.
+func (l *Logger) LogOperatorError(component, message string, err error, ctx map[string]interface{}) {
+	// Always write to stderr for immediate visibility.
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[operator-error] %s: %s: %v\n", component, message, err)
+	} else {
+		fmt.Fprintf(os.Stderr, "[operator-error] %s: %s\n", component, message)
+	}
+	if !l.enabled {
+		return
+	}
+	if ctx == nil {
+		ctx = make(map[string]interface{})
+	}
+	ctx["component"] = component
+	if err != nil {
+		ctx["error"] = err.Error()
+	}
+	l.logEntry("OPERATOR_ERROR", map[string]interface{}{
+		"message": message,
+		"context": ctx,
+	})
+}
+
 // LogEvent logs a generic event.
 func (l *Logger) LogEvent(eventType, message string, context map[string]interface{}) {
 	if !l.enabled {

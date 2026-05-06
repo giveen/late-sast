@@ -18,6 +18,10 @@ type WriteSASTReportTool struct {
 	// been successfully written to disk. The argument is the absolute output
 	// path. Optional — nil is a no-op.
 	OnWritten func(path string)
+	// OnError is called (in the tool Execute goroutine) when the report cannot
+	// be written. Arguments are the intended output path and the error.
+	// Optional — nil is a no-op.
+	OnError func(path string, err error)
 }
 
 // ReportFinding is the structured input for one finding.
@@ -395,9 +399,15 @@ func (t WriteSASTReportTool) Execute(_ context.Context, args json.RawMessage) (s
 
 	// Write file.
 	if err := os.MkdirAll(filepath.Dir(p.OutputPath), 0755); err != nil {
+		if t.OnError != nil {
+			t.OnError(p.OutputPath, err)
+		}
 		return "", fmt.Errorf("failed to create output directory: %w", err)
 	}
 	if err := os.WriteFile(p.OutputPath, []byte(sb.String()), 0644); err != nil {
+		if t.OnError != nil {
+			t.OnError(p.OutputPath, err)
+		}
 		return "", fmt.Errorf("failed to write report: %w", err)
 	}
 

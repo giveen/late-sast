@@ -179,9 +179,12 @@ func (t CleanupScanEnvironmentTool) Execute(ctx context.Context, args json.RawMe
 	appendStep("remove_temp_files", "docker run --rm -v /tmp:/tmp alpine sh -lc <cleanup>", out, err)
 
 	successes := 0
+	var failedSteps []string
 	for _, s := range steps {
 		if ok, _ := s["ok"].(bool); ok {
 			successes++
+		} else if name, _ := s["step"].(string); name != "" {
+			failedSteps = append(failedSteps, name)
 		}
 	}
 
@@ -200,6 +203,12 @@ func (t CleanupScanEnvironmentTool) Execute(ctx context.Context, args json.RawMe
 		"steps":           steps,
 		"success_count":   successes,
 		"step_count":      len(steps),
+	}
+	if status == "partial" {
+		resp["operator_note"] = fmt.Sprintf(
+			"cleanup incomplete: %d/%d steps failed (%s) — manual docker cleanup may be required",
+			len(steps)-successes, len(steps), strings.Join(failedSteps, ", "),
+		)
 	}
 	outJSON, _ := json.Marshal(resp)
 	return string(outJSON), nil

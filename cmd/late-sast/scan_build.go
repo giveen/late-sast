@@ -192,6 +192,7 @@ func buildScanSessionWithDeps(cfg scanBuildConfig, deps scanBuildDeps) (sessionR
 		reportWrittenCh:   reportWrittenCh,
 		enabledTools:      cfg.enabledTools,
 		mcpClient:         cfg.mcpClient,
+		debugLog:          debugLog,
 	}, deps)
 
 	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
@@ -215,6 +216,7 @@ type registerScanToolsConfig struct {
 	reportWrittenCh   chan string
 	enabledTools      map[string]bool
 	mcpClient         *mcp.Client
+	debugLog          *debug.Logger
 }
 
 func registerScanTools(sess *session.Session, cfg registerScanToolsConfig, deps scanBuildDeps) {
@@ -234,6 +236,12 @@ func registerScanTools(sess *session.Session, cfg registerScanToolsConfig, deps 
 			select {
 			case cfg.reportWrittenCh <- path:
 			default:
+			}
+		},
+		OnError: func(path string, err error) {
+			if cfg.debugLog != nil {
+				cfg.debugLog.LogOperatorError("write_sast_report", "failed to write report",
+					err, map[string]interface{}{"path": path})
 			}
 		},
 	})
