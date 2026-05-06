@@ -99,15 +99,32 @@ docker exec ${{CONTAINER_NAME}} sh -c "
 ```
 For each notable dependency (frameworks, ORMs, auth libraries, HTTP clients), call:
 ```
-vul_vendor_product_cve(vendor="<vendor>", product="<package-name>")
+vul_vendor_product_cve(vendor="<vendor>", product="<package-name>", min_cvss=7.0)
 ```
-For packages where the vendor is unknown, try the package name as vendor too, e.g. `vul_vendor_product_cve(vendor="expressjs", product="express")`.
+For packages where the vendor is unknown, try the package name as vendor too, e.g. `vul_vendor_product_cve(vendor="expressjs", product="express", min_cvss=7.0)`.
 
-For each CVE result returned:
-- Filter to CVSS score ≥ 7.0 (HIGH and CRITICAL only)
-- Check if the installed version falls within the affected range
-- If affected: record the CVE ID, CVSS score, description, and affected versions
-- Format the CVE link as: `https://nvd.nist.gov/vuln/detail/<CVE-ID>`
+The tool returns a structured response:
+```json
+{
+  "vendor": "apache", "product": "log4j", "total": 42, "returned": 42,
+  "findings": [
+    {
+      "cve": "CVE-2021-44228",
+      "package": "log4j-core",
+      "cvss": 10.0,
+      "severity": "CRITICAL",
+      "description": "Log4Shell allows remote code execution...",
+      "link": "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
+      "affected_versions": [">= 2.0, < 2.15.0"]
+    }
+  ]
+}
+```
+
+For each entry in `findings`:
+- Check if the installed version falls within `affected_versions`
+- If affected: include the entry directly in the report's `cve_findings`
+- Do **not** invent CVE IDs or CVSS scores — use only values returned by the tool
 
 Include all confirmed CVE matches in the report under `## CVE Findings`.
 

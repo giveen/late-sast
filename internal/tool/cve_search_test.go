@@ -9,6 +9,54 @@ import (
 	"testing"
 )
 
+// ─── CVE5 test fixtures ───────────────────────────────────────────────────────
+
+// testCVE5SearchBody is a minimal /api/search/{vendor}/{product} response.
+const testCVE5SearchBody = `{
+	"results": {
+		"nvd": [
+			["CVE-2021-44228", {
+				"cveMetadata": {"cveId": "CVE-2021-44228", "state": "PUBLISHED"},
+				"containers": {"cna": {
+					"title": "Log4Shell RCE",
+					"descriptions": [{"lang": "en", "value": "Log4Shell RCE vulnerability in log4j-core allows remote code execution."}],
+					"metrics": [{"cvssV3_1": {"baseScore": 10.0, "baseSeverity": "CRITICAL", "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"}}],
+					"affected": [{"vendor": "apache", "product": "log4j", "packageName": "log4j-core",
+						"versions": [{"status": "affected", "version": "2.0", "lessThan": "2.15.0", "versionType": "maven"}]}],
+					"references": [{"url": "https://logging.apache.org/log4j/2.x/security.html", "tags": ["vendor-advisory"]}]
+				}}
+			}]
+		],
+		"cvelistv5": []
+	},
+	"total_count": 1,
+	"page_size": 50,
+	"page": 1
+}`
+
+// testCVE5SingleBody is a minimal /api/cve/{CVE_ID} response (single CVE5 record).
+const testCVE5SingleBody = `{
+	"cveMetadata": {"cveId": "CVE-2021-44228", "state": "PUBLISHED"},
+	"containers": {"cna": {
+		"title": "Log4Shell RCE",
+		"descriptions": [{"lang": "en", "value": "Log4Shell RCE vulnerability in log4j-core."}],
+		"metrics": [{"cvssV3_1": {"baseScore": 10.0, "baseSeverity": "CRITICAL", "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"}}],
+		"affected": [{"vendor": "apache", "product": "log4j", "packageName": "log4j-core",
+			"versions": [{"status": "affected", "version": "2.0", "lessThan": "2.15.0"}]}]
+	}}
+}`
+
+// testCVE5LastBody is a minimal /api/last/{N} response (list of CVE5 records).
+const testCVE5LastBody = `[{
+	"cveMetadata": {"cveId": "CVE-2026-0001", "state": "PUBLISHED"},
+	"containers": {"cna": {
+		"title": "Test CVE",
+		"descriptions": [{"lang": "en", "value": "A test vulnerability."}],
+		"metrics": [{"cvssV3_1": {"baseScore": 7.5, "baseSeverity": "HIGH"}}],
+		"affected": [{"vendor": "testvendor", "product": "testpkg", "packageName": "testpkg"}]
+	}}
+}]`
+
 // setupCVETestServer creates a mock httptest server and redirects cveGet to use it.
 // The returned cleanup function restores the originals.
 func setupCVETestServer(t *testing.T, handler http.HandlerFunc) (cleanup func()) {
@@ -31,6 +79,156 @@ func setupCVETestServer(t *testing.T, handler http.HandlerFunc) (cleanup func())
 		srv.Close()
 	}
 }
+
+// ─── CVE5 parser unit tests ──────────────────────────────────────────────────
+
+func TestExtractCVSS_PrefersV3_1(t *testing.T) {
+	metrics := []cve5Metric{
+		{CVSSV2_0: &cve5CVSSScore{BaseScore: 6.5, BaseSeverity: "MEDIUM"}},
+		{CVSSV3_1: &cve5CVSSScore{BaseScore: 9.8, BaseSeverity: "CRITICAL"}},
+		{CVSSV4_0: &cve5CVSSScore{BaseScore: 8.0, BaseSeverity: "HIGH"}},
+	}
+	score, severity, _ := extractCVSS(metrics)
+	if score != 9.8 || severity != "CRITICAL" {
+		t.Fatalf("expected V3.1 score 9.8/CRITICAL, got %.1f/%s", score, severity)
+	}
+}
+
+func TestExtractCVSS_FallsBackToV4(t *testing.T) {
+	metrics := []cve5Metric{
+		{CVSSV4_0: &cve5CVSSScore{BaseScore: 8.0, BaseSeverity: "HIGH"}},
+	}
+	score, severity, _ := extractCVSS(metrics)
+	if score != 8.0 || severity != "HIGH" {
+		t.Fatalf("expected V4 score 8.0/HIGH, got %.1f/%s", score, severity)
+	}
+}
+
+func TestExtractCVSS_EmptyMetrics(t *testing.T) {
+	score, severity, _ := extractCVSS(nil)
+	if score != 0 || severity != "" {
+		t.Fatalf("expected zero score, got %.1f/%s", score, severity)
+	}
+}
+
+func TestExtractDescription_EnglishPreferred(t *testing.T) {
+	cna := cve5CNA{
+		Descriptions: []cve5LangValue{
+			{Lang: "es", Value: "descripción en español"},
+			{Lang: "en", Value: "English description"},
+		},
+	}
+	if got := extractDescription(cna); got != "English description" {
+		t.Fatalf("expected English description, got %q", got)
+	}
+}
+
+func TestExtractDescription_FallsBackToTitle(t *testing.T) {
+	cna := cve5CNA{Title: "Fallback Title"}
+	if got := extractDescription(cna); got != "Fallback Title" {
+		t.Fatalf("expected title fallback, got %q", got)
+	}
+}
+
+func TestExtractDescription_Truncates(t *testing.T) {
+	long := strings.Repeat("A", 300)
+	cna := cve5CNA{Descriptions: []cve5LangValue{{Lang: "en", Value: long}}}
+	got := extractDescription(cna)
+	if len(got) > 200 {
+		t.Fatalf("expected truncation to 200 chars, got %d", len(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected '...' suffix, got %q", got[len(got)-5:])
+	}
+}
+
+func TestExtractPackage_UsesPackageName(t *testing.T) {
+	affected := []cve5Affected{{Vendor: "apache", Product: "log4j", PackageName: "log4j-core"}}
+	if got := extractPackage(affected, "apache", "log4j"); got != "log4j-core" {
+		t.Fatalf("expected log4j-core, got %q", got)
+	}
+}
+
+func TestExtractPackage_FallsBackToVendorProduct(t *testing.T) {
+	affected := []cve5Affected{{Vendor: "apache", Product: "struts"}}
+	if got := extractPackage(affected, "apache", "struts"); got != "apache:struts" {
+		t.Fatalf("expected apache:struts, got %q", got)
+	}
+}
+
+func TestExtractPackage_UsesHintWhenEmpty(t *testing.T) {
+	if got := extractPackage(nil, "myvendor", "mypkg"); got != "myvendor:mypkg" {
+		t.Fatalf("expected myvendor:mypkg, got %q", got)
+	}
+}
+
+func TestParseCVE5SearchResponse_ParsesFindings(t *testing.T) {
+	findings, total, err := parseCVE5SearchResponse(testCVE5SearchBody, "apache", "log4j")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("expected total_count=1, got %d", total)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.CVE != "CVE-2021-44228" {
+		t.Errorf("unexpected CVE: %q", f.CVE)
+	}
+	if f.Package != "log4j-core" {
+		t.Errorf("unexpected package: %q", f.Package)
+	}
+	if f.CVSS != 10.0 {
+		t.Errorf("unexpected CVSS: %f", f.CVSS)
+	}
+	if f.Severity != "CRITICAL" {
+		t.Errorf("unexpected severity: %q", f.Severity)
+	}
+	if f.Link != "https://nvd.nist.gov/vuln/detail/CVE-2021-44228" {
+		t.Errorf("unexpected link: %q", f.Link)
+	}
+	if len(f.AffectedVersions) == 0 {
+		t.Error("expected at least one affected version")
+	}
+}
+
+func TestParseCVE5SingleResponse_ParsesFinding(t *testing.T) {
+	f, err := parseCVE5SingleResponse(testCVE5SingleBody)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.CVE != "CVE-2021-44228" || f.CVSS != 10.0 || f.Package != "log4j-core" {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+}
+
+func TestParseCVE5SingleResponse_MissingCveIdErrors(t *testing.T) {
+	body := `{"cveMetadata": {}, "containers": {"cna": {}}}`
+	_, err := parseCVE5SingleResponse(body)
+	if err == nil {
+		t.Error("expected error for missing cveId")
+	}
+}
+
+func TestParseCVE5LastResponse_ParsesFindings(t *testing.T) {
+	findings, err := parseCVE5LastResponse(testCVE5LastBody)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].CVE != "CVE-2026-0001" {
+		t.Errorf("unexpected CVE: %q", findings[0].CVE)
+	}
+	if findings[0].CVSS != 7.5 {
+		t.Errorf("expected CVSS 7.5, got %f", findings[0].CVSS)
+	}
+}
+
+// ─── HTTP infrastructure tests ───────────────────────────────────────────────
 
 func TestCVEGet_RetrysOnServerError(t *testing.T) {
 	attempts := 0
@@ -97,13 +295,12 @@ func TestVulVendorProductCVETool_Metadata(t *testing.T) {
 }
 
 func TestVulVendorProductCVETool_Execute_Success(t *testing.T) {
-	const responseBody = `[{"id":"CVE-2021-44228","cvss":10.0,"summary":"Log4Shell"}]`
 	cleanup := setupCVETestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/search/apache/log4j") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(responseBody))
+		w.Write([]byte(testCVE5SearchBody))
 	})
 	defer cleanup()
 
@@ -115,6 +312,13 @@ func TestVulVendorProductCVETool_Execute_Success(t *testing.T) {
 	}
 	if !strings.Contains(result, "CVE-2021-44228") {
 		t.Errorf("expected CVE ID in result, got: %s", result)
+	}
+	// Verify parsed fields are present.
+	if !strings.Contains(result, `"cvss":10`) {
+		t.Errorf("expected cvss field, got: %s", result)
+	}
+	if !strings.Contains(result, `"package":"log4j-core"`) {
+		t.Errorf("expected package field, got: %s", result)
 	}
 }
 
@@ -149,7 +353,8 @@ func TestVulVendorProductCVETool_Execute_URLEncoding(t *testing.T) {
 			t.Errorf("vendor not URL-encoded, path: %s", r.URL.String())
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`[]`))
+		// Return minimal valid search response (no nvd results = empty findings).
+		w.Write([]byte(`{"results":{"nvd":[]},"total_count":0}`))
 	})
 	defer cleanup()
 
@@ -185,13 +390,12 @@ func TestVulCVESearchTool_Metadata(t *testing.T) {
 }
 
 func TestVulCVESearchTool_Execute_Success(t *testing.T) {
-	const responseBody = `{"id":"CVE-2021-44228","cvss":10.0,"summary":"Log4Shell RCE"}`
 	cleanup := setupCVETestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/cve/CVE-2021-44228" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(responseBody))
+		w.Write([]byte(testCVE5SingleBody))
 	})
 	defer cleanup()
 
@@ -202,7 +406,10 @@ func TestVulCVESearchTool_Execute_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(result, "Log4Shell") {
-		t.Errorf("expected summary in result, got: %s", result)
+		t.Errorf("expected description in result, got: %s", result)
+	}
+	if !strings.Contains(result, `"cvss":10`) {
+		t.Errorf("expected cvss field, got: %s", result)
 	}
 }
 
@@ -323,7 +530,7 @@ func TestVulLastCVEsTool_Execute_Default(t *testing.T) {
 			t.Errorf("expected /last/5, got: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`[{"id":"CVE-2026-0001"}]`))
+		w.Write([]byte(testCVE5LastBody))
 	})
 	defer cleanup()
 

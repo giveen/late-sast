@@ -52,16 +52,16 @@ type DeltaScope struct {
 type FindingStatus string
 
 const (
-	FindingNew      FindingStatus = "new"
-	FindingUpdated  FindingStatus = "updated"   // severity or verdict changed
-	FindingResolved FindingStatus = "resolved"  // present before, absent now
+	FindingNew       FindingStatus = "new"
+	FindingUpdated   FindingStatus = "updated"   // severity or verdict changed
+	FindingResolved  FindingStatus = "resolved"  // present before, absent now
 	FindingUnchanged FindingStatus = "unchanged" // identical to prior run
 )
 
 // FindingRecord is the persisted representation of a security finding.
 // Its identity is the stable ID returned by FindingID(cwe, location, title).
 type FindingRecord struct {
-	ID             string        `json:"id"`              // FindingID(cwe, location, title)
+	ID             string        `json:"id"` // FindingID(cwe, location, title)
 	Title          string        `json:"title"`
 	Location       string        `json:"location"`
 	CWE            int           `json:"cwe"`
