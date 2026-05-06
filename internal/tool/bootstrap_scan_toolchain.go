@@ -96,34 +96,23 @@ func (t BootstrapScanToolchainTool) Execute(ctx context.Context, args json.RawMe
 		logs = append(logs, label+": "+truncate(out, 700))
 	}
 
-	pmOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", detectPackageManagerCmd())
-	pm := strings.TrimSpace(pmOut)
-	if pm == "" {
-		pm = "unknown"
-	}
+	// Single exec: detect package manager + command availability + repo markers.
+	probeOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", batchProbeCmd(p.RepoPath))
+	probe := parseBatchProbe(probeOut)
 
-	coreOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", coreBootstrapCmd(pm))
+	coreOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", coreBootstrapCmd(probe.pm))
 	appendLog("core", coreOut)
 
-	hasJavaProject := false
-	if installJavaDetected {
-		jOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", javaMarkerCmd(p.RepoPath))
-		hasJavaProject = strings.TrimSpace(jOut) != ""
-		if hasJavaProject {
-			jInstallOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", installJavaCmd(pm))
-			appendLog("java", jInstallOut)
-		}
+	hasJavaProject := probe.javaProject
+	if installJavaDetected && hasJavaProject {
+		jInstallOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", installJavaCmd(probe.pm))
+		appendLog("java", jInstallOut)
 	}
 
-	hasNodeProject := false
-	nodePresent := commandAvailable(ctx, runner, p.ContainerName, "node")
-	if installNodeDetected && !nodePresent {
-		nOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", nodeMarkerCmd(p.RepoPath))
-		hasNodeProject = strings.TrimSpace(nOut) != ""
-		if hasNodeProject {
-			nInstallOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", installNodeCmd(pm))
-			appendLog("node", nInstallOut)
-		}
+	hasNodeProject := probe.nodeProject
+	if installNodeDetected && !probe.nodeCmd && hasNodeProject {
+		nInstallOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", installNodeCmd(probe.pm))
+		appendLog("node", nInstallOut)
 	}
 
 	if installTrivy {
@@ -142,33 +131,22 @@ func (t BootstrapScanToolchainTool) Execute(ctx context.Context, args json.RawMe
 		cOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", installChecksecCmd())
 		appendLog("checksec", cOut)
 	}
-	if installGosec && commandAvailable(ctx, runner, p.ContainerName, "go") {
+	if installGosec && probe.goCmd {
 		gOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", installGosecCmd())
 		appendLog("gosec", gOut)
 	}
-	if installCargoAudit && commandAvailable(ctx, runner, p.ContainerName, "cargo") {
+	if installCargoAudit && probe.cargoCmd {
 		caOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", installCargoAuditCmd())
 		appendLog("cargo-audit", caOut)
 	}
 
-	availability := map[string]string{
-		"curl":        boolStatus(commandAvailable(ctx, runner, p.ContainerName, "curl")),
-		"git":         boolStatus(commandAvailable(ctx, runner, p.ContainerName, "git")),
-		"jq":          boolStatus(commandAvailable(ctx, runner, p.ContainerName, "jq")),
-		"python3":     boolStatus(commandAvailable(ctx, runner, p.ContainerName, "python3")),
-		"pipx":        boolStatus(commandAvailable(ctx, runner, p.ContainerName, "pipx")),
-		"java":        boolStatus(commandAvailable(ctx, runner, p.ContainerName, "java")),
-		"node":        boolStatus(commandAvailable(ctx, runner, p.ContainerName, "node")),
-		"trivy":       boolStatus(commandAvailable(ctx, runner, p.ContainerName, "trivy")),
-		"semgrep":     boolStatus(commandAvailable(ctx, runner, p.ContainerName, "semgrep")),
-		"checksec":    boolStatus(commandAvailable(ctx, runner, p.ContainerName, "checksec")),
-		"gosec":       boolStatus(commandAvailable(ctx, runner, p.ContainerName, "gosec")),
-		"cargo_audit": boolStatus(commandAvailable(ctx, runner, p.ContainerName, "cargo-audit")),
-	}
+	// Single exec: check availability of all tools at once.
+	availOut, _ := runner(ctx, "docker", "exec", p.ContainerName, "sh", "-c", batchAvailabilityCmd())
+	availability := parseBatchAvailability(availOut)
 
 	status := "ok"
 	reason := ""
-	if pm == "unknown" {
+	if probe.pm == "unknown" {
 		status = "partial"
 		reason = "unknown package manager; attempted best-effort tool bootstrap"
 	}
@@ -178,7 +156,7 @@ func (t BootstrapScanToolchainTool) Execute(ctx context.Context, args json.RawMe
 		"reason":                reason,
 		"container_name":        p.ContainerName,
 		"repo_path":             p.RepoPath,
-		"package_manager":       pm,
+		"package_manager":       probe.pm,
 		"detected_java_project": hasJavaProject,
 		"detected_node_project": hasNodeProject,
 		"availability":          availability,
@@ -202,9 +180,92 @@ func boolStatus(v bool) string {
 	return "missing"
 }
 
+// commandAvailable is kept for callers outside bootstrap (e.g. tests).
 func commandAvailable(ctx context.Context, runner setupCommandRunner, container, name string) bool {
 	out, _ := runner(ctx, "docker", "exec", container, "sh", "-c", "command -v "+name+" >/dev/null 2>&1 && echo ok || echo missing")
 	return strings.TrimSpace(out) == "ok"
+}
+
+// batchProbeCmd returns a shell one-liner that detects the package manager,
+// presence of node/go/cargo commands, and Java/Node project markers in one exec.
+// Output format: one "key=value" pair per line.
+func batchProbeCmd(repoPath string) string {
+	rp := shQuote(repoPath)
+	return fmt.Sprintf(
+		`if command -v apt-get >/dev/null 2>&1; then echo pm=apt;`+
+			` elif command -v apk >/dev/null 2>&1; then echo pm=apk;`+
+			` elif command -v yum >/dev/null 2>&1; then echo pm=yum;`+
+			` elif command -v dnf >/dev/null 2>&1; then echo pm=dnf;`+
+			` else echo pm=unknown; fi;`+
+			` command -v node >/dev/null 2>&1 && echo node=ok || echo node=missing;`+
+			` command -v go >/dev/null 2>&1 && echo go=ok || echo go=missing;`+
+			` command -v cargo >/dev/null 2>&1 && echo cargo=ok || echo cargo=missing;`+
+			` { find %s -maxdepth 4 \( -name '*.java' -o -name '*.kt' -o -name '*.kts' -o -name 'pom.xml' -o -name '*.gradle' \) -print -quit 2>/dev/null | grep -q . && echo java_project=yes || echo java_project=no; };`+
+			` { find %s -maxdepth 3 \( -name 'package.json' -o -name '*.ts' -o -name '*.js' \) -print -quit 2>/dev/null | grep -q . && echo node_project=yes || echo node_project=no; }`,
+		rp, rp,
+	)
+}
+
+type batchProbeResult struct {
+	pm          string
+	nodeCmd     bool
+	goCmd       bool
+	cargoCmd    bool
+	javaProject bool
+	nodeProject bool
+}
+
+func parseBatchProbe(output string) batchProbeResult {
+	r := batchProbeResult{pm: "unknown"}
+	for _, line := range strings.Split(output, "\n") {
+		kv := strings.SplitN(strings.TrimSpace(line), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		k, v := kv[0], kv[1]
+		switch k {
+		case "pm":
+			r.pm = v
+		case "node":
+			r.nodeCmd = v == "ok"
+		case "go":
+			r.goCmd = v == "ok"
+		case "cargo":
+			r.cargoCmd = v == "ok"
+		case "java_project":
+			r.javaProject = v == "yes"
+		case "node_project":
+			r.nodeProject = v == "yes"
+		}
+	}
+	return r
+}
+
+// batchAvailabilityCmd returns a shell one-liner that checks all scan tool
+// availability in a single docker exec. Output: "tool=available/missing" per line.
+func batchAvailabilityCmd() string {
+	tools := []struct{ cmd, key string }{
+		{"curl", "curl"}, {"git", "git"}, {"jq", "jq"},
+		{"python3", "python3"}, {"pipx", "pipx"}, {"java", "java"},
+		{"node", "node"}, {"trivy", "trivy"}, {"semgrep", "semgrep"},
+		{"checksec", "checksec"}, {"gosec", "gosec"}, {"cargo-audit", "cargo_audit"},
+	}
+	var sb strings.Builder
+	for _, t := range tools {
+		fmt.Fprintf(&sb, "command -v %s >/dev/null 2>&1 && echo %s=available || echo %s=missing; ", t.cmd, t.key, t.key)
+	}
+	return strings.TrimRight(sb.String(), " ")
+}
+
+func parseBatchAvailability(output string) map[string]string {
+	result := make(map[string]string, 12)
+	for _, line := range strings.Split(output, "\n") {
+		kv := strings.SplitN(strings.TrimSpace(line), "=", 2)
+		if len(kv) == 2 && kv[0] != "" {
+			result[kv[0]] = kv[1]
+		}
+	}
+	return result
 }
 
 func detectPackageManagerCmd() string {
@@ -228,16 +289,6 @@ func coreBootstrapCmd(pm string) string {
 	default:
 		return "echo 'no known package manager'"
 	}
-}
-
-func javaMarkerCmd(repoPath string) string {
-	rp := shQuote(repoPath)
-	return fmt.Sprintf("find %s -maxdepth 4 \\( -name '*.java' -o -name '*.kt' -o -name '*.kts' -o -name 'pom.xml' -o -name '*.gradle' \\) -print -quit 2>/dev/null", rp)
-}
-
-func nodeMarkerCmd(repoPath string) string {
-	rp := shQuote(repoPath)
-	return fmt.Sprintf("find %s -maxdepth 3 \\( -name 'package.json' -o -name '*.ts' -o -name '*.js' \\) -print -quit 2>/dev/null", rp)
 }
 
 func installJavaCmd(pm string) string {

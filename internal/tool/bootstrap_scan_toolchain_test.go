@@ -28,12 +28,12 @@ func TestBootstrapScanToolchainTool_HappyPath(t *testing.T) {
 			cmd := strings.Join(args, " ")
 
 			switch {
-			case strings.Contains(cmd, "echo apt"):
-				return "apt\n", nil
-			case strings.Contains(cmd, "find '/repo'"):
-				return "", nil
-			case strings.Contains(cmd, "command -v"):
-				return "ok\n", nil
+			// Batch probe: pm + command presence + project markers.
+			case strings.Contains(cmd, "java_project"):
+				return "pm=apt\nnode=ok\ngo=ok\ncargo=ok\njava_project=no\nnode_project=no\n", nil
+			// Batch availability check.
+			case strings.Contains(cmd, "cargo_audit"):
+				return "curl=available\ngit=available\njq=available\npython3=available\npipx=available\njava=available\nnode=available\ntrivy=available\nsemgrep=available\nchecksec=available\ngosec=available\ncargo_audit=available\n", nil
 			default:
 				return "done\n", nil
 			}
@@ -74,11 +74,11 @@ func TestBootstrapScanToolchainTool_UnknownPackageManagerIsPartial(t *testing.T)
 				return "", nil
 			}
 			cmd := strings.Join(args, " ")
-			if strings.Contains(cmd, "echo apt") {
-				return "unknown\n", nil
+			if strings.Contains(cmd, "java_project") {
+				return "pm=unknown\nnode=missing\ngo=missing\ncargo=missing\njava_project=no\nnode_project=no\n", nil
 			}
-			if strings.Contains(cmd, "command -v") {
-				return "missing\n", nil
+			if strings.Contains(cmd, "cargo_audit") {
+				return "curl=missing\ngit=missing\njq=missing\npython3=missing\npipx=missing\njava=missing\nnode=missing\ntrivy=missing\nsemgrep=missing\nchecksec=missing\ngosec=missing\ncargo_audit=missing\n", nil
 			}
 			return "", nil
 		},

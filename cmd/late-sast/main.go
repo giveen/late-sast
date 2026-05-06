@@ -362,46 +362,56 @@ func main() {
 	}
 
 	// --- Dynamic Resource Allocator -------------------------------------------
-	// Lazily fetch architecture metadata from get_architecture on the first
-	// subagent spawn. The results are cached for all subsequent subagents within
-	// the same scan and stored in GlobalBlackboard.
+	// Lazily fetch architecture metadata from get_architecture on each subagent
+	// spawn until one succeeds. Uses a mutex so a failed fetch can be retried
+	// (e.g. if MCP hadn't finished connecting on the first spawn). Once a fetch
+	// succeeds it is cached and GlobalBlackboard is updated; subsequent spawns
+	// are no-ops.
 	var (
-		cachedMeta   orchestrator.ComplexityMeta
-		metaFetchErr error
-		metaOnce     sync.Once
+		cachedMeta  orchestrator.ComplexityMeta
+		metaFetched bool
+		metaMu      sync.Mutex
 	)
 	fetchMetaOnce := func(repoPath string, _ *orchestrator.BaseOrchestrator) {
-		metaOnce.Do(func() {
-			cachedMeta, _, metaFetchErr = fetchComplexityMeta(
-				context.Background(), mcpClient, repoPath,
-			)
-			if metaFetchErr != nil {
-				fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget unavailable (%v) — using CLI defaults\n", metaFetchErr)
-				return
-			}
-			mult := orchestrator.LanguageMultiplier(cachedMeta.PrimaryLanguage)
-			orchestrator.GlobalBlackboard.Write("language_multiplier", mult)
-			orchestrator.GlobalBlackboard.Write("primary_language", cachedMeta.PrimaryLanguage)
-			orchestrator.GlobalBlackboard.Write("complexity_meta", cachedMeta)
-			fmt.Printf("[late-sast] Dynamic budget: lang=%s mult=%.1fx turns≈%d timeout≈%s\n",
-				cachedMeta.PrimaryLanguage, mult,
-				orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
-				orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
-			)
-		})
+		metaMu.Lock()
+		defer metaMu.Unlock()
+		if metaFetched {
+			return
+		}
+		meta, _, err := fetchComplexityMeta(context.Background(), mcpClient, repoPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget unavailable (%v) — will retry on next subagent\n", err)
+			return
+		}
+		cachedMeta = meta
+		metaFetched = true
+		mult := orchestrator.LanguageMultiplier(cachedMeta.PrimaryLanguage)
+		orchestrator.GlobalBlackboard.Write("language_multiplier", mult)
+		orchestrator.GlobalBlackboard.Write("primary_language", cachedMeta.PrimaryLanguage)
+		orchestrator.GlobalBlackboard.Write("complexity_meta", cachedMeta)
+		fmt.Printf("[late-sast] Dynamic budget: lang=%s mult=%.1fx turns≈%d timeout≈%s\n",
+			cachedMeta.PrimaryLanguage, mult,
+			orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
+			orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
+		)
 	}
 	// budget from get_architecture is used, falling back to static defaults.
 	resolveBudget := func() (int, time.Duration) {
+		metaMu.Lock()
+		fetched := metaFetched
+		meta := cachedMeta
+		metaMu.Unlock()
+
 		turns := *subagentMaxTurns
 		timeout := *subagentTimeout
-		if !userSetMaxTurns && metaFetchErr == nil {
-			dyn := orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling)
+		if !userSetMaxTurns && fetched {
+			dyn := orchestrator.CalculateTurns(meta, *maxTurnsCeiling)
 			if dyn > 0 {
 				turns = dyn
 			}
 		}
-		if !userSetTimeout && metaFetchErr == nil {
-			dyn := orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling)
+		if !userSetTimeout && fetched {
+			dyn := orchestrator.CalculateTimeout(meta, *maxTimeoutCeiling)
 			if dyn > 0 {
 				timeout = dyn
 			}
