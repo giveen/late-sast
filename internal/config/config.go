@@ -100,8 +100,28 @@ func SaveConfigFromDir(lateConfigDir string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	if err := os.WriteFile(configPath, data, configFilePerm); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
+
+	// Atomic write: write to a temp file then rename so a crash mid-write
+	// never leaves a corrupted config.json (same pattern as SaveHistory /
+	// SaveSessionMeta).
+	tmpFile, err := os.CreateTemp(lateConfigDir, "config-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp config file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write temp config file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp config file: %w", err)
+	}
+	if err := os.Chmod(tmpFile.Name(), configFilePerm); err != nil {
+		return fmt.Errorf("failed to set temp config file permissions: %w", err)
+	}
+	if err := os.Rename(tmpFile.Name(), configPath); err != nil {
+		return fmt.Errorf("failed to rename temp config file: %w", err)
 	}
 
 	if err := ensureSecureConfigPermissions(lateConfigDir, configPath); err != nil {
