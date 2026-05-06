@@ -68,4 +68,4 @@
 3. ~~Finish incremental rescan (Phases 1–3).~~ ✓ Done.
 4. ~~Standardize operator-visible error propagation.~~ ✓ Done.
 5. ~~Reduce setup/runtime overhead.~~ ✓ Done.
-6. Revisit executor-level parallelism only after the above is protected by tests.
+6. ~~Revisit executor-level parallelism only after the above is protected by tests.~~ ✓ Done.
