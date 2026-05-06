@@ -576,10 +576,18 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 	id := filepath.Base(s.HistoryPath)
 	id = strings.TrimSuffix(id, ".json")
 
+	// Preserve the original creation time if this session has already been
+	// saved. Without this, every UpdateSessionMetadata call would stomp
+	// CreatedAt with time.Now(), making every session appear brand-new.
+	createdAt := time.Now()
+	if existing, err := LoadSessionMeta(id); err == nil && existing != nil && !existing.CreatedAt.IsZero() {
+		createdAt = existing.CreatedAt
+	}
+
 	return SessionMeta{
 		ID:             id,
 		Title:          title,
-		CreatedAt:      time.Now(),
+		CreatedAt:      createdAt,
 		LastUpdated:    time.Now(),
 		HistoryPath:    s.HistoryPath,
 		LastUserPrompt: lastPrompt,

@@ -5,16 +5,30 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"late/internal/common"
 )
+
+// getToolParamReCache caches compiled regexes for GetToolParam's streaming
+// fallback path, keyed by the parameter name. Each unique key is compiled once.
+var getToolParamReCache sync.Map // string → *regexp.Regexp
+
+func getToolParamRe(key string) *regexp.Regexp {
+	if v, ok := getToolParamReCache.Load(key); ok {
+		return v.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]*)`, regexp.QuoteMeta(key)))
+	getToolParamReCache.Store(key, re)
+	return re
+}
 
 // GetToolParam extracts a string parameter from tool arguments
 func GetToolParam(args json.RawMessage, key string) string {
 	var params map[string]any
 	if err := json.Unmarshal(args, &params); err != nil {
 		// Fallback for partial JSON during streaming where the unmarshal fails
-		re := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]*)`, regexp.QuoteMeta(key)))
+		re := getToolParamRe(key)
 		matches := re.FindStringSubmatch(string(args))
 		if len(matches) > 1 {
 			return matches[1]
