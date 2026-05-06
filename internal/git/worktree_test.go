@@ -1,9 +1,7 @@
 package git
 
 import (
-	"bufio"
 	"context"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -20,7 +18,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 	}{
 		{
 			name:       "single normal worktree",
-			mockOutput: "/path/to/repo (main)\n# main branch, unmodified files\n",
+			mockOutput: "/path/to/repo  abcdef00 [main]\n# main branch, unmodified files\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -34,11 +32,11 @@ func TestListWorktrees_Parsing(t *testing.T) {
 		},
 		{
 			name:       "single detached worktree",
-			mockOutput: "/path/to/repo (detached from abc123)\n# detached HEAD, unmodified files\n",
+			mockOutput: "/path/to/repo  deadbeef (detached HEAD)\n# detached HEAD, unmodified files\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
-					Branch:     "abc123",
+					Branch:     "deadbeef",
 					IsDetached: true,
 					Status:     "detached HEAD, unmodified files",
 				},
@@ -48,7 +46,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 		},
 		{
 			name:       "multiple worktrees",
-			mockOutput: "/path/to/repo (main)\n# main branch, unmodified files\n/path/to/other-worktree (feature-branch)\n# feature branch, 1 file modified\n",
+			mockOutput: "/path/to/repo  abcdef00 [main]\n# main branch, unmodified files\n/path/to/other-worktree  abcdef01 [feature-branch]\n# feature branch, 1 file modified\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -68,7 +66,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 		},
 		{
 			name:       "mixed detached and normal worktrees",
-			mockOutput: "/path/to/main (main)\n# main branch, clean\n/path/to/detached (detached from def456)\n# HEAD detached at def456\n",
+			mockOutput: "/path/to/main  abcdef00 [main]\n# main branch, clean\n/path/to/detached  def45600 (detached HEAD)\n# HEAD detached at def456\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/main",
@@ -78,7 +76,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 				},
 				{
 					Path:       "/path/to/detached",
-					Branch:     "def456",
+					Branch:     "def45600",
 					IsDetached: true,
 					Status:     "HEAD detached at def456",
 				},
@@ -88,7 +86,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 		},
 		{
 			name:       "worktree with empty status",
-			mockOutput: "/path/to/repo (develop)\n",
+			mockOutput: "/path/to/repo  abcdef00 [develop]\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -102,7 +100,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 		},
 		{
 			name:       "worktree with complex branch name",
-			mockOutput: "/path/to/repo (feature/user/login-improvement)\n# feature branch, 3 files modified, 1 file deleted\n",
+			mockOutput: "/path/to/repo  abcdef00 [feature/user/login-improvement]\n# feature branch, 3 files modified, 1 file deleted\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -116,7 +114,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 		},
 		{
 			name:       "worktree with long commit hash",
-			mockOutput: "/path/to/repo (detached from 1234567890abcdef1234567890abcdef12345678)\n# detached HEAD\n",
+			mockOutput: "/path/to/repo  1234567890abcdef1234567890abcdef12345678 (detached HEAD)\n# detached HEAD\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -137,7 +135,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 		},
 		{
 			name:       "worktree at root",
-			mockOutput: "/ (main)\n# main branch, unmodified files\n",
+			mockOutput: "/  abcdef00 [main]\n# main branch, unmodified files\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/",
@@ -153,14 +151,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := parseMockWorktreeOutput(tt.mockOutput)
-
-			if tt.expectError && err == nil {
-				t.Errorf("expected error but got none")
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
+			result := parseWorktreeLines(strings.Split(tt.mockOutput, "\n"))
 
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %d worktrees, got %d", len(tt.expected), len(result))
@@ -189,54 +180,7 @@ func TestListWorktrees_Parsing(t *testing.T) {
 	}
 }
 
-// parseMockWorktreeOutput is a helper function that extracts the parsing logic
-// from ListWorktrees for testing with mock data
-func parseMockWorktreeOutput(output string) ([]WorktreeInfo, error) {
-	var worktrees []WorktreeInfo
-	scanner := bufio.NewScanner(strings.NewReader(output))
-
-	worktreePattern := regexpWorktreeParser()
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		matches := worktreePattern.FindStringSubmatch(line)
-		if matches != nil {
-			path := matches[1]
-			branchInfo := matches[2]
-
-			info := WorktreeInfo{
-				Path: path,
-			}
-
-			if strings.HasPrefix(branchInfo, "detached from ") {
-				info.IsDetached = true
-				info.Branch = strings.TrimPrefix(branchInfo, "detached from ")
-			} else {
-				info.Branch = branchInfo
-			}
-
-			if scanner.Scan() {
-				statusLine := scanner.Text()
-				if strings.HasPrefix(statusLine, "# ") {
-					info.Status = strings.TrimPrefix(statusLine, "# ")
-				}
-			}
-
-			worktrees = append(worktrees, info)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return worktrees, nil
-}
-
-// Helper function to create the regex pattern for testing
-func regexpWorktreeParser() *regexp.Regexp {
-	return regexp.MustCompile(`^(\S+)\s+\((.+)\)$`)
-}
+// parseMockWorktreeOutput helper removed — tests now call parseWorktreeLines directly.
 
 // TestGetActiveWorktree tests the GetActiveWorktree function
 func TestGetActiveWorktree(t *testing.T) {
@@ -566,22 +510,22 @@ func TestEdgeCases(t *testing.T) {
 			description:   "Test parsing of line without branch info",
 		},
 		{
-			name:          "line with empty branch name",
-			input:         "/path/to/worktree ()\n",
+			name:          "line with empty bracket branch",
+			input:         "/path/to/worktree  abcdef00 []\n",
 			expectError:   false,
-			expectedCount: 0,
-			description:   "Test parsing of line with empty branch name (should not match)",
+			expectedCount: 1,
+			description:   "Test parsing of line with empty branch name in brackets",
 		},
 		{
-			name:          "status line without hash",
-			input:         "/path/to/worktree (main)\nmain branch, unmodified\n",
+			name:          "status line without hash prefix",
+			input:         "/path/to/worktree  abcdef00 [main]\nmain branch, unmodified\n",
 			expectError:   false,
 			expectedCount: 1,
 			description:   "Test parsing when status line doesn't start with #",
 		},
 		{
 			name:          "multiple consecutive status lines",
-			input:         "/path/to/worktree (main)\n# main branch, unmodified\n# extra status line\n",
+			input:         "/path/to/worktree  abcdef00 [main]\n# main branch, unmodified\n# extra status line\n",
 			expectError:   false,
 			expectedCount: 1,
 			description:   "Test parsing with multiple status lines",
@@ -590,11 +534,7 @@ func TestEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := parseMockWorktreeOutput(tt.input)
-
-			if tt.expectError && err == nil {
-				t.Errorf("expected error but got none")
-			}
+			result := parseWorktreeLines(strings.Split(tt.input, "\n"))
 
 			if len(result) != tt.expectedCount {
 				t.Errorf("expected %d worktrees, got %d", tt.expectedCount, len(result))
@@ -612,59 +552,55 @@ func TestWorktreeParsing_RegexEdgeCases(t *testing.T) {
 		description string
 	}{
 		{
-			name:        "valid worktree path",
-			input:       "/path/to/repo (main)",
+			name:        "valid normal worktree line",
+			input:       "/path/to/repo  abcdef00 [main]",
 			expectMatch: true,
-			description: "Test valid worktree path with branch",
+			description: "Test valid worktree line with branch in brackets",
 		},
 		{
-			name:        "valid detached worktree",
-			input:       "/path/to/repo (detached from abc123)",
+			name:        "valid detached worktree line",
+			input:       "/path/to/repo  deadbeef (detached HEAD)",
 			expectMatch: true,
-			description: "Test valid detached worktree",
+			description: "Test valid detached worktree line",
 		},
 		{
-			name:        "path with spaces",
-			input:       "/path/to/repo with spaces (main)",
+			name:        "path with spaces does not match",
+			input:       "/path/to/repo with spaces  abcdef00 [main]",
 			expectMatch: false,
 			description: "Test that paths with spaces don't match (regex uses \\S+ for path)",
 		},
 		{
-			name:        "branch with special chars",
-			input:       "/path/to/repo (feature/user-login)",
+			name:        "branch with slashes in brackets",
+			input:       "/path/to/repo  abcdef00 [feature/user-login]",
 			expectMatch: true,
-			description: "Test branch with hyphens and slashes",
+			description: "Test branch with hyphens and slashes in brackets",
 		},
 		{
-			name:        "missing space before parenthesis",
-			input:       "/path/to/repo(main)",
+			name:        "missing space before bracket",
+			input:       "/path/to/repo  abcdef00[main]",
 			expectMatch: false,
-			description: "Test that missing space before parenthesis fails to match",
+			description: "Test that missing space before bracket fails to match",
 		},
 		{
-			name:        "multiple spaces",
-			input:       "/path/to/repo  (main)",
+			name:        "multiple spaces between fields",
+			input:       "/path/to/repo   abcdef00   [main]",
 			expectMatch: true,
-			description: "Test that multiple spaces are handled",
-		},
-		{
-			name:        "nested parentheses in branch name",
-			input:       "/path/to/repo (feature(v2))",
-			expectMatch: true,
-			description: "Test branch name with nested parentheses",
+			description: "Test that multiple spaces between fields are handled",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pattern := regexp.MustCompile(`^(\S+)\s+\((.+)\)$`)
-			matches := pattern.FindStringSubmatch(tt.input)
+			// Test against both package-level patterns
+			matchBranch := worktreePattern.FindStringSubmatch(tt.input)
+			matchDetached := detachedPattern.FindStringSubmatch(tt.input)
+			matched := matchBranch != nil || matchDetached != nil
 
-			if tt.expectMatch && matches == nil {
+			if tt.expectMatch && !matched {
 				t.Errorf("expected match but got none")
 			}
-			if !tt.expectMatch && matches != nil {
-				t.Errorf("expected no match but got: %v", matches)
+			if !tt.expectMatch && matched {
+				t.Errorf("expected no match but got: branch=%v detached=%v", matchBranch, matchDetached)
 			}
 		})
 	}
@@ -691,35 +627,32 @@ func (e *mockExecError) Is(target error) bool {
 
 // Benchmark tests for parsing performance
 func BenchmarkListWorktrees_Parsing(b *testing.B) {
-	mockOutput := `/path/to/repo (main)
+	mockOutput := `/path/to/repo  abcdef00 [main]
 # main branch, unmodified files
-/path/to/worktree1 (develop)
+/path/to/worktree1  abcdef01 [develop]
 # develop branch, 3 files modified
-/path/to/worktree2 (feature-branch)
+/path/to/worktree2  abcdef02 [feature-branch]
 # feature branch, 2 files modified, 1 file deleted
 `
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = parseMockWorktreeOutput(mockOutput)
+		parseWorktreeLines(strings.Split(mockOutput, "\n"))
 	}
 }
 
 // TestConcurrentParsing tests that parsing is thread-safe
 func TestConcurrentParsing(t *testing.T) {
-	mockOutput := `/path/to/repo (main)
+	mockOutput := `/path/to/repo  abcdef00 [main]
 # main branch, unmodified files
-/path/to/worktree1 (develop)
+/path/to/worktree1  abcdef01 [develop]
 # develop branch, 3 files modified
 `
 
 	b := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func() {
-			result, err := parseMockWorktreeOutput(mockOutput)
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
+			result := parseWorktreeLines(strings.Split(mockOutput, "\n"))
 			if len(result) != 2 {
 				t.Errorf("expected 2 worktrees, got %d", len(result))
 			}

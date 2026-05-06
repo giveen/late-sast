@@ -9,11 +9,12 @@ import (
 )
 
 // fileStore is a simple JSON-on-disk implementation of Store.
-// State is loaded once on open and written atomically after every mutation.
-// It is safe for concurrent use within a single process.
+// Mutations are accumulated in memory and flushed atomically on Close (or via
+// an explicit flush). It is safe for concurrent use within a single process.
 type fileStore struct {
 	mu       sync.Mutex
 	dir      string
+	dirty    bool
 	sources  map[string]SourceItem      // key: sourceKey(repo, path)
 	records  map[string]TransformRecord // key: transform key
 	findings map[string]FindingRecord   // key: FindingID
@@ -62,7 +63,8 @@ func (s *fileStore) PutSourceItem(_ context.Context, item SourceItem) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sources[sourceKey(item.Repo, item.Path)] = item
-	return s.save()
+	s.dirty = true
+	return nil
 }
 
 func (s *fileStore) GetTransformRecord(_ context.Context, key string) (*TransformRecord, error) {
@@ -79,7 +81,8 @@ func (s *fileStore) PutTransformRecord(_ context.Context, key string, rec Transf
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records[key] = rec
-	return s.save()
+	s.dirty = true
+	return nil
 }
 
 func (s *fileStore) GetFinding(_ context.Context, id string) (*FindingRecord, error) {
@@ -96,7 +99,8 @@ func (s *fileStore) PutFinding(_ context.Context, rec FindingRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.findings[rec.ID] = rec
-	return s.save()
+	s.dirty = true
+	return nil
 }
 
 func (s *fileStore) ListFindings(_ context.Context) ([]FindingRecord, error) {
@@ -115,7 +119,8 @@ func (s *fileStore) PutLineageEdge(ctx context.Context, edge LineageEdge) error 
 	if err := putLineageEdgeCtx(ctx, s.edges, edge); err != nil {
 		return err
 	}
-	return s.save()
+	s.dirty = true
+	return nil
 }
 
 func (s *fileStore) ListEdgesFrom(ctx context.Context, parentID string) ([]LineageEdge, error) {
@@ -145,7 +150,18 @@ func (s *fileStore) SaveRunSummary(_ context.Context, summary RunSummary) error 
 	return atomicWrite(filepath.Join(s.dir, "run_summary.json"), data)
 }
 
-func (s *fileStore) Close() error { return nil }
+func (s *fileStore) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.dirty {
+		return nil
+	}
+	err := s.save()
+	if err == nil {
+		s.dirty = false
+	}
+	return err
+}
 
 // load reads persisted state from disk. Must NOT be called under s.mu.
 func (s *fileStore) load() error {

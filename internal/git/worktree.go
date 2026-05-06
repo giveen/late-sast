@@ -18,6 +18,37 @@ type WorktreeInfo struct {
 	Status     string
 }
 
+var (
+	// worktreePattern matches: /path/to/worktree  commitHash [branchName]
+	worktreePattern = regexp.MustCompile(`^(\S+)\s+[a-f0-9]+\s+\[([^\]]*)\]`)
+	// detachedPattern matches: /path/to/worktree  commitHash (detached HEAD)
+	detachedPattern = regexp.MustCompile(`^(\S+)\s+([a-f0-9]+)\s+\(detached HEAD\)`)
+)
+
+// parseWorktreeLines parses the output lines of `git worktree list` into
+// WorktreeInfo structs. It handles both normal branch worktrees and
+// detached-HEAD worktrees.
+func parseWorktreeLines(lines []string) []WorktreeInfo {
+	var worktrees []WorktreeInfo
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		var info WorktreeInfo
+		if m := worktreePattern.FindStringSubmatch(line); m != nil {
+			info = WorktreeInfo{Path: m[1], Branch: m[2]}
+		} else if m := detachedPattern.FindStringSubmatch(line); m != nil {
+			info = WorktreeInfo{Path: m[1], Branch: m[2], IsDetached: true}
+		} else {
+			continue
+		}
+		if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "# ") {
+			info.Status = strings.TrimPrefix(lines[i+1], "# ")
+			i++
+		}
+		worktrees = append(worktrees, info)
+	}
+	return worktrees
+}
+
 // ListWorktrees executes `git worktree list` and parses the output
 // to return a slice of WorktreeInfo structures.
 func ListWorktrees(ctx context.Context) ([]WorktreeInfo, error) {
@@ -26,47 +57,8 @@ func ListWorktrees(ctx context.Context) ([]WorktreeInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var worktrees []WorktreeInfo
 	lines := strings.Split(string(output), "\n")
-
-	// Regex pattern to match worktree lines
-	// Format: /path/to/worktree  commit-hash [branch-name]
-	// or: /path/to/worktree  commit-hash (no branch)
-	worktreePattern := regexp.MustCompile(`^(\S+)\s+([a-f0-9]+)\s+\[([^\]]*)\]`)
-
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		matches := worktreePattern.FindStringSubmatch(line)
-		if matches != nil {
-			path := matches[1]
-			commitHash := matches[2]
-			branchName := matches[3]
-
-			info := WorktreeInfo{
-				Path: path,
-			}
-
-			// Check if detached (branch name is empty or looks like a commit hash)
-			if branchName == "" || (len(branchName) == 40 && regexp.MustCompile(`^[a-f0-9]+$`).MatchString(branchName)) {
-				info.IsDetached = true
-				info.Branch = commitHash
-			} else {
-				info.IsDetached = false
-				info.Branch = branchName
-			}
-
-			// Check if next line is a status line (starts with "# ")
-			if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "# ") {
-				info.Status = strings.TrimPrefix(lines[i+1], "# ")
-				i++ // Skip the status line
-			}
-
-			worktrees = append(worktrees, info)
-		}
-	}
-
-	return worktrees, nil
+	return parseWorktreeLines(lines), nil
 }
 
 // CreateWorktree executes `git worktree add <path> <branch>` to create a new worktree.
