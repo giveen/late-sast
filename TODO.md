@@ -29,10 +29,12 @@
 
 > Parse CVE 5.x API format in Go (`parseCVE5SearchResponse`, `parseCVE5SingleResponse`, `parseCVE5LastResponse`); return `ParsedCVEFinding` records with real `cvss`, `package`, `severity`, `description`, `affected_versions`; added `min_cvss` and `limit` params to `vul_vendor_product_cve`; updated SAST scanner prompts to document structured output and forbid inventing CVE IDs.
 
-### 3. Standardize operator-visible error handling
+### ~~3. Standardize operator-visible error handling~~ ✓ DONE
 
-- Surface important failures in the GUI/event stream, not only stderr or Fyne logs.
-- Focus areas: MCP discovery, cleanup failures, allowlist persistence, report writing, rescan lifecycle.
+- ~~Surface important failures in the GUI/event stream, not only stderr or Fyne logs.~~
+- ~~Focus areas: MCP discovery, cleanup failures, allowlist persistence, report writing, rescan lifecycle.~~
+
+> `debug.Logger.LogOperatorError` added — always writes `[operator-error] <component>: <msg>` to stderr, also writes `OPERATOR_ERROR` event to debug log when enabled. MCP load/connect/close errors use the prefix. `confirm.go` allowlist-save failures replaced with `dialog.ShowError`. `cleanup_scan_environment` partial responses include `operator_note` listing failed steps. `WriteSASTReportTool.OnError` callback wired to `debugLog.LogOperatorError` in scan build. 2 new debug logger tests.
 
 ## Outstanding Issues
 
@@ -41,7 +43,7 @@
 - ~~Incremental rescan Phases 1–2 done; Phase 3 (lineage edges, scope-aware retest) still needed.~~ ✓ Done.
 - Architecture metadata fetch can still be lost too early if fetch timing is wrong.
 - Architecture metadata fetch can still be lost too early if fetch timing is wrong.
-- Some failures still log only to stderr/Fyne logs instead of appearing in the operator workflow.
+- ~~Some failures still log only to stderr/Fyne logs instead of appearing in the operator workflow.~~ ✓ Fixed.
 - Setup/container bootstrap remains expensive.
 - The lingering `--tui` behavior in `cmd/late-sast/main.go` should be made explicit or removed.
 
@@ -63,7 +65,6 @@
 1. ~~Add full-pipeline regression tests.~~ ✓ Done.
 2. ~~CVE search quality fix (parse CVE 5.x format).~~ ✓ Done.
 3. ~~Finish incremental rescan (Phases 1–3).~~ ✓ Done.
-4. Standardize operator-visible error propagation.
+4. ~~Standardize operator-visible error propagation.~~ ✓ Done.
 5. Reduce setup/runtime overhead.
-4. Reduce setup/runtime overhead.
-5. Revisit executor-level parallelism only after the above is protected by tests.
+6. Revisit executor-level parallelism only after the above is protected by tests.
