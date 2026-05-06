@@ -583,3 +583,125 @@ func TestCleanupToolPreferredMiddleware_AllowsCleanupToolThenBash(t *testing.T) 
 		t.Fatalf("expected wrapped runner to be called twice, got %d", called)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// replayCandidateFromArgs unit tests
+// ---------------------------------------------------------------------------
+
+func TestReplayCandidateFromArgs_ExplicitURL(t *testing.T) {
+	c, ok := replayCandidateFromArgs(`{"endpoint":"http://127.0.0.1:8080/admin?id=1"}`)
+	if !ok {
+		t.Fatal("expected ok=true for explicit URL")
+	}
+	if c == "" {
+		t.Fatal("expected non-empty candidate")
+	}
+}
+
+func TestReplayCandidateFromArgs_PathOnly(t *testing.T) {
+	c, ok := replayCandidateFromArgs(`{"path":"/login"}`)
+	if !ok {
+		t.Fatal("expected ok=true for path-only args")
+	}
+	if c != "/login" {
+		t.Errorf("candidate = %q, want /login", c)
+	}
+}
+
+func TestReplayCandidateFromArgs_PathWithQuery(t *testing.T) {
+	c, ok := replayCandidateFromArgs(`{"path":"/search","query":{"q":"admin"}}`)
+	if !ok {
+		t.Fatal("expected ok=true for path+query")
+	}
+	if !strings.Contains(c, "/search") {
+		t.Errorf("expected candidate to contain /search, got %q", c)
+	}
+	if !strings.Contains(c, "q=admin") {
+		t.Errorf("expected candidate to contain query, got %q", c)
+	}
+}
+
+func TestReplayCandidateFromArgs_PathMissingLeadingSlash(t *testing.T) {
+	c, ok := replayCandidateFromArgs(`{"path":"api/v1/users"}`)
+	if !ok {
+		t.Fatal("expected ok=true when path lacks leading slash")
+	}
+	if !strings.HasPrefix(c, "/") {
+		t.Errorf("expected normalized path with leading slash, got %q", c)
+	}
+}
+
+func TestReplayCandidateFromArgs_EmptyEndpointAndPath(t *testing.T) {
+	_, ok := replayCandidateFromArgs(`{"endpoint":"","path":""}`)
+	if ok {
+		t.Fatal("expected ok=false when both endpoint and path are empty")
+	}
+}
+
+func TestReplayCandidateFromArgs_InvalidJSON(t *testing.T) {
+	_, ok := replayCandidateFromArgs(`not json`)
+	if ok {
+		t.Fatal("expected ok=false for invalid JSON")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// looksLikeAdHocCleanup unit tests
+// ---------------------------------------------------------------------------
+
+func TestLooksLikeAdHocCleanup_DockerComposeDown(t *testing.T) {
+	cases := []string{
+		"docker compose -p scan down -v --remove-orphans",
+		"docker compose down",
+		"DOCKER COMPOSE DOWN",
+	}
+	for _, cmd := range cases {
+		if !looksLikeAdHocCleanup(cmd) {
+			t.Errorf("expected %q to be detected as ad-hoc cleanup", cmd)
+		}
+	}
+}
+
+func TestLooksLikeAdHocCleanup_DockerNetworkRm(t *testing.T) {
+	if !looksLikeAdHocCleanup("docker network rm sast-net") {
+		t.Error("expected docker network rm to be ad-hoc cleanup")
+	}
+}
+
+func TestLooksLikeAdHocCleanup_DockerRmi(t *testing.T) {
+	if !looksLikeAdHocCleanup("docker rmi myimage:latest") {
+		t.Error("expected docker rmi to be ad-hoc cleanup")
+	}
+}
+
+func TestLooksLikeAdHocCleanup_DockerRmF(t *testing.T) {
+	if !looksLikeAdHocCleanup("docker rm -f my-container") {
+		t.Error("expected docker rm -f to be ad-hoc cleanup")
+	}
+}
+
+func TestLooksLikeAdHocCleanup_TmpSastCleanup(t *testing.T) {
+	// The function requires "docker" somewhere in the command; the /tmp/sast-skill
+	// path check is only evaluated after the docker guard passes.
+	if !looksLikeAdHocCleanup("docker run --rm busybox rm -rf /tmp/sast-skill-abc") {
+		t.Error("expected /tmp/sast-skill rm in docker context to be ad-hoc cleanup")
+	}
+}
+
+func TestLooksLikeAdHocCleanup_NormalDockerExec(t *testing.T) {
+	if looksLikeAdHocCleanup("docker exec mycontainer ls /app") {
+		t.Error("expected docker exec to NOT be ad-hoc cleanup")
+	}
+}
+
+func TestLooksLikeAdHocCleanup_NoDocketCommand(t *testing.T) {
+	if looksLikeAdHocCleanup("rm -rf /tmp/other") {
+		t.Error("expected non-docker command to NOT be ad-hoc cleanup")
+	}
+}
+
+func TestLooksLikeAdHocCleanup_EmptyCommand(t *testing.T) {
+	if looksLikeAdHocCleanup("") {
+		t.Error("expected empty command to NOT be ad-hoc cleanup")
+	}
+}

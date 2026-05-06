@@ -13,7 +13,8 @@ import (
 	"late/internal/client"
 	appconfig "late/internal/config"
 	"late/internal/orchestrator"
-	"late/internal/tool"
+	"late/internal/tool/knowledge"
+	"late/internal/tool/sast"
 )
 
 func testScanBuildConfig(t *testing.T) scanBuildConfig {
@@ -42,10 +43,10 @@ func testScanBuildDeps(t *testing.T) scanBuildDeps {
 		readFile:          os.ReadFile,
 		mkdirAll:          os.MkdirAll,
 		loadConfigFromDir: func(string) (*appconfig.Config, error) { return nil, nil },
-		newProContextClient: func() (*tool.ProContextClient, error) {
+		newProContextClient: func() (*knowledge.ProContextClient, error) {
 			return nil, errors.New("docs unavailable in test")
 		},
-		fetchAndIndexSemgrepRef: func(context.Context, *tool.ContextIndex, string) error {
+		fetchAndIndexSemgrepRef: func(context.Context, *knowledge.ContextIndex, string) error {
 			return nil
 		},
 	}
@@ -60,7 +61,7 @@ func TestParseReportHeader_RoundTripFromWrittenReport(t *testing.T) {
 		"output_path": outPath,
 		"target":      "https://github.com/example/app",
 		"repo_name":   "app",
-		"findings": []tool.ReportFinding{
+		"findings": []sast.ReportFinding{
 			{
 				ID:             "H1",
 				Title:          "SSRF in image fetch",
@@ -78,7 +79,7 @@ func TestParseReportHeader_RoundTripFromWrittenReport(t *testing.T) {
 		t.Fatalf("marshal report args: %v", err)
 	}
 
-	_, err = (tool.WriteSASTReportTool{
+	_, err = (sast.WriteSASTReportTool{
 		OnWritten: func(path string) {
 			notifiedPath = path
 		},
@@ -259,7 +260,7 @@ func TestBuildScanSession_RegistersCoreToolsAndReportNotifications(t *testing.T)
 		"output_path": outPath,
 		"target":      cfg.pickedTarget,
 		"repo_name":   "app",
-		"findings": []tool.ReportFinding{{
+		"findings": []sast.ReportFinding{{
 			ID:             "H1",
 			Title:          "SSRF in image fetch",
 			Location:       "Api.cs:42",

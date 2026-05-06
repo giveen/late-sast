@@ -698,3 +698,75 @@ func TestResolveSubagentSettings(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ensureSecureConfigPermissions direct unit tests (Linux / macOS only)
+// ---------------------------------------------------------------------------
+
+func TestEnsureSecureConfigPermissions_AlreadyCorrect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced on Windows")
+	}
+
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configFile, []byte("{}"), configFilePerm); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, configDirPerm); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureSecureConfigPermissions(dir, configFile); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	checkConfigPerm(t, dir, configDirPerm)
+	checkConfigPerm(t, configFile, configFilePerm)
+}
+
+func TestEnsureSecureConfigPermissions_TightensLoosePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced on Windows")
+	}
+
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configFile, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureSecureConfigPermissions(dir, configFile); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	checkConfigPerm(t, dir, configDirPerm)
+	checkConfigPerm(t, configFile, configFilePerm)
+}
+
+func TestEnsureSecureConfigPermissions_NonexistentFileErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced on Windows")
+	}
+
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.json")
+
+	if err := ensureSecureConfigPermissions(dir, missing); err == nil {
+		t.Fatal("expected error for nonexistent config file, got nil")
+	}
+}
+
+func checkConfigPerm(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("permissions for %s = %o, want %o", path, got, want)
+	}
+}

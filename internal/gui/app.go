@@ -23,14 +23,6 @@ func formatContextUsage(used, max int) string {
 	return fmt.Sprintf("Context: %d tokens", used)
 }
 
-func formatSubagentContextUsage(used, max int) string {
-	if max > 0 {
-		pct := float64(used) / float64(max) * 100
-		return fmt.Sprintf("Context: %d\u202f/\u202f%d (%.0f%%)", used, max, pct)
-	}
-	return fmt.Sprintf("Context: %d tokens", used)
-}
-
 // phaseLabels maps agentType → human-readable tab label.
 var phaseLabels = map[string]string{
 	"setup":          "Making Docker",
@@ -242,11 +234,11 @@ func (a *App) openSubagentTab(child common.Orchestrator, agentType string) {
 
 	// Start event loop for the child.
 	a.startEventLoop(child, panel, tabItem, label, func(used, max int) {
-		subUsage.SetText(formatSubagentContextUsage(used, max))
+		subUsage.SetText(formatContextUsage(used, max))
 	})
 
 	initialUsed := common.CalculateHistoryTokens(child.History(), child.SystemPrompt(), child.ToolDefinitions())
-	subUsage.SetText(formatSubagentContextUsage(initialUsed, child.MaxTokens()))
+	subUsage.SetText(formatContextUsage(initialUsed, child.MaxTokens()))
 }
 
 // closeSubagentTab removes a subagent tab after showing a toast.

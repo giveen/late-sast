@@ -187,11 +187,23 @@ func (s *fileStore) save() error {
 }
 
 // atomicWrite writes data to path via a sibling temp file + rename so that
-// readers never see a partial write.
+// readers never see a partial write. Uses os.CreateTemp to avoid races between
+// concurrent writers that would otherwise collide on a fixed ".tmp" path.
 func atomicWrite(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

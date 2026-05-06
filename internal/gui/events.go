@@ -142,6 +142,23 @@ func (a *App) startEventLoop(
 			fyne.Do(func() { onUsage(used, max) })
 		}
 
+		// finalize cleans up all in-flight streaming and tool state, and flushes
+		// any partial message/thinking to the panel. Called by idle, closed, error.
+		finalize := func() {
+			stopToolTimer()
+			toolRunning = false
+			toolName = ""
+			setTabStatus("", 0, 0)
+			if thinkingStreaming {
+				thinkingStreaming = false
+				fyne.Do(func() { panel.FinalizeThinking() })
+			}
+			if streaming {
+				streaming = false
+				fyne.Do(func() { panel.FinalizeLastMessage() })
+			}
+		}
+
 		for event := range o.Events() {
 			switch e := event.(type) {
 
@@ -226,41 +243,15 @@ func (a *App) startEventLoop(
 					}
 
 				case "idle":
-					setTabStatus("", 0, 0)
-					stopToolTimer()
-					toolRunning = false
-					toolName = ""
+					finalize()
 					setMainStatus("● Ready")
-					if thinkingStreaming {
-						thinkingStreaming = false
-						fyne.Do(func() { panel.FinalizeThinking() })
-					}
-					if streaming {
-						streaming = false
-						fyne.Do(func() {
-							panel.FinalizeLastMessage()
-						})
-					}
-					if a.inputForOrchestrator(o) != nil {
-						fyne.Do(func() {
-							a.inputForOrchestrator(o).SetEnabled(true)
-						})
+					if in := a.inputForOrchestrator(o); in != nil {
+						fyne.Do(func() { in.SetEnabled(true) })
 					}
 
 				case "closed":
-					setTabStatus("", 0, 0)
-					stopToolTimer()
-					toolRunning = false
-					toolName = ""
+					finalize()
 					setMainStatus("● Ready")
-					if thinkingStreaming {
-						fyne.Do(func() { panel.FinalizeThinking() })
-					}
-					if streaming {
-						fyne.Do(func() {
-							panel.FinalizeLastMessage()
-						})
-					}
 					if tabItem != nil {
 						label := agentLabel
 						fyne.Do(func() {
@@ -270,25 +261,10 @@ func (a *App) startEventLoop(
 					return
 
 				case "error":
-					setTabStatus("", 0, 0)
-					stopToolTimer()
-					toolRunning = false
-					toolName = ""
+					finalize()
 					setMainStatus("● Error")
-					if thinkingStreaming {
-						thinkingStreaming = false
-						fyne.Do(func() { panel.FinalizeThinking() })
-					}
-					if streaming {
-						streaming = false
-						fyne.Do(func() {
-							panel.FinalizeLastMessage()
-						})
-					}
 					if in := a.inputForOrchestrator(o); in != nil {
-						fyne.Do(func() {
-							in.SetEnabled(true)
-						})
+						fyne.Do(func() { in.SetEnabled(true) })
 					}
 					// Close the subagent tab — the error is already surfaced in the
 					// main tab as the spawn_subagent tool result, so the orphan tab

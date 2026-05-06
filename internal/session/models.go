@@ -148,9 +148,9 @@ func ListSessions() ([]SessionMeta, error) {
 		}
 	}
 
-	// Sort by last_updated ascending (oldest first)
+	// Sort by last_updated descending (most recent first).
 	sort.Slice(metas, func(i, j int) bool {
-		return metas[i].LastUpdated.Before(metas[j].LastUpdated)
+		return metas[i].LastUpdated.After(metas[j].LastUpdated)
 	})
 
 	return metas, nil

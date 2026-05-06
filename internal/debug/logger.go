@@ -13,6 +13,7 @@ import (
 type Logger struct {
 	mu       sync.Mutex
 	filepath string
+	file     *os.File
 	enabled  bool
 }
 
@@ -205,10 +206,31 @@ func (l *Logger) LogEvent(eventType, message string, context map[string]interfac
 	l.logEntry(eventType, entry)
 }
 
+// Close flushes and closes the underlying log file. Safe to call on a
+// disabled logger. The logger must not be used after Close returns.
+func (l *Logger) Close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file != nil {
+		l.file.Close()
+		l.file = nil
+	}
+}
+
 // logEntry writes a structured log entry to file.
 func (l *Logger) logEntry(eventType string, data map[string]interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// Lazy-open the log file on the first write so the file is only created
+	// when there is actually something to log.
+	if l.file == nil {
+		f, err := os.OpenFile(l.filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		l.file = f
+	}
 
 	logEntry := map[string]interface{}{
 		"timestamp": time.Now().Format(time.RFC3339Nano),
@@ -221,13 +243,7 @@ func (l *Logger) logEntry(eventType string, data map[string]interface{}) {
 		return
 	}
 
-	f, err := os.OpenFile(l.filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	fmt.Fprintf(f, "%s\n", string(jsonData))
+	fmt.Fprintf(l.file, "%s\n", string(jsonData))
 }
 
 // redactHeaders returns a copy of headers with sensitive values masked.

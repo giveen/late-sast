@@ -65,10 +65,12 @@ func TestAddAssistantMessageWithTools_SkipsUnrepairableJSONArgs(t *testing.T) {
 }
 
 func TestToolRequiresArgs_CurrentToolNames(t *testing.T) {
-	if !toolRequiresArgs("docs_resolve") {
-		t.Fatal("expected docs_resolve to require arguments")
+	s := New(client.NewClient(client.Config{}), "", nil, "", true)
+	// Unknown tools (not in the registry) are conservatively treated as requiring args.
+	if !s.toolRequiresArgs("docs_resolve") {
+		t.Fatal("expected unknown tool docs_resolve to conservatively require arguments")
 	}
-	if !toolRequiresArgs("ctx_index") {
-		t.Fatal("expected ctx_index to require arguments")
+	if !s.toolRequiresArgs("ctx_index") {
+		t.Fatal("expected unknown tool ctx_index to conservatively require arguments")
 	}
 }

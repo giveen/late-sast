@@ -2,7 +2,6 @@ package gui
 
 import (
 	"strings"
-	"time"
 
 	"late/internal/common"
 
@@ -76,13 +75,17 @@ func (a *App) RunSAST(
 			a.window.Resize(fyne.NewSize(1150, 750))
 			a.buildMainLayout(rootAgent, nil)
 			a.window.SetContent(a.tabs)
-			close(layoutReady) // Signal that buildMainLayout is done
+			// Close layoutReady via a second fyne.Do issued from a goroutine.
+			// This ensures the channel is only closed after all layout/render work
+			// queued by SetContent has drained from Fyne's event queue — no sleep needed.
+			go func() {
+				fyne.Do(func() { close(layoutReady) })
+			}()
 		})
 
 		if initialMsg != "" {
 			go func() {
-				<-layoutReady // Wait for the layout to be fully set up and event loop running
-				time.Sleep(300 * time.Millisecond)
+				<-layoutReady
 				fyne.Do(func() {
 					a.mainChat.AppendMessage("user", initialMsg)
 					a.mainInput.SetEnabled(false)

@@ -69,3 +69,51 @@
 4. ~~Standardize operator-visible error propagation.~~ ✓ Done.
 5. ~~Reduce setup/runtime overhead.~~ ✓ Done.
 6. ~~Revisit executor-level parallelism only after the above is protected by tests.~~ ✓ Done.
+
+## Codebase Health Backlog
+
+Coverage gaps and correctness issues identified during post-TODO health scan. All items are fixes/hardening, no new features.
+
+### Test Coverage Gaps (by risk)
+
+- ✅ **`buildReplayEndpoint` (13.3%)** in `internal/tool/run_exploit_replay.go` — URL assembly for exploit replays; missing cases: empty host, invalid port, path normalization, query encoding.
+- ✅ **`cacheTTLFor` (16.7%) / `toolTimeoutFor` (30.8%)** in `internal/executor/toolcache.go` — entire switch tables lack coverage; any refactor silently breaks TTL/timeout assignments.
+- ✅ **`asInt` (22.2%) / `extractTrufflehogLocation` (37.5%)** in `internal/tool/run_secrets_scanner.go` — output parsing helpers; missing branch coverage on malformed input.
+- ✅ **`replayCandidateFromArgs` (26.7%) / `looksLikeAdHocCleanup` (28.6%)** in `internal/agent/agent.go` — agent middleware heuristics; untested negative/edge branches.
+- ✅ **`classifyReplayVerdict` (63.6%)** in `internal/tool/run_exploit_replay.go` — missing verdict paths: blocked, patched, inconclusive.
+- ✅ **`getToolParam` (54.5%)** in tool parsing utilities — used widely; partial branch coverage.
+- ✅ **`ensureSecureConfigPermissions` (57.1%)** in `internal/config/config.go` — security-relevant file mode enforcement; chmod failure branch not exercised.
+- ✅ **`EstimateToolDefinitionTokens` (28.6%)** in `internal/common/utils.go` — zero test coverage.
+- ✅ **Session hot-path functions at 0%** in `internal/session/session.go`: `AddToolResultMessage`, `ExecuteTool`, `LogDebugToolResult`, `classifyToolResult`, `previewToolCallArgs`.
+
+### Correctness Issues
+
+#### Signal / Cancellation
+
+- ✅ **`stopCh` unbuffered in `internal/orchestrator/base.go:53`** — `Cancel()` does a non-blocking send on an unbuffered channel; the signal is always silently dropped and `IsStopRequested()` can never return `true`. Fixed: `make(chan struct{}, 1)`.
+- ✅ **Context reset to `context.Background()` in `internal/orchestrator/base.go`** (lines 156, 231, 322) — resets caller-injected values (`SkipConfirmationKey`, `ToolApprovalKey`) after any cancellation; confirmation middleware stops being skipped on re-submission. Fixed: `rootCtx` field stores caller context; all three reset points use `o.rootCtx`.
+- ✅ **`http.Get` without context + unbounded `io.Copy` in `cmd/late-sast/main.go`** — download could hang indefinitely; corrupted archive could write unlimited data to `~/.local/bin/`. Fixed: `http.NewRequestWithContext` with a 2-minute timeout; `io.LimitReader(tr, 50<<20)` caps extraction.
+- ✅ **`exec.Command` without context in `internal/git/worktree.go`** — all five git calls can hang indefinitely on a slow/network filesystem. Fixed: `ctx context.Context` threaded through all four functions; `exec.CommandContext` used throughout. Also: swallowed `_ = output` errors now surface git stderr in the error message; symlink comparison in `GetActiveWorktree` uses `filepath.EvalSymlinks` on both sides.
+- ✅ **`ConsumeStream` drops stream error on context cancellation** (`internal/executor/executor.go:497`) — the `ctx.Done()` path returns `nil` without draining `errCh`; network errors are silently lost. Fix: non-blocking drain of `errCh` before returning.
+
+#### Security / Resource Safety
+
+- ✅ **Unbounded `io.Copy` in tar extraction** — fixed above.
+- ✅ **Unsafe `atomicWrite` temp file pattern** (`internal/rescan/file_store.go`) — `os.CreateTemp` + rename replaces fixed `.tmp` suffix; `SaveRunSummary` race eliminated.
+
+#### Correctness (Parsing / Classification)
+
+- ✅ **Parallel batch timeout misclassification in `internal/executor/executor.go:206`** — after all goroutines finish, every failure is checked against `turnCtx.Err()`; a deadline expiry on one tool mismarks all concurrent failures as `TimedOut`. Fixed: added `callCtxErr error` to `parallelToolResult`, captured inside the goroutine, checked with `errors.Is(pr.callCtxErr, context.DeadlineExceeded)` per-result.
+- ✅ **`io.ReadAll` error discarded in `internal/tool/run_exploit_replay.go:265`** — `b, _ := io.ReadAll(...)` silently truncates the body; indicators in the unread portion cause incorrect `inconclusive` verdicts. Fixed: error is checked and returned from `doReplayRequest`.
+- ✅ **Swallowed errors** in `internal/git/worktree.go` — fixed above (git stderr now propagated).
+- ✅ **Symlink path comparison in `internal/git/worktree.go:112`** — fixed above (`filepath.EvalSymlinks` on both sides).
+- ✅ **Context file read errors swallowed in `internal/agent/agent.go`** — failed reads now log to stderr with filename and error; subagent prompt construction continues with available files.
+
+#### Test Brittleness
+
+- ✅ **Flaky heartbeat test in `internal/tool/sast_tools_test.go`** — replaced sleep+counter with channel synchronisation: runner blocks on channel, callback sends to it; `HeartbeatThrottle: 1` ensures every tick fires.
+- ✅ **Sleep-based GUI synchronization in `internal/gui/sast_picker.go:85`** — replaced `time.Sleep(300ms)` with a second `fyne.Do` callback issued from a goroutine; channel closes only after all layout/render work queued by `SetContent` has drained from Fyne's event queue.
+
+#### Performance
+
+- **Rescan performance is unmeasured** — Phase 3 lineage/retest completed but churn ratio before/after was never benchmarked. Add a benchmark or log line reporting delta scope size vs total findings on each run.

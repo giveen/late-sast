@@ -157,7 +157,7 @@ func TestExecuteToolCalls_Denied(t *testing.T) {
 	sess := session.New(c, histPath, nil, "", true)
 
 	// Register bash tool which requires confirmation
-	RegisterTools(sess.Registry, nil, false)
+	RegisterTools(sess.Registry, nil)
 
 	toolCalls := []client.ToolCall{
 		{ID: "tc_1", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"echo hi"}`}},
@@ -189,7 +189,7 @@ func TestExecuteToolCalls_NoMiddlewareFailsClosed(t *testing.T) {
 	histPath := filepath.Join(t.TempDir(), "history.json")
 	sess := session.New(c, histPath, nil, "", true)
 
-	RegisterTools(sess.Registry, map[string]bool{"bash": true}, false)
+	RegisterTools(sess.Registry, map[string]bool{"bash": true})
 
 	toolCalls := []client.ToolCall{
 		{ID: "tc_1", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"echo hi"}`}},
@@ -214,7 +214,7 @@ func TestExecuteToolCallsWithStats_NoMiddlewareCountsBlocked(t *testing.T) {
 	histPath := filepath.Join(t.TempDir(), "history.json")
 	sess := session.New(c, histPath, nil, "", true)
 
-	RegisterTools(sess.Registry, map[string]bool{"bash": true}, false)
+	RegisterTools(sess.Registry, map[string]bool{"bash": true})
 	toolCalls := []client.ToolCall{{ID: "tc_1", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"echo hi"}`}}}
 
 	stats, err := ExecuteToolCallsWithStats(context.Background(), sess, toolCalls, nil, nil, nil)
@@ -298,7 +298,7 @@ func TestRegisterTools(t *testing.T) {
 		"target_edit": true,
 		"bash":        false,
 	}
-	RegisterTools(sess.Registry, enabledTools, false)
+	RegisterTools(sess.Registry, enabledTools)
 
 	expected := []string{"read_file", "write_file", "target_edit"}
 	for _, name := range expected {
@@ -322,7 +322,7 @@ func TestRegisterTools_WithBash(t *testing.T) {
 	enabledTools := map[string]bool{
 		"bash": true,
 	}
-	RegisterTools(sess.Registry, enabledTools, false)
+	RegisterTools(sess.Registry, enabledTools)
 
 	if sess.Registry.Get("bash") == nil {
 		t.Error("bash should be registered when enableBash is true")
@@ -337,43 +337,12 @@ func TestRegisterTools_WithReadFile(t *testing.T) {
 	enabledTools := map[string]bool{
 		"read_file": true,
 	}
-	RegisterTools(sess.Registry, enabledTools, false)
+	RegisterTools(sess.Registry, enabledTools)
 
 	// Verify ReadFileTool is still there (implied by default check), but maybe check its description/params if needed?
 	// For now, just ensuring no error is thrown during registration is good enough.
 	if sess.Registry.Get("read_file") == nil {
 		t.Error("read_file should be registered")
-	}
-}
-
-func TestRegisterTools_Planning(t *testing.T) {
-	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
-	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", false)
-
-	enabledTools := map[string]bool{
-		"read_file":  true,
-		"write_file": true,
-		"bash":       true,
-	}
-	RegisterTools(sess.Registry, enabledTools, true)
-
-	// In planning mode, write_file should NOT be registered
-	if sess.Registry.Get("write_file") != nil {
-		t.Error("write_file should not be registered in planning mode")
-	}
-
-	// But write_implementation_plan should be
-	if sess.Registry.Get("write_implementation_plan") == nil {
-		t.Error("write_implementation_plan should be registered in planning mode")
-	}
-
-	// read_file and bash should be there
-	if sess.Registry.Get("read_file") == nil {
-		t.Error("read_file should be registered in planning mode")
-	}
-	if sess.Registry.Get("bash") == nil {
-		t.Error("bash should be registered in planning mode")
 	}
 }
 
@@ -440,7 +409,7 @@ func TestExecuteParallelBatch(t *testing.T) {
 		}
 	}
 
-	results := executeParallelBatch(context.Background(), context.Background(), toolCalls, runner, nil)
+	results := executeParallelBatch(context.Background(), context.Background(), toolCalls, runner, nil, nil)
 
 	if len(results) != numTools {
 		t.Fatalf("expected %d results, got %d", numTools, len(results))
@@ -504,11 +473,11 @@ func TestExecuteToolCallsWithStats_ParallelBatch(t *testing.T) {
 // stubTool is a minimal common.Tool that returns an empty string result.
 type stubTool struct{ name string }
 
-func (s *stubTool) Name() string                                        { return s.name }
-func (s *stubTool) Description() string                                 { return "" }
-func (s *stubTool) Parameters() json.RawMessage                         { return nil }
+func (s *stubTool) Name() string                { return s.name }
+func (s *stubTool) Description() string         { return "" }
+func (s *stubTool) Parameters() json.RawMessage { return nil }
 func (s *stubTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
 	return "", nil
 }
-func (s *stubTool) RequiresConfirmation(_ json.RawMessage) bool         { return false }
-func (s *stubTool) CallString(_ json.RawMessage) string                 { return "" }
+func (s *stubTool) RequiresConfirmation(_ json.RawMessage) bool { return false }
+func (s *stubTool) CallString(_ json.RawMessage) string         { return "" }

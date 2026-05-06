@@ -54,7 +54,7 @@ func main() {
 	defer client.Close()
 
 	fmt.Println("Connecting to server...")
-	if err := client.Connect(ctx, transport); err != nil {
+	if err := client.Connect(ctx, "default", transport); err != nil {
 		fmt.Printf("Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}

@@ -1,24 +1,27 @@
 package git
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
 
 // WorktreeInfo contains information about a git worktree
 type WorktreeInfo struct {
-	Path     string
-	Branch   string
+	Path       string
+	Branch     string
 	IsDetached bool
-	Status   string
+	Status     string
 }
 
 // ListWorktrees executes `git worktree list` and parses the output
 // to return a slice of WorktreeInfo structures.
-func ListWorktrees() ([]WorktreeInfo, error) {
-	cmd := exec.Command("git", "worktree", "list")
+func ListWorktrees(ctx context.Context) ([]WorktreeInfo, error) {
+	cmd := exec.CommandContext(ctx, "git", "worktree", "list")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -67,52 +70,63 @@ func ListWorktrees() ([]WorktreeInfo, error) {
 }
 
 // CreateWorktree executes `git worktree add <path> <branch>` to create a new worktree.
-func CreateWorktree(path, branch string) error {
-	cmd := exec.Command("git", "worktree", "add", path, branch)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+func CreateWorktree(ctx context.Context, path, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "worktree", "add", path, branch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if len(out) > 0 {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		}
 		return err
 	}
-	_ = output // Output can be logged if needed
 	return nil
 }
 
 // RemoveWorktree executes `git worktree remove <path>` to remove a worktree.
-func RemoveWorktree(path string) error {
-	cmd := exec.Command("git", "worktree", "remove", path)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+func RemoveWorktree(ctx context.Context, path string) error {
+	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if len(out) > 0 {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		}
 		return err
 	}
-	_ = output // Output can be logged if needed
 	return nil
 }
 
 // GetActiveWorktree returns the current worktree path by comparing
 // the current working directory with the paths from `git worktree list`.
 // If no matching worktree is found, it returns the main repository path.
-func GetActiveWorktree() (string, error) {
+func GetActiveWorktree(ctx context.Context) (string, error) {
 	// Get current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
+	// Resolve symlinks so we compare canonical paths.
+	cwdReal, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		cwdReal = cwd // fall back to raw path if resolution fails
+	}
 
 	// Get all worktrees
-	worktrees, err := ListWorktrees()
+	worktrees, err := ListWorktrees(ctx)
 	if err != nil {
 		return "", err
 	}
 
 	// Compare CWD with worktree paths
 	for _, wt := range worktrees {
-		if wt.Path == cwd {
+		wtReal, err := filepath.EvalSymlinks(wt.Path)
+		if err != nil {
+			wtReal = wt.Path
+		}
+		if wtReal == cwdReal {
 			return wt.Path, nil
 		}
 	}
 
 	// If no match found, return the main repository path
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err

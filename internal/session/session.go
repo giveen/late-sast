@@ -204,7 +204,7 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 				// requires arguments, running it would silently produce wrong
 				// results (e.g. get_code_snippet with no project/qualified_name).
 				// Drop these instead of executing them with empty args.
-				if repaired == "{}" && toolRequiresArgs(tc.Function.Name) {
+				if repaired == "{}" && s.toolRequiresArgs(tc.Function.Name) {
 					if s.debugLogger != nil && s.debugLogger.Enabled() {
 						s.debugLogger.LogEvent("MALFORMED_TOOL_CALL_DROPPED", fmt.Sprintf("Dropping malformed tool call %q: repaired to empty args", tc.Function.Name),
 							map[string]interface{}{
@@ -252,24 +252,26 @@ func previewToolCallArgs(args string) string {
 	return preview
 }
 
-// toolRequiresArgs returns true for tools that are known to have required
-// parameters.  A call to such a tool with an empty `{}` argument object would
-// fail or produce garbage results, so malformed repairs that land on `{}` are
-// dropped rather than executed.
-func toolRequiresArgs(toolName string) bool {
-	switch toolName {
-	case "get_code_snippet", "trace_path",
-		"ctx_search", "search_code", "search_graph",
-		"index_repository", "ctx_fetch_and_index", "ctx_index_file",
-		"docs_lookup", "docs_resolve", "docs_read", "docs_search",
-		"cve_search", "vul_cve_search", "vul_vendor_product_cve", "vul_vendor_products",
-		"bash", "write_file", "write_sast_report",
-		"compose_patch", "implementations", "spawn_subagent",
-		"read_file", "get_architecture", "context_index", "ctx_index",
-		"search_codebase", "list_files":
-		return true
+// toolRequiresArgs reports whether the named tool has at least one required
+// parameter, by inspecting its JSON schema from the registry. If the tool is
+// not registered (unknown at call-filter time), we conservatively return true
+// so that a malformed repair to "{}" is dropped rather than executed blindly.
+func (s *Session) toolRequiresArgs(toolName string) bool {
+	t := s.Registry.Get(toolName)
+	if t == nil {
+		return true // unknown tool — conservative drop
 	}
-	return false
+	params := t.Parameters()
+	if len(params) == 0 {
+		return false
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(params, &schema); err != nil {
+		return true // can't parse schema — conservative drop
+	}
+	return len(schema.Required) > 0
 }
 
 func repairToolCallArguments(raw string) (string, bool) {

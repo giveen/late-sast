@@ -97,8 +97,10 @@ func (t *ToolAdapter) CallString(args json.RawMessage) string {
 	return fmt.Sprintf("Calling MCP tool '%s'...", t.mcpTool.Name)
 }
 
-// Connect establishes a connection to an MCP server.
-func (c *Client) Connect(ctx context.Context, transport mcp.Transport) error {
+// Connect establishes a connection to an MCP server and stores it under name.
+// Use a unique name per server; duplicate names overwrite the previous session
+// without closing it.
+func (c *Client) Connect(ctx context.Context, name string, transport mcp.Transport) error {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "late",
 		Version: common.Version,
@@ -109,8 +111,9 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport) error {
 		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
-	// Store session
-	c.sessions["default"] = session
+	// Store session under the provided name so multiple servers are tracked
+	// independently and Close() can tear them all down.
+	c.sessions[name] = session
 
 	// List and store tools using iterator
 	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
@@ -214,7 +217,7 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 		}
 
 		// Connect to the server
-		if err := c.Connect(ctx, transport); err != nil {
+		if err := c.Connect(ctx, name, transport); err != nil {
 			return fmt.Errorf("failed to connect to server %s: %w", name, err)
 		}
 	}

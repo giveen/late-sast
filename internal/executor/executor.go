@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
@@ -179,7 +180,7 @@ func ExecuteToolCallsWithStats(
 			}
 		}
 		if allSafe {
-			parallelResults := executeParallelBatch(ctx, turnCtx, toolCalls, runner, cache)
+			parallelResults := executeParallelBatch(ctx, turnCtx, toolCalls, runner, onToolState, cache)
 			for i, pr := range parallelResults {
 				tc := toolCalls[i]
 				stats.Total++
@@ -192,7 +193,7 @@ func ExecuteToolCallsWithStats(
 					sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, nil, 0)
 				} else {
 					if pr.runErr != nil {
-						if pr.elapsed > 0 && turnCtx.Err() == context.DeadlineExceeded {
+						if pr.elapsed > 0 && errors.Is(pr.callCtxErr, context.DeadlineExceeded) {
 							stats.TimedOut++
 						} else {
 							stats.Failures++
@@ -342,21 +343,23 @@ const maxParallelToolCalls = 4
 
 // parallelToolResult holds the outcome of one tool call executed concurrently.
 type parallelToolResult struct {
-	result    string
-	runErr    error
-	start     time.Time
-	elapsed   time.Duration
-	fromCache bool
+	result     string
+	runErr     error
+	callCtxErr error // context error from the per-call context at completion time
+	start      time.Time
+	elapsed    time.Duration
+	fromCache  bool
 }
 
 // executeParallelBatch runs all calls concurrently (up to maxParallelToolCalls)
 // and returns results in the same order as toolCalls. Results are NOT yet added
 // to the session; the caller must do that sequentially.
 func executeParallelBatch(
-	ctx context.Context,
+	_ context.Context,
 	turnCtx context.Context,
 	toolCalls []client.ToolCall,
 	runner func(context.Context, client.ToolCall) (string, error),
+	onToolState func(toolName string, running bool),
 	cache *ToolResultCache,
 ) []parallelToolResult {
 	out := make([]parallelToolResult, len(toolCalls))
@@ -384,12 +387,19 @@ func executeParallelBatch(
 				callCtx, cancel = context.WithTimeout(turnCtx, td)
 				defer cancel()
 			}
+			if onToolState != nil {
+				onToolState(call.Function.Name, true)
+			}
 			result, runErr := runner(callCtx, call)
+			if onToolState != nil {
+				onToolState(call.Function.Name, false)
+			}
 			out[idx] = parallelToolResult{
-				result:  result,
-				runErr:  runErr,
-				start:   start,
-				elapsed: time.Since(start),
+				result:     result,
+				runErr:     runErr,
+				callCtxErr: callCtx.Err(),
+				start:      start,
+				elapsed:    time.Since(start),
 			}
 		}(i, tc)
 	}
@@ -407,11 +417,9 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 // --- Tool Registration ---
 
 // RegisterTools registers the common tool set on a session's registry.
-// If isPlanning is true, it only registers read-only tools and the planning tool.
-// Otherwise, it registers the full set of coding tools.
 // configuredSkillsDir is optional; when provided, its skills are discovered
 // additively alongside default skill directories.
-func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning bool, configuredSkillsDir ...string) {
+func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, configuredSkillsDir ...string) {
 	if enabledTools == nil {
 		enabledTools = make(map[string]bool)
 	}
@@ -424,17 +432,12 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 		reg.Register(&tool.ShellTool{})
 	}
 
-	if isPlanning {
-		// Planning-only tools
-		reg.Register(tool.WriteImplementationPlanTool{})
-	} else {
-		// Coding-only tools
-		if enabledTools["write_file"] {
-			reg.Register(tool.WriteFileTool{})
-		}
-		if enabledTools["target_edit"] {
-			reg.Register(tool.NewTargetEditTool())
-		}
+	// Coding tools
+	if enabledTools["write_file"] {
+		reg.Register(tool.WriteFileTool{})
+	}
+	if enabledTools["target_edit"] {
+		reg.Register(tool.NewTargetEditTool())
 	}
 
 	// Register Skills. This is additive: configured dir (if any) + defaults.
