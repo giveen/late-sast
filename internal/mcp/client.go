@@ -106,6 +106,18 @@ func (c *Client) Connect(ctx context.Context, name string, transport mcp.Transpo
 		Version: common.Version,
 	}, nil)
 
+	if prev, ok := c.sessions[name]; ok {
+		for toolName, adapter := range c.tools {
+			if adapter != nil && adapter.session == prev {
+				delete(c.tools, toolName)
+			}
+		}
+		if err := prev.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "[operator-error] mcp: failed to close replaced session %q: %v\n", name, err)
+		}
+		delete(c.sessions, name)
+	}
+
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to MCP server: %w", err)

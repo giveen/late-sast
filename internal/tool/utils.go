@@ -44,8 +44,14 @@ func GetToolParam(args json.RawMessage, key string) string {
 
 // Truncate shortens a string to maxLen characters, adding "..." if truncated
 func Truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
 }

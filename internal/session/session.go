@@ -19,7 +19,6 @@ import (
 var shellExitCodeRe = regexp.MustCompile(`^Command failed with exit code\s+(-?\d+)`)
 var trailingCommaJSONRe = regexp.MustCompile(`,\s*([}\]])`)
 var codeFenceRe = regexp.MustCompile("(?s)^\\s*```(?:json|js|javascript|yaml|toml|python|txt)?[ \\t]*\\n?(.*?)\\n?```\\s*$")
-var jsonExtractRe = regexp.MustCompile(`(?s)[{\[]`)
 var pythonTrueRe = regexp.MustCompile(`\bTrue\b`)
 var pythonFalseRe = regexp.MustCompile(`\bFalse\b`)
 var pythonNoneRe = regexp.MustCompile(`\bNone\b`)
