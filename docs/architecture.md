@@ -1,8 +1,8 @@
 # Architecture Map — late-sast
 
 > **Project:** late-sast: Autonomous Security Auditor
-> **Base:** Built on mlhher/late agent engine
-> **Fork:** late-sast adds Docker sandboxing, live exploitation, CVE enrichment, SAST pipeline, and Fyne v2 GUI
+> **Description:** An autonomous security auditor that performs static and dynamic vulnerability scanning with live proof-of-concept exploitation, powered by AI agents and built on a distributed orchestration framework
+> **Key Features:** Docker sandboxing, live exploitation, CVE enrichment, SAST pipeline, Fyne v2 GUI, knowledge graph-first analysis
 > **License:** BSL 1.1
 > **Generated:** Repository index snapshot plus manual maintenance
 > **Last updated:** 2026-05-05 (v2.0.1)
@@ -32,7 +32,7 @@
 
 ## 1. Executive Summary
 
-late-sast is an autonomous security auditor built on the Late agent engine. It audits a GitHub target or local repository by cloning or reusing a workspace, preparing a disposable Docker environment, indexing the codebase through MCP-backed analysis tools, running structured secrets/SAST/CVE scans, replaying exploit attempts, and emitting a normalized Markdown report. The primary operator surface is a Fyne v2 GUI, while small helper binaries exist for MCP serving and direct tool invocation.
+late-sast is an autonomous security auditor that combines static and dynamic analysis to identify and verify vulnerabilities. It audits a GitHub target or local repository by cloning or reusing a workspace, preparing a disposable Docker environment, indexing the codebase through MCP-backed analysis tools, running structured secrets/SAST/CVE scans, replaying exploit attempts, and emitting a normalized Markdown report. The primary operator surface is a Fyne v2 GUI, while small helper binaries exist for MCP serving and direct tool invocation.
 
 ### Binary Targets
 
@@ -978,7 +978,7 @@ The SAST-specific analyzer (`bash_analyzer_sast.go`) extends the base analyzer w
 
 | Session Type | Persistence | Storage Path |
 |-------------|-------------|--------------|
-| Interactive (`late`) | Yes | `~/.config/late/sessions/session-{timestamp}.json` |
+| Interactive | Yes | `~/.config/late-sast/sessions/session-{timestamp}.json` |
 | SAST (`late-sast`) | No | In-memory only |
 | Subagent | No | In-memory only |
 
@@ -1051,8 +1051,8 @@ type Config struct {
 
 | Binary | Config Directory |
 |--------|-----------------|
-| `late` | `~/.config/late/config.json` |
-| `late-sast` | `~/.config/late-sast/config.json` (falls back to `~/.config/late/config.json`) |
+| `late-sast` | `~/.config/late-sast/config.json` |
+| `mcp-run` | `~/.config/late-sast/config.json` |
 
 ### 10.5 Security
 

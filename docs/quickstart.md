@@ -2,8 +2,6 @@
 
 This guide gets you up and running with `late-sast` (the autonomous security auditor) in under 5 minutes.
 
-`late-sast` uses `~/.config/late-sast/` for its config, and falls back to `~/.config/late/` so an existing `late` installation works with zero changes.
-
 ---
 
 ## late-sast — Autonomous Security Auditor
@@ -198,13 +196,11 @@ export LATE_SUBAGENT_MODEL="qwen3.6-27b-balanced"  # fixer subagent
 
 ## Configuration
 
-`late-sast` stores its config in a JSON file. Set your model endpoint and credentials there to avoid re-exporting environment variables each session.
+`late-sast` stores its config in a JSON file to persist your model endpoint and credentials across sessions.
 
-**Config locations:**
-* **Linux/macOS:** `~/.config/late-sast/config.json` (preferred) → falls back to `~/.config/late/config.json`
-* **Windows:** `%APPDATA%\late-sast\config.json` → falls back to `%APPDATA%\late\config.json`
-
-> If you already have `late` configured, `late-sast` will pick it up automatically — no migration needed.
+**Config location:**
+* **Linux/macOS:** `~/.config/late-sast/config.json`
+* **Windows:** `%APPDATA%\late-sast\config.json`
 
 **Setting Precedence:**
 1. Non-empty environment variables
@@ -228,7 +224,7 @@ export LATE_SUBAGENT_MODEL="qwen3.6-27b-balanced"  # fixer subagent
 
 ## MCP Integration
 
-`late-sast` loads MCP config from `~/.config/late-sast/mcp_config.json` if it exists, otherwise falls back to `~/.config/late/mcp_config.json`. The project-local `.late-sast/mcp_config.json` takes highest precedence over both.
+`late-sast` loads MCP config from `~/.config/late-sast/mcp_config.json` if it exists. The project-local `.late-sast/mcp_config.json` takes highest precedence.
 
 > **late-sast note:** The codebase-memory MCP server is required for SAST scans and is downloaded automatically on first run. You do not need to add it manually.
 
