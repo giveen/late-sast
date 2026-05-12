@@ -89,7 +89,7 @@ func (t *TargetEditTool) Execute(ctx context.Context, args json.RawMessage) (str
 }
 
 func (t *TargetEditTool) RequiresConfirmation(args json.RawMessage) bool {
-	file := getToolParam(args, "file")
+	file := GetToolParam(args, "file")
 	if file == "" {
 		return true // Default to requiring confirmation if we can't parse yet (streaming)
 	}
@@ -97,12 +97,12 @@ func (t *TargetEditTool) RequiresConfirmation(args json.RawMessage) bool {
 }
 
 func (t *TargetEditTool) CallString(args json.RawMessage) string {
-	file := getToolParam(args, "file")
+	file := GetToolParam(args, "file")
 	if file == "" {
 		return "Editing file..."
 	}
 
 	// Use just the filename for display, with truncated path if needed
 	filename := filepath.Base(file)
-	return fmt.Sprintf("Editing file %s...", truncate(filename, 50))
+	return fmt.Sprintf("Editing file %s...", Truncate(filename, 50))
 }

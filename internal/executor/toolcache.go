@@ -37,13 +37,21 @@ func (c *ToolResultCache) Get(toolName, args string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if time.Now().After(entry.expiresAt) {
-		c.mu.Lock()
-		delete(c.entries, key)
-		c.mu.Unlock()
-		return "", false
+	if !time.Now().After(entry.expiresAt) {
+		return entry.result, true
 	}
-	return entry.result, true
+	// Entry appears expired. Re-check under write lock: a concurrent Set may
+	// have written a fresh entry between our RUnlock and Lock here. Only
+	// delete if the entry is still expired — otherwise return the fresh value.
+	c.mu.Lock()
+	if current, still := c.entries[key]; still && !time.Now().After(current.expiresAt) {
+		result := current.result
+		c.mu.Unlock()
+		return result, true
+	}
+	delete(c.entries, key)
+	c.mu.Unlock()
+	return "", false
 }
 
 // Set stores a tool result with the TTL appropriate for that tool.
@@ -112,7 +120,7 @@ func cacheTTLFor(toolName string) time.Duration {
 
 	// Side-effectful or write operations — never cache.
 	case "spawn_subagent", "bash", "write_file", "write_sast_report",
-		"compose_patch", "implementations",
+		"patch_compose_network", "target_edit",
 		"ctx_fetch_and_index", "ctx_index_file", "ctx_index":
 		return 0
 	default:

@@ -18,6 +18,15 @@ import (
 
 var shellExitCodeRe = regexp.MustCompile(`^Command failed with exit code\s+(-?\d+)`)
 var trailingCommaJSONRe = regexp.MustCompile(`,\s*([}\]])`)
+var codeFenceRe = regexp.MustCompile("(?s)^\\s*```(?:json|js|javascript|yaml|toml|python|txt)?[ \\t]*\\n?(.*?)\\n?```\\s*$")
+var pythonTrueRe = regexp.MustCompile(`\bTrue\b`)
+var pythonFalseRe = regexp.MustCompile(`\bFalse\b`)
+var pythonNoneRe = regexp.MustCompile(`\bNone\b`)
+var nanInfRe = regexp.MustCompile(`\b(NaN|Infinity)\b`)
+var minusInfRe = regexp.MustCompile(`-Infinity\b`)
+var ellipsisRe = regexp.MustCompile(`,?\s*\.\.\.\s*([}\]])`)
+var lineCommentRe = regexp.MustCompile(`(?m)//[^\n]*$`)
+var blockCommentRe = regexp.MustCompile(`(?s)/\*.*?\*/`)
 
 const (
 	historyRecentWindow              = 8
@@ -197,6 +206,19 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 	// Filter out tool calls with invalid JSON arguments and log them
 	var validCalls []client.ToolCall
 	for _, tc := range toolCalls {
+		// Drop calls with no function name — streaming artifact where the name
+		// delta was never received. Executing them would yield "tool not found: ".
+		if strings.TrimSpace(tc.Function.Name) == "" {
+			if s.debugLogger != nil && s.debugLogger.Enabled() {
+				s.debugLogger.LogEvent("MALFORMED_TOOL_CALL_DROPPED", "Dropping tool call with empty function name",
+					map[string]interface{}{
+						"id":                tc.ID,
+						"arguments_preview": previewToolCallArgs(tc.Function.Arguments),
+					})
+			}
+			continue
+		}
+
 		// Validate that arguments are parseable JSON
 		if !json.Valid([]byte(tc.Function.Arguments)) {
 			if repaired, ok := repairToolCallArguments(tc.Function.Arguments); ok {
@@ -204,7 +226,7 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 				// requires arguments, running it would silently produce wrong
 				// results (e.g. get_code_snippet with no project/qualified_name).
 				// Drop these instead of executing them with empty args.
-				if repaired == "{}" && toolRequiresArgs(tc.Function.Name) {
+				if repaired == "{}" && s.toolRequiresArgs(tc.Function.Name) {
 					if s.debugLogger != nil && s.debugLogger.Enabled() {
 						s.debugLogger.LogEvent("MALFORMED_TOOL_CALL_DROPPED", fmt.Sprintf("Dropping malformed tool call %q: repaired to empty args", tc.Function.Name),
 							map[string]interface{}{
@@ -252,24 +274,26 @@ func previewToolCallArgs(args string) string {
 	return preview
 }
 
-// toolRequiresArgs returns true for tools that are known to have required
-// parameters.  A call to such a tool with an empty `{}` argument object would
-// fail or produce garbage results, so malformed repairs that land on `{}` are
-// dropped rather than executed.
-func toolRequiresArgs(toolName string) bool {
-	switch toolName {
-	case "get_code_snippet", "trace_path",
-		"ctx_search", "search_code", "search_graph",
-		"index_repository", "ctx_fetch_and_index", "ctx_index_file",
-		"docs_lookup", "docs_resolve", "docs_read", "docs_search",
-		"cve_search", "vul_cve_search", "vul_vendor_product_cve", "vul_vendor_products",
-		"bash", "write_file", "write_sast_report",
-		"compose_patch", "implementations", "spawn_subagent",
-		"read_file", "get_architecture", "context_index", "ctx_index",
-		"search_codebase", "list_files":
-		return true
+// toolRequiresArgs reports whether the named tool has at least one required
+// parameter, by inspecting its JSON schema from the registry. If the tool is
+// not registered (unknown at call-filter time), we conservatively return true
+// so that a malformed repair to "{}" is dropped rather than executed blindly.
+func (s *Session) toolRequiresArgs(toolName string) bool {
+	t := s.Registry.Get(toolName)
+	if t == nil {
+		return true // unknown tool — conservative drop
 	}
-	return false
+	params := t.Parameters()
+	if len(params) == 0 {
+		return false
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(params, &schema); err != nil {
+		return true // can't parse schema — conservative drop
+	}
+	return len(schema.Required) > 0
 }
 
 func repairToolCallArguments(raw string) (string, bool) {
@@ -278,16 +302,45 @@ func repairToolCallArguments(raw string) (string, bool) {
 		return "", false
 	}
 
+	// Fast path: already valid JSON.
 	if compact, ok := compactJSON(candidate); ok {
 		return compact, true
+	}
+
+	// Strategy: strip markdown code fences (```json … ```).
+	if stripped := stripCodeFences(candidate); stripped != candidate {
+		candidate = stripped
+		if compact, ok := compactJSON(candidate); ok {
+			return compact, true
+		}
+	}
+
+	// Strategy: extract the first JSON object/array from surrounding prose.
+	if extracted, ok := extractJSONFromProse(candidate); ok && extracted != candidate {
+		if compact, ok := compactJSON(extracted); ok {
+			return compact, true
+		}
+		candidate = extracted
 	}
 
 	if !(strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[")) {
 		return "", false
 	}
 
-	// Common minor damage: trailing commas and truncated closes.
+	// Strategy: remove JS/C-style comments (// and /* */) outside string values.
+	candidate = removeJSONComments(candidate)
+
+	// Strategy: fix Python-style literals (True→true, False→false, None→null)
+	// and non-JSON numeric tokens (NaN→null, Infinity→null) outside strings.
+	candidate = applyOutsideStrings(candidate, fixPythonAndNonJSONLiterals)
+
+	// Strategy: remove ellipsis tokens inside arrays/objects (…).
+	candidate = ellipsisRe.ReplaceAllString(candidate, "$1")
+
+	// Strategy: trailing commas before closing brackets.
 	candidate = trailingCommaJSONRe.ReplaceAllString(candidate, "$1")
+
+	// Strategy: close unclosed JSON structures.
 	candidate = closeOpenJSONStructures(candidate)
 
 	if compact, ok := compactJSON(candidate); ok {
@@ -295,6 +348,131 @@ func repairToolCallArguments(raw string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// stripCodeFences removes leading/trailing markdown code fences from s.
+func stripCodeFences(s string) string {
+	if m := codeFenceRe.FindStringSubmatch(s); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return s
+}
+
+// extractJSONFromProse finds the first JSON object or array in s (which may
+// contain surrounding prose text) and returns it. It respects nested
+// structures and skips string literals when tracking depth.
+func extractJSONFromProse(s string) (string, bool) {
+	start := -1
+	var startChar byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' || s[i] == '[' {
+			start = i
+			startChar = s[i]
+			break
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	var endChar byte
+	if startChar == '{' {
+		endChar = '}'
+	} else {
+		endChar = ']'
+	}
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inStr {
+			if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			continue
+		}
+		if c == startChar {
+			depth++
+		} else if c == endChar {
+			depth--
+			if depth == 0 {
+				return s[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// applyOutsideStrings calls fn only on non-string segments of s, leaving
+// double-quoted JSON string literals verbatim.
+func applyOutsideStrings(s string, fn func(string) string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '"' {
+			// Copy the entire string literal unchanged.
+			start := i
+			i++
+			for i < len(s) {
+				if s[i] == '\\' {
+					i += 2
+					continue
+				}
+				if s[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+			b.WriteString(s[start:i])
+		} else {
+			// Collect the non-string segment up to the next '"'.
+			next := strings.IndexByte(s[i:], '"')
+			var chunk string
+			if next < 0 {
+				chunk = s[i:]
+				i = len(s)
+			} else {
+				chunk = s[i : i+next]
+				i += next
+			}
+			b.WriteString(fn(chunk))
+		}
+	}
+	return b.String()
+}
+
+// fixPythonAndNonJSONLiterals replaces Python-style and non-JSON numeric
+// tokens in a non-string segment with their JSON equivalents.
+func fixPythonAndNonJSONLiterals(segment string) string {
+	segment = pythonTrueRe.ReplaceAllString(segment, "true")
+	segment = pythonFalseRe.ReplaceAllString(segment, "false")
+	segment = pythonNoneRe.ReplaceAllString(segment, "null")
+	segment = minusInfRe.ReplaceAllString(segment, "null")
+	segment = nanInfRe.ReplaceAllString(segment, "null")
+	return segment
+}
+
+// removeJSONComments strips // line comments and /* */ block comments from
+// non-string portions of a JSON-like string.
+func removeJSONComments(s string) string {
+	s = applyOutsideStrings(s, func(seg string) string {
+		return blockCommentRe.ReplaceAllString(seg, "")
+	})
+	s = applyOutsideStrings(s, func(seg string) string {
+		return lineCommentRe.ReplaceAllString(seg, "")
+	})
+	return s
 }
 
 func compactJSON(raw string) (string, bool) {
@@ -574,10 +752,18 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 	id := filepath.Base(s.HistoryPath)
 	id = strings.TrimSuffix(id, ".json")
 
+	// Preserve the original creation time if this session has already been
+	// saved. Without this, every UpdateSessionMetadata call would stomp
+	// CreatedAt with time.Now(), making every session appear brand-new.
+	createdAt := time.Now()
+	if existing, err := LoadSessionMeta(id); err == nil && existing != nil && !existing.CreatedAt.IsZero() {
+		createdAt = existing.CreatedAt
+	}
+
 	return SessionMeta{
 		ID:             id,
 		Title:          title,
-		CreatedAt:      time.Now(),
+		CreatedAt:      createdAt,
 		LastUpdated:    time.Now(),
 		HistoryPath:    s.HistoryPath,
 		LastUserPrompt: lastPrompt,

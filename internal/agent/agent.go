@@ -426,9 +426,9 @@ func NewSubagentOrchestrator(
 	// Inherit all tools from parent (including MCP tools)
 	if parent.Registry() != nil {
 		for _, t := range parent.Registry().All() {
-			// Skip spawn_subagent and write_implementation_plan to prevent recursion/confusion
+			// Skip spawn_subagent to prevent recursion
 			name := t.Name()
-			if name == "spawn_subagent" || name == "write_implementation_plan" {
+			if name == "spawn_subagent" {
 				continue
 			}
 			if !allowToolForAgentType(agentType, name) {
@@ -440,7 +440,7 @@ func NewSubagentOrchestrator(
 
 	// Always ensure coder subagents have the full toolset (not just planning tools)
 	if agentType == "coder" {
-		executor.RegisterTools(sess.Registry, enabledTools, false)
+		executor.RegisterTools(sess.Registry, enabledTools)
 	}
 
 	// 3. Construct Initial Context
@@ -449,9 +449,11 @@ func NewSubagentOrchestrator(
 		initialMsg += "Context Files:\n"
 		for _, f := range ctxFiles {
 			content, err := os.ReadFile(f)
-			if err == nil {
-				initialMsg += fmt.Sprintf("- %s:\n```\n%s\n```\n", f, string(content))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[subagent] warning: could not read context file %q: %v\n", f, err)
+				continue
 			}
+			initialMsg += fmt.Sprintf("- %s:\n```\n%s\n```\n", f, string(content))
 		}
 	}
 

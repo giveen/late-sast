@@ -42,12 +42,12 @@ func TestEstimateTokenCount(t *testing.T) {
 		expected int
 	}{
 		{"", 0},
-		{"a", 0},        // 1/3.5 = 0.28 -> 0
-		{"abcd", 1},     // 4/3.5 = 1.14 -> 1
-		{"abcde", 1},    // 5/3.5 = 1.42 -> 1
-		{"12345678", 2}, // 8/3.5 = 2.28 -> 2
-		{"123456789", 2}, // 9/3.5 = 2.57 -> 2
-		{"1234567890", 2}, // 10/3.5 = 2.85 -> 2
+		{"a", 0},              // 1/3.5 = 0.28 -> 0
+		{"abcd", 1},           // 4/3.5 = 1.14 -> 1
+		{"abcde", 1},          // 5/3.5 = 1.42 -> 1
+		{"12345678", 2},       // 8/3.5 = 2.28 -> 2
+		{"123456789", 2},      // 9/3.5 = 2.57 -> 2
+		{"1234567890", 2},     // 10/3.5 = 2.85 -> 2
 		{"this is a test", 4}, // 14/3.5 = 4.0 -> 4
 	}
 
@@ -139,5 +139,57 @@ func TestCalculateHistoryTokens(t *testing.T) {
 				t.Errorf("CalculateHistoryTokens() = %d; want %d", result, tt.expected)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EstimateToolDefinitionTokens unit tests
+// ---------------------------------------------------------------------------
+
+func TestEstimateToolDefinitionTokens_Nil(t *testing.T) {
+	if got := EstimateToolDefinitionTokens(nil); got != 0 {
+		t.Errorf("EstimateToolDefinitionTokens(nil) = %d, want 0", got)
+	}
+}
+
+func TestEstimateToolDefinitionTokens_Empty(t *testing.T) {
+	if got := EstimateToolDefinitionTokens([]client.ToolDefinition{}); got != 0 {
+		t.Errorf("EstimateToolDefinitionTokens([]) = %d, want 0", got)
+	}
+}
+
+func TestEstimateToolDefinitionTokens_SingleTool(t *testing.T) {
+	tools := []client.ToolDefinition{{
+		Type: "function",
+		Function: client.FunctionDefinition{
+			Name:        "read_file",
+			Description: "Read a file from disk and return its contents",
+			Parameters:  []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+		},
+	}}
+	got := EstimateToolDefinitionTokens(tools)
+	if got <= 0 {
+		t.Errorf("EstimateToolDefinitionTokens(single tool) = %d, want > 0", got)
+	}
+}
+
+func TestEstimateToolDefinitionTokens_MoreToolsMoreTokens(t *testing.T) {
+	makeTool := func(name, desc string) client.ToolDefinition {
+		return client.ToolDefinition{
+			Type: "function",
+			Function: client.FunctionDefinition{
+				Name:        name,
+				Description: desc,
+				Parameters:  []byte(`{}`),
+			},
+		}
+	}
+	one := EstimateToolDefinitionTokens([]client.ToolDefinition{makeTool("tool_a", "description of tool a")})
+	two := EstimateToolDefinitionTokens([]client.ToolDefinition{
+		makeTool("tool_a", "description of tool a"),
+		makeTool("tool_b", "description of tool b"),
+	})
+	if two <= one {
+		t.Errorf("two tools (%d tokens) should have more tokens than one (%d)", two, one)
 	}
 }

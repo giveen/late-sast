@@ -2,8 +2,6 @@
 
 This guide gets you up and running with `late-sast` (the autonomous security auditor) in under 5 minutes.
 
-`late-sast` uses `~/.config/late-sast/` for its config, and falls back to `~/.config/late/` so an existing `late` installation works with zero changes.
-
 ---
 
 ## late-sast — Autonomous Security Auditor
@@ -185,50 +183,68 @@ models:
     cmd: "llama-server -m /models/Qwen3.6-27B-Balanced-Q4_K_P.gguf -c 65536 -ngl 99"
 ```
 
-Point `late`/`late-sast` at the swap endpoint:
+Point `late-sast` at the swap endpoint:
 
 ```bash
-export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_BASE_URL="http://localhost:8080"
 export OPENAI_MODEL="qwen3.6-35b-a3b"              # orchestrator
 export LATE_AUDITOR_MODEL="VulnLLM-R-7B"           # auditor
 export LATE_SUBAGENT_MODEL="qwen3.6-27b-balanced"  # fixer subagent
+```
+
+Or in `config.json`:
+
+```json
+{
+  "openai_base_url": "http://localhost:8080",
+  "openai_model": "qwen3.6-35b-a3b",
+  "auditor_model": "VulnLLM-R-7B",
+  "subagent_model": "qwen3.6-27b-balanced"
+}
 ```
 
 ---
 
 ## Configuration
 
-`late-sast` stores its config in a JSON file. Set your model endpoint and credentials there to avoid re-exporting environment variables each session.
+`late-sast` stores its config in a JSON file to persist your model endpoint and credentials across sessions.
 
-**Config locations:**
-* **Linux/macOS:** `~/.config/late-sast/config.json` (preferred) → falls back to `~/.config/late/config.json`
-* **Windows:** `%APPDATA%\late-sast\config.json` → falls back to `%APPDATA%\late\config.json`
-
-> If you already have `late` configured, `late-sast` will pick it up automatically — no migration needed.
+**Config location:**
+* **Linux/macOS:** `~/.config/late-sast/config.json`
+* **Windows:** `%APPDATA%\late-sast\config.json`
 
 **Setting Precedence:**
 1. Non-empty environment variables
 2. `config.json`
 3. Defaults
 
+**Example configuration (local llama.cpp):**
 
 ```json
 {
+  "enabled_tools": {
+    "bash": true,
+    "read_file": true,
+    "spawn_subagent": true,
+    "target_edit": true,
+    "write_file": true
+  },
   "openai_base_url": "http://localhost:8080",
-  "openai_api_key": "your-api-key",
-  "openai_model": "qwen3.6-35b-a3b",
-  "auditor_base_url": "http://localhost:8080",
-  "auditor_api_key": "",
+  "openai_api_key": "local-dev",
+  "openai_model": "Qwen3.6-35B-A3B-Uncensored",
+  "subagent_base_url": "http://localhost:8080",
+  "subagent_api_key": "local-dev",
+  "subagent_model": "Qwen3.6-27B-Coder-Uncensored",
   "auditor_model": "VulnLLM-R-7B",
-  "subagent_base_url": "http://10.8.0.2:8080",
-  "subagent_api_key": "your-other-api-key",
-  "subagent_model": "qwen3.6-27b-balanced"
+  "debug_logging": true
 }
 ```
 
+> **Note:** Fields like `auditor_base_url`, `auditor_api_key`, and `debug_logging` are optional. Auditor endpoint falls back to `openai_base_url` if not specified. All fields starting with `subagent_` or `auditor_` default to the main OpenAI endpoint/key if omitted.
+
 ## MCP Integration
 
-`late-sast` loads MCP config from `~/.config/late-sast/mcp_config.json` if it exists, otherwise falls back to `~/.config/late/mcp_config.json`. The project-local `.late-sast/mcp_config.json` takes highest precedence over both.
+`late-sast` loads MCP config from `~/.config/late-sast/mcp_config.json` if it exists. The project-local `.late-sast/mcp_config.json` takes highest precedence.
 
 > **late-sast note:** The codebase-memory MCP server is required for SAST scans and is downloaded automatically on first run. You do not need to add it manually.
 

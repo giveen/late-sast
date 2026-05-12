@@ -31,7 +31,7 @@ services:
     ports:
       - "8080:8080"
 `
-	out, services, err := patchComposeNetwork([]byte(src), "sast-net")
+	out, services, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +77,7 @@ services:
   db:
     image: postgres:16
 `
-	out, services, err := patchComposeNetwork([]byte(src), "sast-net")
+	out, services, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ networks:
   internal:
     driver: bridge
 `
-	out, services, err := patchComposeNetwork([]byte(src), "sast-net")
+	out, services, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -172,7 +172,7 @@ networks:
   internal:
     driver: bridge
 `
-	out, services, err := patchComposeNetwork([]byte(src), "sast-net")
+	out, services, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,11 +201,11 @@ services:
     image: myapp
 `
 	// Apply twice — result should be the same.
-	out1, _, err := patchComposeNetwork([]byte(src), "sast-net")
+	out1, _, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err != nil {
 		t.Fatalf("first patch: %v", err)
 	}
-	out2, services2, err := patchComposeNetwork(out1, "sast-net")
+	out2, services2, err := PatchComposeNetwork(out1, "sast-net")
 	if err != nil {
 		t.Fatalf("second patch: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestPatchComposeNetwork_NoServicesKey(t *testing.T) {
 	src := `
 version: "3"
 `
-	_, _, err := patchComposeNetwork([]byte(src), "sast-net")
+	_, _, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err == nil {
 		t.Fatal("expected error for compose file with no 'services' key")
 	}
@@ -233,7 +233,7 @@ version: "3"
 
 func TestPatchComposeNetwork_InvalidYAML(t *testing.T) {
 	src := `this: is: not: valid: yaml:`
-	_, _, err := patchComposeNetwork([]byte(src), "sast-net")
+	_, _, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
 	}
@@ -247,7 +247,7 @@ services:
     ports:
       - "8080:8080"
 `
-	out, _, err := patchComposeNetwork([]byte(src), "sast-net")
+	out, _, err := PatchComposeNetwork([]byte(src), "sast-net")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

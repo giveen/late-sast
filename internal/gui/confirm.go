@@ -3,6 +3,7 @@ package gui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"runtime"
 
 	"late/internal/client"
@@ -63,7 +64,7 @@ func GUIConfirmMiddleware(win fyne.Window, reg *common.ToolRegistry, unsupervise
 
 			select {
 			case choice := <-resultCh:
-				return applyChoice(ctx, choice, tc, reg, next)
+				return applyChoice(ctx, win, choice, tc, reg, next)
 			case <-ctx.Done():
 				return "", ctx.Err()
 			}
@@ -126,6 +127,7 @@ func formatCallString(tc client.ToolCall) string {
 // applyChoice processes the user's confirmation choice (mirrors tui logic).
 func applyChoice(
 	ctx context.Context,
+	win fyne.Window,
 	choice string,
 	tc client.ToolCall,
 	reg *common.ToolRegistry,
@@ -149,11 +151,11 @@ func applyChoice(
 						tool.SaveSessionAllowedCommand(params.Command)
 					case "p", "P":
 						if err := tool.SaveAllowedCommand(params.Command, false); err != nil {
-							fyne.LogError("Failed to save allowed command", err)
+							fyne.Do(func() { dialog.ShowError(fmt.Errorf("failed to save allowed command: %w", err), win) })
 						}
 					case "g", "G":
 						if err := tool.SaveAllowedCommand(params.Command, true); err != nil {
-							fyne.LogError("Failed to save global allowed command", err)
+							fyne.Do(func() { dialog.ShowError(fmt.Errorf("failed to save global allowed command: %w", err), win) })
 						}
 					}
 				}
@@ -163,11 +165,11 @@ func applyChoice(
 					tool.SaveSessionAllowedTool(tc.Function.Name)
 				case "p", "P":
 					if err := tool.SaveAllowedTool(tc.Function.Name, false); err != nil {
-						fyne.LogError("Failed to save allowed tool", err)
+						fyne.Do(func() { dialog.ShowError(fmt.Errorf("failed to save allowed tool: %w", err), win) })
 					}
 				case "g", "G":
 					if err := tool.SaveAllowedTool(tc.Function.Name, true); err != nil {
-						fyne.LogError("Failed to save global allowed tool", err)
+						fyne.Do(func() { dialog.ShowError(fmt.Errorf("failed to save global allowed tool: %w", err), win) })
 					}
 				}
 			}

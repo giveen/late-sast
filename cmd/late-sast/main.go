@@ -36,6 +36,8 @@ import (
 	"late/internal/pathutil"
 	"late/internal/session"
 	"late/internal/tool"
+	"late/internal/tool/docker"
+	"late/internal/tool/knowledge"
 )
 
 func main() {
@@ -57,7 +59,7 @@ func main() {
 
 	pathReq := flag.String("path", "", "Path to a local repository to audit (alternative to a GitHub URL)")
 	retestReq := flag.String("retest", "", "Path to a previous SAST report — retests all confirmed findings to check if they have been fixed")
-	useTUIReq := flag.Bool("tui", false, "Use terminal UI instead of the graphical interface")
+	useTUIReq := flag.Bool("tui", false, "Keep stdout/stderr on the terminal instead of redirecting to ~/.cache/late-sast/late-sast.log (GUI always launches)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: late-sast [flags]\n\n")
@@ -210,7 +212,7 @@ func main() {
 				"network":         networkName,
 				"workdir":         workDir,
 			})
-			out, err := tool.CleanupScanEnvironmentTool{}.Execute(context.Background(), cleanupArgs)
+			out, err := docker.CleanupScanEnvironmentTool{}.Execute(context.Background(), cleanupArgs)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[late-sast] Cleanup error: %v\n", err)
 			} else {
@@ -294,7 +296,9 @@ func main() {
 	// Ensure codebase-memory-mcp is available, downloading if needed.
 	// Capture the path so we can auto-inject it into the MCP config below.
 	var cbmBinPath string
-	if cbmPath, cbmErr := ensureCBM(); cbmErr != nil {
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer dlCancel()
+	if cbmPath, cbmErr := ensureCBM(dlCtx); cbmErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: codebase-memory-mcp unavailable (%v) — graph intelligence disabled\n", cbmErr)
 	} else {
 		cbmBinPath = cbmPath
@@ -312,7 +316,7 @@ func main() {
 
 	mcpConfig, err := mcp.LoadMCPConfigFromDir(sastCfgDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to load MCP config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[operator-error] mcp: failed to load MCP config: %v\n", err)
 	}
 	if mcpConfig == nil {
 		mcpConfig = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
@@ -332,7 +336,7 @@ func main() {
 	if len(mcpConfig.McpServers) > 0 {
 		fmt.Println("Connecting to MCP servers...")
 		if err := mcpClient.ConnectFromConfig(context.Background(), mcpConfig); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: MCP connection error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[operator-error] mcp: connection failed: %v\n", err)
 		}
 	}
 
@@ -362,46 +366,88 @@ func main() {
 	}
 
 	// --- Dynamic Resource Allocator -------------------------------------------
-	// Lazily fetch architecture metadata from get_architecture on the first
-	// subagent spawn. The results are cached for all subsequent subagents within
-	// the same scan and stored in GlobalBlackboard.
+	// Lazily fetch architecture metadata from get_architecture on each subagent
+	// spawn until one succeeds. Uses a mutex so a failed fetch can be retried
+	// (e.g. if MCP hadn't finished connecting on the first spawn). Once a fetch
+	// succeeds AND returns non-empty data it is cached and GlobalBlackboard is
+	// updated; subsequent spawns are no-ops.
+	//
+	// Two failure modes handled:
+	//   1. MCP not ready yet (tool not found / connection error) — retried on
+	//      next subagent spawn.
+	//   2. Repo not yet indexed — get_architecture returns success with all-zero
+	//      metrics. We detect this and keep retrying instead of locking in a
+	//      zero budget.
 	var (
-		cachedMeta   orchestrator.ComplexityMeta
-		metaFetchErr error
-		metaOnce     sync.Once
+		cachedMeta  orchestrator.ComplexityMeta
+		metaFetched bool
+		metaMu      sync.Mutex
 	)
-	fetchMetaOnce := func(repoPath string, notifyRootAgent *orchestrator.BaseOrchestrator) {
-		metaOnce.Do(func() {
-			cachedMeta, _, metaFetchErr = fetchComplexityMeta(
-				context.Background(), mcpClient, repoPath,
-			)
-			if metaFetchErr != nil {
-				fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget unavailable (%v) — using CLI defaults\n", metaFetchErr)
-				return
+	fetchMetaOnce := func(repoPath string, _ *orchestrator.BaseOrchestrator) {
+		metaMu.Lock()
+		defer metaMu.Unlock()
+		if metaFetched {
+			return
+		}
+		// Retry up to 3 times with a short delay to absorb brief MCP startup
+		// lag. Retries are bounded so we don't block subagent spawning for long.
+		const (
+			maxAttempts = 3
+			retryDelay  = 200 * time.Millisecond
+		)
+		var (
+			meta orchestrator.ComplexityMeta
+			err  error
+		)
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			if attempt > 0 {
+				time.Sleep(retryDelay)
 			}
-			mult := orchestrator.LanguageMultiplier(cachedMeta.PrimaryLanguage)
-			orchestrator.GlobalBlackboard.Write("language_multiplier", mult)
-			orchestrator.GlobalBlackboard.Write("primary_language", cachedMeta.PrimaryLanguage)
-			orchestrator.GlobalBlackboard.Write("complexity_meta", cachedMeta)
-			fmt.Printf("[late-sast] Dynamic budget: lang=%s mult=%.1fx turns≈%d timeout≈%s\n",
-				cachedMeta.PrimaryLanguage, mult,
-				orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
-				orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
-			)
-		})
+			meta, _, err = fetchComplexityMeta(context.Background(), mcpClient, repoPath)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget unavailable (%v) — will retry on next subagent\n", err)
+			return
+		}
+		// Guard against an empty response (repo not yet indexed by
+		// codebase-memory-mcp). All-zero metrics would produce an incorrect
+		// budget; keep retrying on subsequent subagent spawns instead.
+		if meta.FileCount == 0 && meta.RouteCount == 0 && meta.HotspotCount == 0 {
+			fmt.Fprintf(os.Stderr, "[late-sast] Dynamic budget: architecture data is empty (repo not indexed yet?) — will retry on next subagent\n")
+			return
+		}
+		cachedMeta = meta
+		metaFetched = true
+		mult := orchestrator.LanguageMultiplier(cachedMeta.PrimaryLanguage)
+		orchestrator.GlobalBlackboard.Write("language_multiplier", mult)
+		orchestrator.GlobalBlackboard.Write("primary_language", cachedMeta.PrimaryLanguage)
+		orchestrator.GlobalBlackboard.Write("complexity_meta", cachedMeta)
+		fmt.Printf("[late-sast] Dynamic budget: lang=%s mult=%.1fx turns≈%d timeout≈%s\n",
+			cachedMeta.PrimaryLanguage, mult,
+			orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling),
+			orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling),
+		)
 	}
 	// budget from get_architecture is used, falling back to static defaults.
 	resolveBudget := func() (int, time.Duration) {
+		metaMu.Lock()
+		fetched := metaFetched
+		meta := cachedMeta
+		metaMu.Unlock()
+
 		turns := *subagentMaxTurns
 		timeout := *subagentTimeout
-		if !userSetMaxTurns && metaFetchErr == nil {
-			dyn := orchestrator.CalculateTurns(cachedMeta, *maxTurnsCeiling)
+		if !userSetMaxTurns && fetched {
+			dyn := orchestrator.CalculateTurns(meta, *maxTurnsCeiling)
 			if dyn > 0 {
 				turns = dyn
 			}
 		}
-		if !userSetTimeout && metaFetchErr == nil {
-			dyn := orchestrator.CalculateTimeout(cachedMeta, *maxTimeoutCeiling)
+		if !userSetTimeout && fetched {
+			dyn := orchestrator.CalculateTimeout(meta, *maxTimeoutCeiling)
 			if dyn > 0 {
 				timeout = dyn
 			}
@@ -409,7 +455,7 @@ func main() {
 		return turns, timeout
 	}
 	// --------------------------------------------------------------------------
-	// ── GUI path — always use Fyne GUI (TUI mode removed) ────────────────────
+	// ── GUI ──────────────────────────────────────────────────────────────────
 	guiApp := gui.NewApp()
 	guiApp.SetConfigDir(sastCfgDir)
 	guiApp.SetOnQuit(cleanupContainer)
@@ -545,7 +591,7 @@ func reservedPortsFromBaseURLs(baseURLs ...string) []int {
 // ensureCBM ensures codebase-memory-mcp is available on the system.
 // When built with -tags cbm_embedded the binary is extracted from the baked-in
 // cbmBinaryData; otherwise it is downloaded from GitHub Releases.
-func ensureCBM() (string, error) {
+func ensureCBM(ctx context.Context) (string, error) {
 	const binaryName = "codebase-memory-mcp"
 
 	home, err := os.UserHomeDir()
@@ -597,7 +643,11 @@ func ensureCBM() (string, error) {
 	fmt.Printf("[late-sast] Downloading codebase-memory-mcp (%s/%s)...\n", goos, arch)
 
 	//nolint:gosec // URL is constructed from a fixed base and runtime constants only
-	resp, err := http.Get(tarURL) //nolint:noctx
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tarURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build HTTP request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request failed: %w", err)
 	}
@@ -632,15 +682,23 @@ func ensureCBM() (string, error) {
 		if base != binaryName {
 			continue
 		}
+		// 512 MB cap guards against decompression bombs when hdr.Size is
+		// zero or falsified; legitimate binaries well under this threshold.
+		const maxBinarySize = 512 << 20
 		f, err := os.OpenFile(localBin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 		if err != nil {
 			return "", fmt.Errorf("create binary: %w", err)
 		}
-		if _, err := io.Copy(f, tr); err != nil { //nolint:gosec
+		written, err := io.Copy(f, io.LimitReader(tr, maxBinarySize))
+		if err != nil {
 			f.Close()
 			return "", fmt.Errorf("write binary: %w", err)
 		}
 		f.Close()
+		if hdr.Size > 0 && written != hdr.Size {
+			os.Remove(localBin)
+			return "", fmt.Errorf("binary %q: wrote %d of %d bytes (truncated)", binaryName, written, hdr.Size)
+		}
 		installed = true
 		break
 	}
@@ -674,7 +732,7 @@ func extractSASTSkill(destDir string) error {
 // fetchAndIndexSemgrepSkills downloads the semgrep/skills code-security zip
 // (if not already cached at the persistent cache dir), extracts it, and indexes
 // all rule markdown files into the BM25 index. Non-fatal — caller logs the error.
-func fetchAndIndexSemgrepSkills(ctx context.Context, idx *tool.ContextIndex, destDir string) error {
+func fetchAndIndexSemgrepSkills(ctx context.Context, idx *knowledge.ContextIndex, destDir string) error {
 	const zipURL = "https://github.com/semgrep/skills/raw/main/skills/code-security.zip"
 	rulesDir := filepath.Join(destDir, "code-security", "rules")
 
@@ -754,7 +812,7 @@ func fetchAndIndexSemgrepSkills(ctx context.Context, idx *tool.ContextIndex, des
 	return indexRulesDir(idx, rulesDir)
 }
 
-func indexRulesDir(idx *tool.ContextIndex, rulesDir string) error {
+func indexRulesDir(idx *knowledge.ContextIndex, rulesDir string) error {
 	entries, err := os.ReadDir(rulesDir)
 	if err != nil {
 		return err
@@ -940,7 +998,7 @@ func persistMissionTurnResult(agentType, raw string) {
 // indexSASTReferences pre-loads the SAST vulnerability reference library into
 // the shared BM25 index so the scanner subagent never needs to read these files
 // into its conversation context (~128 KB for a typical scan).
-func indexSASTReferences(idx *tool.ContextIndex, dir string) {
+func indexSASTReferences(idx *knowledge.ContextIndex, dir string) {
 	// Index SKILL.md (Judge protocol + vulnerability class list)
 	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err == nil {
 		idx.IndexText("SKILL", string(b))

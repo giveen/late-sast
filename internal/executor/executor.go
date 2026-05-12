@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -117,6 +119,8 @@ func (a *StreamAccumulator) Reset() {
 const (
 	maxToolCallsPerTurn     = 24
 	maxDuplicateToolTurns   = 2
+	maxToolPlanCycleLength  = 2
+	toolPlanHistoryWindow   = 8
 	maxToolExecutionPerTurn = 5 * time.Minute
 )
 
@@ -163,6 +167,60 @@ func ExecuteToolCallsWithStats(
 	runner := baseRunner
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		runner = middlewares[i](common.ToolRunner(runner))
+	}
+
+	// Fast path: when all tool calls in this turn are parallel-safe and there
+	// are at least two of them, run them concurrently then commit results in
+	// order. This avoids sequential round-trips for common read batches (e.g.
+	// the model reading 3 files at once).
+	if len(toolCalls) >= 2 {
+		allSafe := true
+		for _, tc := range toolCalls {
+			if !isParallelSafe(tc.Function.Name) {
+				allSafe = false
+				break
+			}
+		}
+		if allSafe {
+			parallelResults := executeParallelBatch(ctx, turnCtx, toolCalls, runner, onToolState, cache)
+			for i, pr := range parallelResults {
+				tc := toolCalls[i]
+				stats.Total++
+				result := pr.result
+				if pr.fromDedup {
+					sess.LogEvent("TOOL_BATCH_DEDUP_HIT", "Returning deduplicated tool result from same-turn identical call", map[string]interface{}{
+						"tool": tc.Function.Name,
+						"id":   tc.ID,
+					})
+					sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, pr.runErr, pr.elapsed)
+				} else if pr.fromCache {
+					sess.LogEvent("TOOL_CACHE_HIT", "Returning cached tool result", map[string]interface{}{
+						"tool": tc.Function.Name,
+						"id":   tc.ID,
+					})
+					sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, nil, 0)
+				} else {
+					if pr.runErr != nil {
+						if pr.elapsed > 0 && errors.Is(pr.callCtxErr, context.DeadlineExceeded) {
+							stats.TimedOut++
+						} else {
+							stats.Failures++
+						}
+						result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, pr.runErr)
+					} else {
+						if cache != nil {
+							cache.Set(tc.Function.Name, tc.Function.Arguments, result)
+						}
+					}
+					sess.LogDebugToolResult(tc.Function.Name, tc.ID, result, pr.runErr, pr.elapsed)
+				}
+				if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
+					return stats, err
+				}
+			}
+			stats.DurationMS = time.Since(started).Milliseconds()
+			return stats, nil
+		}
 	}
 
 	for _, tc := range toolCalls {
@@ -263,11 +321,128 @@ func ExecuteToolCallsWithStats(
 
 func mutatesWorkspace(toolName string) bool {
 	switch toolName {
-	case "write_file", "compose_patch", "implementations", "bash":
+	case "write_file", "patch_compose_network", "target_edit", "bash":
 		return true
 	default:
 		return false
 	}
+}
+
+// isParallelSafe returns true for deterministic, read-only tools that can be
+// safely executed concurrently within a single LLM turn. Conservative: only
+// explicit allowlist; unknown tools default to sequential.
+func isParallelSafe(toolName string) bool {
+	switch toolName {
+	case "read_file",
+		"context_index",
+		"docs_resolve", "docs_read", "docs_search",
+		"cve_search",
+		"vul_cve_search", "vul_vendor_product_cve", "vul_vendor_products", "vul_last_cves",
+		"assess_disclosure_context":
+		return true
+	default:
+		return false
+	}
+}
+
+// maxParallelToolCalls is the bounded concurrency limit for parallel-safe tool
+// calls within a single LLM turn.
+const maxParallelToolCalls = 4
+
+// parallelToolResult holds the outcome of one tool call executed concurrently.
+type parallelToolResult struct {
+	result     string
+	runErr     error
+	callCtxErr error // context error from the per-call context at completion time
+	start      time.Time
+	elapsed    time.Duration
+	fromCache  bool
+	fromDedup  bool
+}
+
+// executeParallelBatch runs all calls concurrently (up to maxParallelToolCalls)
+// and returns results in the same order as toolCalls. Results are NOT yet added
+// to the session; the caller must do that sequentially.
+func executeParallelBatch(
+	_ context.Context,
+	turnCtx context.Context,
+	toolCalls []client.ToolCall,
+	runner func(context.Context, client.ToolCall) (string, error),
+	onToolState func(toolName string, running bool),
+	cache *ToolResultCache,
+) []parallelToolResult {
+	out := make([]parallelToolResult, len(toolCalls))
+	sem := make(chan struct{}, maxParallelToolCalls)
+	var wg sync.WaitGroup
+
+	// Deduplicate identical tool+arguments within the same turn so repeated
+	// model emissions (common in long streaming turns) execute exactly once.
+	leaderByKey := make(map[string]int, len(toolCalls))
+	dupToLeader := make(map[int]int)
+	for i, tc := range toolCalls {
+		k := cacheKey(tc.Function.Name, tc.Function.Arguments)
+		if leader, ok := leaderByKey[k]; ok {
+			dupToLeader[i] = leader
+			continue
+		}
+		leaderByKey[k] = i
+	}
+
+	for i, tc := range toolCalls {
+		if _, isDup := dupToLeader[i]; isDup {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, call client.ToolCall) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			start := time.Now()
+			if cache != nil {
+				if cached, hit := cache.Get(call.Function.Name, call.Function.Arguments); hit {
+					out[idx] = parallelToolResult{result: cached, fromCache: true, start: start}
+					return
+				}
+			}
+
+			callCtx := turnCtx
+			var cancel context.CancelFunc
+			if td := toolTimeoutFor(call.Function.Name); td > 0 {
+				callCtx, cancel = context.WithTimeout(turnCtx, td)
+				defer cancel()
+			}
+			if onToolState != nil {
+				onToolState(call.Function.Name, true)
+			}
+			result, runErr := runner(callCtx, call)
+			if onToolState != nil {
+				onToolState(call.Function.Name, false)
+			}
+			out[idx] = parallelToolResult{
+				result:     result,
+				runErr:     runErr,
+				callCtxErr: callCtx.Err(),
+				start:      start,
+				elapsed:    time.Since(start),
+			}
+		}(i, tc)
+	}
+	wg.Wait()
+
+	for dupIdx, leaderIdx := range dupToLeader {
+		leader := out[leaderIdx]
+		out[dupIdx] = parallelToolResult{
+			result:     leader.result,
+			runErr:     leader.runErr,
+			callCtxErr: leader.callCtxErr,
+			start:      leader.start,
+			elapsed:    leader.elapsed,
+			fromCache:  leader.fromCache,
+			fromDedup:  true,
+		}
+	}
+	return out
 }
 
 // ExecuteToolCalls runs a slice of tool calls against the session.
@@ -280,11 +455,9 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 // --- Tool Registration ---
 
 // RegisterTools registers the common tool set on a session's registry.
-// If isPlanning is true, it only registers read-only tools and the planning tool.
-// Otherwise, it registers the full set of coding tools.
 // configuredSkillsDir is optional; when provided, its skills are discovered
 // additively alongside default skill directories.
-func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning bool, configuredSkillsDir ...string) {
+func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, configuredSkillsDir ...string) {
 	if enabledTools == nil {
 		enabledTools = make(map[string]bool)
 	}
@@ -297,17 +470,12 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 		reg.Register(&tool.ShellTool{})
 	}
 
-	if isPlanning {
-		// Planning-only tools
-		reg.Register(tool.WriteImplementationPlanTool{})
-	} else {
-		// Coding-only tools
-		if enabledTools["write_file"] {
-			reg.Register(tool.WriteFileTool{})
-		}
-		if enabledTools["target_edit"] {
-			reg.Register(tool.NewTargetEditTool())
-		}
+	// Coding tools
+	if enabledTools["write_file"] {
+		reg.Register(tool.WriteFileTool{})
+	}
+	if enabledTools["target_edit"] {
+		reg.Register(tool.NewTargetEditTool())
 	}
 
 	// Register Skills. This is additive: configured dir (if any) + defaults.
@@ -427,7 +595,7 @@ func RunLoop(
 	sharedCache *ToolResultCache,
 ) (string, error) {
 	var lastContent string
-	var previousToolSig string
+	var successfulToolSigs []string
 	duplicateToolTurns := 0
 	cache := sharedCache
 	if cache == nil {
@@ -580,15 +748,13 @@ func RunLoop(
 		}
 
 		toolSig := toolCallSignature(validCalls)
-		if toolSig != "" && toolSig == previousToolSig {
-			duplicateToolTurns++
-		} else {
-			duplicateToolTurns = 0
-		}
-		previousToolSig = toolSig
+		duplicateToolTurns = consecutiveDuplicateToolTurns(successfulToolSigs, toolSig)
 
 		if duplicateToolTurns >= maxDuplicateToolTurns {
 			return "", fmt.Errorf("repeated identical tool-call plan detected for %d consecutive turns", duplicateToolTurns+1)
+		}
+		if cycleLen, cycleTurns := repeatedToolPlanCycle(successfulToolSigs, toolSig, maxToolPlanCycleLength); cycleLen > 0 {
+			return "", fmt.Errorf("repeated tool-call cycle detected across %d turns (cycle length %d)", cycleTurns, cycleLen)
 		}
 
 		lastContent = acc.Content
@@ -611,13 +777,16 @@ func RunLoop(
 			return "", err
 		}
 
-		// If the previous turn had failures, timeouts, or policy blocks, reset
-		// the duplicate counter. This allows legitimate retries after transient
-		// errors or blocked commands without triggering the duplicate-loop
-		// blocker. Only count as duplicate if the plan repeats AFTER a fully
-		// successful turn.
+		// Only successful turns contribute to loop detection history. Failed,
+		// timed-out, or blocked executions are excluded so legitimate retries
+		// after transient errors are not mistaken for a loop.
 		if stats.Failures > 0 || stats.TimedOut > 0 || stats.Blocked > 0 {
 			duplicateToolTurns = 0
+		} else if toolSig != "" {
+			successfulToolSigs = append(successfulToolSigs, toolSig)
+			if len(successfulToolSigs) > toolPlanHistoryWindow {
+				successfulToolSigs = successfulToolSigs[len(successfulToolSigs)-toolPlanHistoryWindow:]
+			}
 		}
 
 		sess.LogTurnSummary(debug.TurnSummary{
@@ -660,4 +829,54 @@ func toolCallSignature(calls []client.ToolCall) string {
 		h.Write([]byte("\x00"))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func consecutiveDuplicateToolTurns(successfulSigs []string, current string) int {
+	if current == "" {
+		return 0
+	}
+	count := 0
+	for i := len(successfulSigs) - 1; i >= 0; i-- {
+		if successfulSigs[i] != current {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+func repeatedToolPlanCycle(successfulSigs []string, current string, maxCycleLen int) (int, int) {
+	if current == "" || maxCycleLen < 2 {
+		return 0, 0
+	}
+	seq := append(append([]string(nil), successfulSigs...), current)
+	for cycleLen := 2; cycleLen <= maxCycleLen; cycleLen++ {
+		cycleTurns := cycleLen * 2
+		if len(seq) < cycleTurns {
+			continue
+		}
+		tail := seq[len(seq)-cycleTurns:]
+		pattern := tail[:cycleLen]
+		allSame := true
+		for i := 1; i < len(pattern); i++ {
+			if pattern[i] != pattern[0] {
+				allSame = false
+				break
+			}
+		}
+		if allSame {
+			continue
+		}
+		match := true
+		for i := cycleLen; i < len(tail); i++ {
+			if tail[i] != pattern[i%cycleLen] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return cycleLen, cycleTurns
+		}
+	}
+	return 0, 0
 }

@@ -19,6 +19,9 @@ import (
 	"late/internal/pathutil"
 	"late/internal/session"
 	"late/internal/tool"
+	"late/internal/tool/docker"
+	"late/internal/tool/knowledge"
+	"late/internal/tool/sast"
 )
 
 type sessionResult struct {
@@ -56,8 +59,8 @@ type scanBuildDeps struct {
 	readFile                func(name string) ([]byte, error)
 	mkdirAll                func(path string, perm os.FileMode) error
 	loadConfigFromDir       func(path string) (*appconfig.Config, error)
-	newProContextClient     func() (*tool.ProContextClient, error)
-	fetchAndIndexSemgrepRef func(context.Context, *tool.ContextIndex, string) error
+	newProContextClient     func() (*knowledge.ProContextClient, error)
+	fetchAndIndexSemgrepRef func(context.Context, *knowledge.ContextIndex, string) error
 }
 
 func defaultScanBuildDeps() scanBuildDeps {
@@ -66,7 +69,7 @@ func defaultScanBuildDeps() scanBuildDeps {
 		readFile:                os.ReadFile,
 		mkdirAll:                os.MkdirAll,
 		loadConfigFromDir:       appconfig.LoadConfigFromDir,
-		newProContextClient:     tool.NewProContextClient,
+		newProContextClient:     knowledge.NewProContextClient,
 		fetchAndIndexSemgrepRef: fetchAndIndexSemgrepSkills,
 	}
 }
@@ -192,6 +195,7 @@ func buildScanSessionWithDeps(cfg scanBuildConfig, deps scanBuildDeps) (sessionR
 		reportWrittenCh:   reportWrittenCh,
 		enabledTools:      cfg.enabledTools,
 		mcpClient:         cfg.mcpClient,
+		debugLog:          debugLog,
 	}, deps)
 
 	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
@@ -215,6 +219,7 @@ type registerScanToolsConfig struct {
 	reportWrittenCh   chan string
 	enabledTools      map[string]bool
 	mcpClient         *mcp.Client
+	debugLog          *debug.Logger
 }
 
 func registerScanTools(sess *session.Session, cfg registerScanToolsConfig, deps scanBuildDeps) {
@@ -225,33 +230,39 @@ func registerScanTools(sess *session.Session, cfg registerScanToolsConfig, deps 
 	})
 	sess.Registry.Register(tool.NewReadFileTool())
 	sess.Registry.Register(tool.WriteFileTool{})
-	sess.Registry.Register(tool.SetupContainerTool{})
-	sess.Registry.Register(tool.LaunchDockerTool{ReservedHostPorts: cfg.reservedHostPorts})
-	sess.Registry.Register(tool.WaitForTargetReadyTool{})
-	sess.Registry.Register(tool.BootstrapScanToolchainTool{})
-	sess.Registry.Register(tool.WriteSASTReportTool{
+	sess.Registry.Register(docker.SetupContainerTool{})
+	sess.Registry.Register(docker.LaunchDockerTool{ReservedHostPorts: cfg.reservedHostPorts})
+	sess.Registry.Register(docker.WaitForTargetReadyTool{})
+	sess.Registry.Register(docker.BootstrapScanToolchainTool{})
+	sess.Registry.Register(sast.WriteSASTReportTool{
 		OnWritten: func(path string) {
 			select {
 			case cfg.reportWrittenCh <- path:
 			default:
 			}
 		},
+		OnError: func(path string, err error) {
+			if cfg.debugLog != nil {
+				cfg.debugLog.LogOperatorError("write_sast_report", "failed to write report",
+					err, map[string]interface{}{"path": path})
+			}
+		},
 	})
-	sess.Registry.Register(tool.VulVendorProductCVETool{})
-	sess.Registry.Register(tool.VulCVESearchTool{})
-	sess.Registry.Register(tool.VulVendorProductsTool{})
-	sess.Registry.Register(tool.VulLastCVEsTool{})
+	sess.Registry.Register(knowledge.VulVendorProductCVETool{})
+	sess.Registry.Register(knowledge.VulCVESearchTool{})
+	sess.Registry.Register(knowledge.VulVendorProductsTool{})
+	sess.Registry.Register(knowledge.VulLastCVEsTool{})
 	sess.Registry.Register(tool.PatchComposeNetworkTool{})
 
 	if docsClient, docsErr := deps.newProContextClient(); docsErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: ProContext registry unavailable (%v) — docs_resolve/read/search disabled\n", docsErr)
 	} else {
-		sess.Registry.Register(tool.DocsResolveTool{Client: docsClient})
-		sess.Registry.Register(tool.DocsReadTool{Client: docsClient})
-		sess.Registry.Register(tool.DocsSearchTool{Client: docsClient})
+		sess.Registry.Register(knowledge.DocsResolveTool{Client: docsClient})
+		sess.Registry.Register(knowledge.DocsReadTool{Client: docsClient})
+		sess.Registry.Register(knowledge.DocsSearchTool{Client: docsClient})
 	}
 
-	ctxIdx := tool.NewContextIndex()
+	ctxIdx := knowledge.NewContextIndex()
 	indexSASTReferences(ctxIdx, "/tmp/sast-skill")
 	semgrepCacheDir := func() string {
 		if d, err := pathutil.LateSASTCacheDir(); err == nil {
@@ -262,10 +273,10 @@ func registerScanTools(sess *session.Session, cfg registerScanToolsConfig, deps 
 	if err := deps.fetchAndIndexSemgrepRef(context.Background(), ctxIdx, semgrepCacheDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: semgrep code-security skills unavailable (%v) — skipping\n", err)
 	}
-	sess.Registry.Register(tool.CtxIndexTool{Index: ctxIdx})
-	sess.Registry.Register(tool.CtxSearchTool{Index: ctxIdx})
-	sess.Registry.Register(tool.CtxFetchAndIndexTool{Index: ctxIdx})
-	sess.Registry.Register(tool.CtxIndexFileTool{Index: ctxIdx})
+	sess.Registry.Register(knowledge.CtxIndexTool{Index: ctxIdx})
+	sess.Registry.Register(knowledge.CtxSearchTool{Index: ctxIdx})
+	sess.Registry.Register(knowledge.CtxFetchAndIndexTool{Index: ctxIdx})
+	sess.Registry.Register(knowledge.CtxIndexFileTool{Index: ctxIdx})
 
 	if cfg.mcpClient == nil {
 		return

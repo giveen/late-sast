@@ -27,6 +27,12 @@ type BaseOrchestrator struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// rootCtx is the caller-supplied context (with injected values such as
+	// SkipConfirmationKey and ToolApprovalKey). It is stored by SetContext and
+	// used to reset o.ctx when a previous run's cancellable child has expired,
+	// preserving those values across successive Submit/Execute calls.
+	rootCtx context.Context
+
 	// Stop mechanism
 	stopCh chan struct{}
 
@@ -50,7 +56,8 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		middlewares:  middlewares,
 		eventCh:      make(chan common.Event, 100),
 		ctx:          context.Background(),
-		stopCh:       make(chan struct{}),
+		rootCtx:      context.Background(),
+		stopCh:       make(chan struct{}, 1),
 		maxTurns:     maxTurns,
 		stateMachine: NewStateMachine(PhaseStop),
 	}
@@ -93,6 +100,7 @@ func (o *BaseOrchestrator) SetMiddlewares(middlewares []common.ToolMiddleware) {
 func (o *BaseOrchestrator) SetContext(ctx context.Context) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.rootCtx = ctx
 	o.ctx = ctx
 }
 
@@ -151,9 +159,18 @@ func (o *BaseOrchestrator) Submit(text string) error {
 	o.mu.Lock()
 	// Clear any old cancellation state so a new run isn't instantly aborted
 	o.cancel = nil
-	// Reset the base context if it was already cancelled
+	// Reset the base context if it was already cancelled, preserving any
+	// caller-injected values (e.g. SkipConfirmationKey, ToolApprovalKey).
 	if o.ctx.Err() != nil {
-		o.ctx = context.Background()
+		o.ctx = o.rootCtx
+	}
+	// Drain any residual stop signal left by a Cancel() that arrived after the
+	// previous run had already completed. Without this, IsStopRequested() at
+	// the end of the new run would consume the stale signal and emit a
+	// spurious StopRequestedEvent for a run that was never cancelled.
+	select {
+	case <-o.stopCh:
+	default:
 	}
 	o.mu.Unlock()
 
@@ -225,39 +242,25 @@ func (o *BaseOrchestrator) buildRunLoopCallbacks(ctx context.Context) (
 	return onStartTurn, onGPUAcquired, onGPUReleased
 }
 
-func (o *BaseOrchestrator) Execute(text string) (string, error) {
+// prepareContext resets the orchestrator context if it has expired, creates a
+// cancellable child, stores the cancel func, and injects the orchestrator ID
+// for tool interactions. The caller must defer the returned cancel.
+func (o *BaseOrchestrator) prepareContext() (context.Context, context.CancelFunc) {
 	o.mu.Lock()
 	if o.ctx.Err() != nil {
-		o.ctx = context.Background()
+		o.ctx = o.rootCtx
 	}
 	ctx, cancel := context.WithCancel(o.ctx)
 	o.cancel = cancel
-	o.ctx = ctx // Set the Context for this execution
+	o.ctx = ctx
 	o.mu.Unlock()
+	return context.WithValue(ctx, common.OrchestratorIDKey, o.id), cancel
+}
 
-	defer cancel()
-
-	// Inject orchestrator ID into context for tool interactions
-	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
-
-	if err := o.sess.AddUserMessage(text); err != nil {
-		return "", err
-	}
-
-	// Emit the correct initial status: "queued" when a coordinator is present
-	// (the first turn will immediately queue for the GPU), "thinking" otherwise.
-	atomic.StoreInt64(&o.turnCurrent, 0)
-	o.switchPhase(PhasePlan, "execute invoked", 0)
-	if o.Coordinator() != nil {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
-	} else {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
-	}
-	defer func() {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
-	}()
-
-	// Build extra body
+// doRunLoop builds all shared RunLoop callbacks and runs the inference/tool
+// loop to completion. It resets the stream accumulator on exit.
+// Initial and terminal status events are the caller's responsibility.
+func (o *BaseOrchestrator) doRunLoop(ctx context.Context) (string, error) {
 	var extraBody map[string]any
 
 	onStartTurn, onGPUAcquired, onGPUReleased := o.buildRunLoopCallbacks(ctx)
@@ -279,12 +282,11 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		extraBody,
 		onStartTurn,
 		onEndTurn,
-		func(res common.StreamResult) {
+		func(sr common.StreamResult) {
 			o.mu.Lock()
-			o.acc.Append(res)
+			o.acc.Append(sr)
 			accCopy := o.acc
 			o.mu.Unlock()
-
 			o.eventCh <- common.ContentEvent{
 				ID:               o.id,
 				Content:          accCopy.Content,
@@ -303,6 +305,31 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		o.sharedCache,
 	)
 
+	o.mu.Lock()
+	o.acc.Reset()
+	o.mu.Unlock()
+
+	return res, err
+}
+
+func (o *BaseOrchestrator) Execute(text string) (string, error) {
+	ctx, cancel := o.prepareContext()
+	defer cancel()
+
+	if err := o.sess.AddUserMessage(text); err != nil {
+		return "", err
+	}
+
+	atomic.StoreInt64(&o.turnCurrent, 0)
+	o.switchPhase(PhasePlan, "execute invoked", 0)
+	if o.Coordinator() != nil {
+		o.eventCh <- common.StatusEvent{ID: o.id, Status: "queued"}
+	} else {
+		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+	}
+	defer func() { o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"} }()
+
+	res, err := o.doRunLoop(ctx)
 	if err != nil {
 		o.switchPhase(PhaseStop, "run errored", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
@@ -314,71 +341,10 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 }
 
 func (o *BaseOrchestrator) run() {
-	// Build extra body
-	var extraBody map[string]any
+	ctx, cancel := o.prepareContext()
+	defer cancel()
 
-	o.mu.Lock()
-	if o.ctx.Err() != nil {
-		o.ctx = context.Background()
-	}
-	ctx, cancel := context.WithCancel(o.ctx)
-	o.cancel = cancel
-	o.ctx = ctx // Set the context so Execute/RunLoop can share the cancelable context safely
-	o.mu.Unlock()
-
-	defer cancel() // Ensure we don't leak the context when run() finishes
-
-	// Inject orchestrator ID into context for tool interactions
-	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
-
-	onStartTurn, onGPUAcquired, onGPUReleased := o.buildRunLoopCallbacks(ctx)
-
-	onEndTurn := func() {
-		o.RefreshContextSize(ctx)
-		o.mu.Lock()
-		usage := o.acc.Usage
-		o.acc.Reset()
-		o.mu.Unlock()
-		o.switchPhase(PhaseFeedback, "turn completed", int(atomic.LoadInt64(&o.turnCurrent)))
-		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
-	}
-
-	_, err := executor.RunLoop(
-		ctx,
-		o.sess,
-		o.maxTurns,
-		extraBody,
-		onStartTurn,
-		onEndTurn,
-		func(res common.StreamResult) {
-			o.mu.Lock()
-			o.acc.Append(res)
-			accCopy := o.acc // Copy for event
-			o.mu.Unlock()
-
-			o.eventCh <- common.ContentEvent{
-				ID:               o.id,
-				Content:          accCopy.Content,
-				ReasoningContent: accCopy.Reasoning,
-				ToolCalls:        accCopy.ToolCalls,
-				Usage:            accCopy.Usage,
-			}
-		},
-		o.middlewares,
-		o.Coordinator(),
-		onGPUAcquired,
-		onGPUReleased,
-		func(toolName string, running bool) {
-			o.eventCh <- common.ToolRuntimeEvent{ID: o.id, Tool: toolName, Running: running}
-		},
-		o.sharedCache,
-	)
-
-	// Reset accumulator after finished or ready for next turn
-	o.mu.Lock()
-	o.acc.Reset()
-	o.mu.Unlock()
-
+	_, err := o.doRunLoop(ctx)
 	if err != nil {
 		o.switchPhase(PhaseStop, "run errored", int(atomic.LoadInt64(&o.turnCurrent)))
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
@@ -387,7 +353,6 @@ func (o *BaseOrchestrator) run() {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}
 
-	// Check if stop was requested and send StopRequestedEvent
 	if o.IsStopRequested() {
 		o.eventCh <- common.StopRequestedEvent{ID: o.id}
 	}

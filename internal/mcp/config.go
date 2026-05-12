@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 )
 
 // MCPConfig represents the top-level configuration structure
@@ -118,15 +117,17 @@ func loadConfigFromFile(path string) (*MCPConfig, error) {
 	return &config, nil
 }
 
+// expandEnvVarsRe matches ${VARIABLE_NAME} placeholders.
+var expandEnvVarsRe = regexp.MustCompile(`\$\{([^}]+)\}`)
+
 // ExpandEnvVars replaces ${VARIABLE} patterns with environment variable values
 func ExpandEnvVars(value string) string {
-	// Pattern to match ${VARIABLE_NAME}
-	re := regexp.MustCompile(`\$\{([^}]+)\}`)
-
-	return re.ReplaceAllStringFunc(value, func(match string) string {
-		// Extract variable name from ${VARIABLE_NAME}
-		varName := strings.TrimPrefix(strings.TrimSuffix(match, "}"), "${")
-		return os.Getenv(varName)
+	return expandEnvVarsRe.ReplaceAllStringFunc(value, func(match string) string {
+		// Submatch[1] is the captured variable name inside ${ }.
+		if sub := expandEnvVarsRe.FindStringSubmatch(match); len(sub) > 1 {
+			return os.Getenv(sub[1])
+		}
+		return match
 	})
 }
 

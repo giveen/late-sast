@@ -113,11 +113,11 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 func (t *ReadFileTool) RequiresConfirmation(args json.RawMessage) bool { return false }
 
 func (t *ReadFileTool) CallString(args json.RawMessage) string {
-	path := getToolParam(args, "path")
+	path := GetToolParam(args, "path")
 	if cwd, err := os.Getwd(); err == nil {
 		path = strings.Replace(path, cwd, ".", 1)
 	}
-	return fmt.Sprintf("Reading file %s", truncate(path, 50))
+	return fmt.Sprintf("Reading file %s", Truncate(path, 50))
 }
 
 // WriteFileTool writes content to a file.
@@ -155,7 +155,7 @@ func (t WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	return fmt.Sprintf("Successfully wrote to %s", params.Path), nil
 }
 func (t WriteFileTool) RequiresConfirmation(args json.RawMessage) bool {
-	path := getToolParam(args, "path")
+	path := GetToolParam(args, "path")
 	if path == "" {
 		return true // Default to safe if we can't parse yet
 	}
@@ -163,14 +163,14 @@ func (t WriteFileTool) RequiresConfirmation(args json.RawMessage) bool {
 }
 
 func (t WriteFileTool) CallString(args json.RawMessage) string {
-	path := getToolParam(args, "path")
+	path := GetToolParam(args, "path")
 	if path == "" {
 		return "Writing to file..."
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		path = strings.Replace(path, cwd, ".", 1)
 	}
-	return fmt.Sprintf("Writing to file %s", truncate(path, 50))
+	return fmt.Sprintf("Writing to file %s", Truncate(path, 50))
 }
 
 func (t *ShellTool) getAnalyzer(cwd string) CommandAnalyzer {
@@ -468,44 +468,4 @@ func (t ShellTool) CallString(args json.RawMessage) string {
 		result += " in dir: " + params.Cwd
 	}
 	return result
-}
-
-// WriteImplementationPlanTool writes the implementation plan to a fixed file.
-type WriteImplementationPlanTool struct{}
-
-func (t WriteImplementationPlanTool) Name() string { return "write_implementation_plan" }
-func (t WriteImplementationPlanTool) Description() string {
-	return "Write the implementation plan to ./implementation_plan.md in the current working directory."
-}
-func (t WriteImplementationPlanTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"plan": { "type": "string", "description": "The full content of the implementation plan in Markdown format." }
-		},
-		"required": ["plan"]
-	}`)
-}
-func (t WriteImplementationPlanTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Plan string `json:"plan"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", err
-	}
-
-	if params.Plan == "" {
-		return "", fmt.Errorf("Implementation plan cannot be empty")
-	}
-
-	path := "implementation_plan.md"
-	if err := os.WriteFile(path, []byte(params.Plan), 0644); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Successfully wrote implementation plan to %s", path), nil
-}
-func (t WriteImplementationPlanTool) RequiresConfirmation(args json.RawMessage) bool { return false }
-
-func (t WriteImplementationPlanTool) CallString(args json.RawMessage) string {
-	return "Writing implementation plan to ./implementation_plan.md..."
 }

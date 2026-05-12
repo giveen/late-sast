@@ -80,7 +80,7 @@ docker exec ${{CONTAINER_NAME}} sh -c "
   cat /app/vcpkg.json 2>/dev/null | head -30
 "
 ```
-For each notable dependency, call `vul_vendor_product_cve(vendor="<vendor>", product="<name>")`. Filter to CVSS ≥ 7.0 and confirmed affected version range. Format CVE links as `https://nvd.nist.gov/vuln/detail/<CVE-ID>`.
+For each notable dependency, call `vul_vendor_product_cve(vendor="<vendor>", product="<name>", min_cvss=7.0)`. The tool returns structured findings with `cve`, `package`, `cvss`, `severity`, `description`, `link`, and `affected_versions` fields. Filter to confirmed affected version ranges and include matching entries directly in the report's `cve_findings`. Do **not** invent CVE IDs or CVSS scores.
 
 ### Step 1e — Dependency documentation & CVE remediation enrichment
 

@@ -5,16 +5,30 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"late/internal/common"
 )
 
-// getToolParam extracts a string parameter from tool arguments
-func getToolParam(args json.RawMessage, key string) string {
+// getToolParamReCache caches compiled regexes for GetToolParam's streaming
+// fallback path, keyed by the parameter name. Each unique key is compiled once.
+var getToolParamReCache sync.Map // string → *regexp.Regexp
+
+func getToolParamRe(key string) *regexp.Regexp {
+	if v, ok := getToolParamReCache.Load(key); ok {
+		return v.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]*)`, regexp.QuoteMeta(key)))
+	getToolParamReCache.Store(key, re)
+	return re
+}
+
+// GetToolParam extracts a string parameter from tool arguments
+func GetToolParam(args json.RawMessage, key string) string {
 	var params map[string]any
 	if err := json.Unmarshal(args, &params); err != nil {
 		// Fallback for partial JSON during streaming where the unmarshal fails
-		re := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]*)`, regexp.QuoteMeta(key)))
+		re := getToolParamRe(key)
 		matches := re.FindStringSubmatch(string(args))
 		if len(matches) > 1 {
 			return matches[1]
@@ -28,10 +42,16 @@ func getToolParam(args json.RawMessage, key string) string {
 	return val
 }
 
-// truncate shortens a string to maxLen characters, adding "..." if truncated
-func truncate(s string, maxLen int) string {
+// Truncate shortens a string to maxLen characters, adding "..." if truncated
+func Truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
 }

@@ -97,20 +97,35 @@ func (t *ToolAdapter) CallString(args json.RawMessage) string {
 	return fmt.Sprintf("Calling MCP tool '%s'...", t.mcpTool.Name)
 }
 
-// Connect establishes a connection to an MCP server.
-func (c *Client) Connect(ctx context.Context, transport mcp.Transport) error {
+// Connect establishes a connection to an MCP server and stores it under name.
+// Use a unique name per server; duplicate names overwrite the previous session
+// without closing it.
+func (c *Client) Connect(ctx context.Context, name string, transport mcp.Transport) error {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "late",
 		Version: common.Version,
 	}, nil)
+
+	if prev, ok := c.sessions[name]; ok {
+		for toolName, adapter := range c.tools {
+			if adapter != nil && adapter.session == prev {
+				delete(c.tools, toolName)
+			}
+		}
+		if err := prev.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "[operator-error] mcp: failed to close replaced session %q: %v\n", name, err)
+		}
+		delete(c.sessions, name)
+	}
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
-	// Store session
-	c.sessions["default"] = session
+	// Store session under the provided name so multiple servers are tracked
+	// independently and Close() can tear them all down.
+	c.sessions[name] = session
 
 	// List and store tools using iterator
 	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
@@ -148,7 +163,7 @@ func (c *Client) GetTool(name string) tool.Tool {
 func (c *Client) Close() error {
 	for name, session := range c.sessions {
 		if err := session.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error closing MCP session '%s': %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "[operator-error] mcp: failed to close session %q: %v\n", name, err)
 		}
 	}
 	return nil
@@ -214,7 +229,7 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 		}
 
 		// Connect to the server
-		if err := c.Connect(ctx, transport); err != nil {
+		if err := c.Connect(ctx, name, transport); err != nil {
 			return fmt.Errorf("failed to connect to server %s: %w", name, err)
 		}
 	}
