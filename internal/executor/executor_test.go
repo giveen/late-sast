@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
@@ -10,6 +11,7 @@ import (
 	"late/internal/session"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -238,6 +240,61 @@ func TestToolCallSignature_Stable(t *testing.T) {
 	}
 }
 
+func TestConsecutiveDuplicateToolTurns(t *testing.T) {
+	a := "sig-a"
+	b := "sig-b"
+
+	tests := []struct {
+		name    string
+		history []string
+		current string
+		want    int
+	}{
+		{name: "empty current", history: []string{a, a}, current: "", want: 0},
+		{name: "no match", history: []string{a, b}, current: a, want: 0},
+		{name: "one trailing match", history: []string{a, b}, current: b, want: 1},
+		{name: "two trailing matches", history: []string{a, a}, current: a, want: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := consecutiveDuplicateToolTurns(tt.history, tt.current)
+			if got != tt.want {
+				t.Fatalf("consecutiveDuplicateToolTurns(%v, %q) = %d, want %d", tt.history, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRepeatedToolPlanCycle(t *testing.T) {
+	a := "sig-a"
+	b := "sig-b"
+	c := "sig-c"
+
+	tests := []struct {
+		name        string
+		history     []string
+		current     string
+		maxCycleLen int
+		wantLen     int
+		wantTurns   int
+	}{
+		{name: "detects abab", history: []string{a, b, a}, current: b, maxCycleLen: 2, wantLen: 2, wantTurns: 4},
+		{name: "does not flag consecutive duplicates as cycle", history: []string{a, a, a}, current: a, maxCycleLen: 2, wantLen: 0, wantTurns: 0},
+		{name: "does not flag incomplete pattern", history: []string{a, b}, current: a, maxCycleLen: 2, wantLen: 0, wantTurns: 0},
+		{name: "does not flag mismatched tail", history: []string{a, b, c}, current: b, maxCycleLen: 2, wantLen: 0, wantTurns: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotLen, gotTurns := repeatedToolPlanCycle(tt.history, tt.current, tt.maxCycleLen)
+			if gotLen != tt.wantLen || gotTurns != tt.wantTurns {
+				t.Fatalf("repeatedToolPlanCycle(%v, %q, %d) = (%d, %d), want (%d, %d)", tt.history, tt.current, tt.maxCycleLen, gotLen, gotTurns, tt.wantLen, tt.wantTurns)
+			}
+		})
+	}
+}
+
 // TestConsumeStream verifies ConsumeStream drains a channel correctly
 func TestConsumeStream(t *testing.T) {
 	outCh := make(chan common.StreamResult, 3)
@@ -405,7 +462,7 @@ func TestExecuteParallelBatch(t *testing.T) {
 	for i := range toolCalls {
 		toolCalls[i] = client.ToolCall{
 			ID:       fmt.Sprintf("tc_%d", i),
-			Function: client.FunctionCall{Name: "read_file", Arguments: "{}"},
+			Function: client.FunctionCall{Name: "read_file", Arguments: fmt.Sprintf(`{"path":"file_%d.go"}`, i)},
 		}
 	}
 
@@ -422,6 +479,68 @@ func TestExecuteParallelBatch(t *testing.T) {
 		if r.runErr != nil {
 			t.Errorf("[%d] unexpected error: %v", i, r.runErr)
 		}
+	}
+}
+
+func TestExecuteParallelBatch_DeduplicatesIdenticalCalls(t *testing.T) {
+	var runs int32
+	runner := func(_ context.Context, tc client.ToolCall) (string, error) {
+		atomic.AddInt32(&runs, 1)
+		return "result:" + tc.Function.Arguments, nil
+	}
+
+	toolCalls := []client.ToolCall{
+		{ID: "tc_1", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}},
+		{ID: "tc_2", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}},
+		{ID: "tc_3", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"b.go"}`}},
+	}
+
+	results := executeParallelBatch(context.Background(), context.Background(), toolCalls, runner, nil, nil)
+	if got, want := atomic.LoadInt32(&runs), int32(2); got != want {
+		t.Fatalf("runner called %d times, want %d", got, want)
+	}
+	if len(results) != len(toolCalls) {
+		t.Fatalf("expected %d results, got %d", len(toolCalls), len(results))
+	}
+	if results[1].result != results[0].result {
+		t.Fatalf("expected duplicate call result to match leader, got %q vs %q", results[1].result, results[0].result)
+	}
+	if !results[1].fromDedup {
+		t.Fatal("expected duplicate call to be marked fromDedup")
+	}
+	if results[0].fromDedup {
+		t.Fatal("expected first call not to be marked fromDedup")
+	}
+}
+
+func TestExecuteParallelBatch_DedupPropagatesRunError(t *testing.T) {
+	var runs int32
+	runErr := errors.New("boom")
+	runner := func(_ context.Context, tc client.ToolCall) (string, error) {
+		atomic.AddInt32(&runs, 1)
+		if tc.Function.Arguments == `{"path":"a.go"}` {
+			return "", runErr
+		}
+		return "ok", nil
+	}
+
+	toolCalls := []client.ToolCall{
+		{ID: "tc_1", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}},
+		{ID: "tc_2", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}},
+	}
+
+	results := executeParallelBatch(context.Background(), context.Background(), toolCalls, runner, nil, nil)
+	if got, want := atomic.LoadInt32(&runs), int32(1); got != want {
+		t.Fatalf("runner called %d times, want %d", got, want)
+	}
+	if results[0].runErr == nil {
+		t.Fatal("expected leader runErr")
+	}
+	if results[1].runErr == nil || results[1].runErr.Error() != runErr.Error() {
+		t.Fatalf("expected duplicate runErr %q, got %#v", runErr.Error(), results[1].runErr)
+	}
+	if !results[1].fromDedup {
+		t.Fatal("expected duplicate entry marked fromDedup")
 	}
 }
 

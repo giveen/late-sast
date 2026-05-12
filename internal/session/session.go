@@ -18,6 +18,16 @@ import (
 
 var shellExitCodeRe = regexp.MustCompile(`^Command failed with exit code\s+(-?\d+)`)
 var trailingCommaJSONRe = regexp.MustCompile(`,\s*([}\]])`)
+var codeFenceRe = regexp.MustCompile("(?s)^\\s*```(?:json|js|javascript|yaml|toml|python|txt)?[ \\t]*\\n?(.*?)\\n?```\\s*$")
+var jsonExtractRe = regexp.MustCompile(`(?s)[{\[]`)
+var pythonTrueRe = regexp.MustCompile(`\bTrue\b`)
+var pythonFalseRe = regexp.MustCompile(`\bFalse\b`)
+var pythonNoneRe = regexp.MustCompile(`\bNone\b`)
+var nanInfRe = regexp.MustCompile(`\b(NaN|Infinity)\b`)
+var minusInfRe = regexp.MustCompile(`-Infinity\b`)
+var ellipsisRe = regexp.MustCompile(`,?\s*\.\.\.\s*([}\]])`)
+var lineCommentRe = regexp.MustCompile(`(?m)//[^\n]*$`)
+var blockCommentRe = regexp.MustCompile(`(?s)/\*.*?\*/`)
 
 const (
 	historyRecentWindow              = 8
@@ -197,6 +207,19 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 	// Filter out tool calls with invalid JSON arguments and log them
 	var validCalls []client.ToolCall
 	for _, tc := range toolCalls {
+		// Drop calls with no function name — streaming artifact where the name
+		// delta was never received. Executing them would yield "tool not found: ".
+		if strings.TrimSpace(tc.Function.Name) == "" {
+			if s.debugLogger != nil && s.debugLogger.Enabled() {
+				s.debugLogger.LogEvent("MALFORMED_TOOL_CALL_DROPPED", "Dropping tool call with empty function name",
+					map[string]interface{}{
+						"id":                tc.ID,
+						"arguments_preview": previewToolCallArgs(tc.Function.Arguments),
+					})
+			}
+			continue
+		}
+
 		// Validate that arguments are parseable JSON
 		if !json.Valid([]byte(tc.Function.Arguments)) {
 			if repaired, ok := repairToolCallArguments(tc.Function.Arguments); ok {
@@ -280,16 +303,45 @@ func repairToolCallArguments(raw string) (string, bool) {
 		return "", false
 	}
 
+	// Fast path: already valid JSON.
 	if compact, ok := compactJSON(candidate); ok {
 		return compact, true
+	}
+
+	// Strategy: strip markdown code fences (```json … ```).
+	if stripped := stripCodeFences(candidate); stripped != candidate {
+		candidate = stripped
+		if compact, ok := compactJSON(candidate); ok {
+			return compact, true
+		}
+	}
+
+	// Strategy: extract the first JSON object/array from surrounding prose.
+	if extracted, ok := extractJSONFromProse(candidate); ok && extracted != candidate {
+		if compact, ok := compactJSON(extracted); ok {
+			return compact, true
+		}
+		candidate = extracted
 	}
 
 	if !(strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[")) {
 		return "", false
 	}
 
-	// Common minor damage: trailing commas and truncated closes.
+	// Strategy: remove JS/C-style comments (// and /* */) outside string values.
+	candidate = removeJSONComments(candidate)
+
+	// Strategy: fix Python-style literals (True→true, False→false, None→null)
+	// and non-JSON numeric tokens (NaN→null, Infinity→null) outside strings.
+	candidate = applyOutsideStrings(candidate, fixPythonAndNonJSONLiterals)
+
+	// Strategy: remove ellipsis tokens inside arrays/objects (…).
+	candidate = ellipsisRe.ReplaceAllString(candidate, "$1")
+
+	// Strategy: trailing commas before closing brackets.
 	candidate = trailingCommaJSONRe.ReplaceAllString(candidate, "$1")
+
+	// Strategy: close unclosed JSON structures.
 	candidate = closeOpenJSONStructures(candidate)
 
 	if compact, ok := compactJSON(candidate); ok {
@@ -297,6 +349,131 @@ func repairToolCallArguments(raw string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// stripCodeFences removes leading/trailing markdown code fences from s.
+func stripCodeFences(s string) string {
+	if m := codeFenceRe.FindStringSubmatch(s); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return s
+}
+
+// extractJSONFromProse finds the first JSON object or array in s (which may
+// contain surrounding prose text) and returns it. It respects nested
+// structures and skips string literals when tracking depth.
+func extractJSONFromProse(s string) (string, bool) {
+	start := -1
+	var startChar byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' || s[i] == '[' {
+			start = i
+			startChar = s[i]
+			break
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	var endChar byte
+	if startChar == '{' {
+		endChar = '}'
+	} else {
+		endChar = ']'
+	}
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inStr {
+			if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			continue
+		}
+		if c == startChar {
+			depth++
+		} else if c == endChar {
+			depth--
+			if depth == 0 {
+				return s[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// applyOutsideStrings calls fn only on non-string segments of s, leaving
+// double-quoted JSON string literals verbatim.
+func applyOutsideStrings(s string, fn func(string) string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '"' {
+			// Copy the entire string literal unchanged.
+			start := i
+			i++
+			for i < len(s) {
+				if s[i] == '\\' {
+					i += 2
+					continue
+				}
+				if s[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+			b.WriteString(s[start:i])
+		} else {
+			// Collect the non-string segment up to the next '"'.
+			next := strings.IndexByte(s[i:], '"')
+			var chunk string
+			if next < 0 {
+				chunk = s[i:]
+				i = len(s)
+			} else {
+				chunk = s[i : i+next]
+				i += next
+			}
+			b.WriteString(fn(chunk))
+		}
+	}
+	return b.String()
+}
+
+// fixPythonAndNonJSONLiterals replaces Python-style and non-JSON numeric
+// tokens in a non-string segment with their JSON equivalents.
+func fixPythonAndNonJSONLiterals(segment string) string {
+	segment = pythonTrueRe.ReplaceAllString(segment, "true")
+	segment = pythonFalseRe.ReplaceAllString(segment, "false")
+	segment = pythonNoneRe.ReplaceAllString(segment, "null")
+	segment = minusInfRe.ReplaceAllString(segment, "null")
+	segment = nanInfRe.ReplaceAllString(segment, "null")
+	return segment
+}
+
+// removeJSONComments strips // line comments and /* */ block comments from
+// non-string portions of a JSON-like string.
+func removeJSONComments(s string) string {
+	s = applyOutsideStrings(s, func(seg string) string {
+		return blockCommentRe.ReplaceAllString(seg, "")
+	})
+	s = applyOutsideStrings(s, func(seg string) string {
+		return lineCommentRe.ReplaceAllString(seg, "")
+	})
+	return s
 }
 
 func compactJSON(raw string) (string, bool) {
